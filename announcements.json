@@ -1,7 +1,17 @@
 {
   "schemaVersion": 1,
-  "updatedAtUtc": "2026-09-27T00:00:00.0000000Z",
+  "updatedAtUtc": "2026-09-27T15:56:46.8449427Z",
   "items": [
+    {
+      "id": "a1246120180",
+      "title": "加入我们的官方QQ群吧~",
+      "body": "在这里获取更新，最新动态以及骚扰群友：1125143450",
+      "tag": "公告",
+      "date": "2026-09-27",
+      "pinned": true,
+      "url": "https://qm.qq.com/cgi-bin/qm/qr?_wv=1027&k=IcQmzin0x5MKi41A06uViek_3s6d9C1K&authKey=dB6A4vaDfiCaHrTh%2BRDTFh3MMdULHKfEnAXnOSLkvSYwP1dgsf8MvvOLIf8QFzNE&noverify=0&group_code=1125143450",
+      "order": 0
+    },
     {
       "id": "1-4-10-skills",
       "title": "技能中心上线",
@@ -10,7 +20,7 @@
       "date": "2026-09-27",
       "pinned": true,
       "url": "",
-      "order": 0
+      "order": 1
     },
     {
       "id": "1-4-10-developer",
@@ -20,7 +30,7 @@
       "date": "2026-09-27",
       "pinned": false,
       "url": "",
-      "order": 1
+      "order": 2
     },
     {
       "id": "1-4-10-home",
@@ -30,7 +40,7 @@
       "date": "2026-09-27",
       "pinned": false,
       "url": "",
-      "order": 2
+      "order": 3
     },
     {
       "id": "1-4-10-mirror",
@@ -40,7 +50,7 @@
       "date": "2026-09-26",
       "pinned": false,
       "url": "",
-      "order": 3
+      "order": 4
     }
   ]
 }
