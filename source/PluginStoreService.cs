@@ -40,7 +40,8 @@ namespace DeepSeekHarnessLauncher
             string defaultBranch,
             string sourceSha,
             Action<string, double> progress,
-            Action<string> log)
+            Action<string> log,
+            Action<DownloadProgressInfo> detail = null)
         {
             InstallResult result = new InstallResult();
             if (settings == null || String.IsNullOrWhiteSpace(settings.DshRoot))
@@ -79,17 +80,22 @@ namespace DeepSeekHarnessLauncher
                 spec,
                 defaultBranch,
                 archive,
-                delegate(long received, long total)
+                delegate(DownloadProgressInfo info)
                 {
-                    double fraction = total > 0
-                        ? Math.Min(1.0, (double)received / total)
-                        : 0.0;
+                    if (detail != null)
+                    {
+                        detail(info);
+                    }
+
+                    // 拿不到总长度时（镜像/加速源常用 chunked）不能把 fraction 当 0——
+                    // 那样进度会永远停在 2%。改用「已下载量」做一条单调爬升的曲线，
+                    // 文案里带上实时速度和体积，用户能看出它在动。
+                    double fraction = info.TotalBytes > 0
+                        ? Math.Min(1.0, (double)info.BytesReceived / info.TotalBytes)
+                        : 1.0 - Math.Exp(-info.BytesReceived / (8.0 * 1024 * 1024));
                     Report(
                         progress,
-                        total > 0
-                            ? "下载中 · "
-                                + FormatBytes(received) + " / " + FormatBytes(total)
-                            : "下载中 · " + FormatBytes(received),
+                        "下载中 · " + DownloadProgressInfo.Describe(info),
                         2 + fraction * 68);
                 },
                 log);
@@ -176,10 +182,11 @@ namespace DeepSeekHarnessLauncher
             if (hasOwnDependencies)
             {
                 Report(progress, "安装中 · 插件依赖", 82);
+                Report(progress, "安装中 · 正在下载插件依赖（国内可能要一会儿）", 82);
                 PackageManagerRunner.Run(
                     pnpm,
                     target,
-                    "install --reporter=append-only",
+                    "install --reporter=append-only" + RegistryArgument(settings),
                     10 * 60 * 1000,
                     log);
             }
@@ -403,7 +410,7 @@ namespace DeepSeekHarnessLauncher
                 PackageManagerRunner.Run(
                     pnpm,
                     DshProfileService.ResolveProfileDirectory(settings.DshRoot),
-                    "install --reporter=append-only",
+                    "install --reporter=append-only" + RegistryArgument(settings),
                     10 * 60 * 1000,
                     null);
             }
@@ -418,14 +425,10 @@ namespace DeepSeekHarnessLauncher
             PluginSpec spec,
             string defaultBranch,
             string targetPath,
-            Action<long, long> progress,
+            Action<DownloadProgressInfo> progress,
             Action<string> log)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(targetPath));
-            bool official = String.Equals(
-                settings.UpdateSource,
-                "Official",
-                StringComparison.OrdinalIgnoreCase);
             List<string> references = new List<string>();
             if (!String.IsNullOrWhiteSpace(spec.Revision))
             {
@@ -461,86 +464,75 @@ namespace DeepSeekHarnessLauncher
                     spec,
                     reference,
                     pinned,
-                    official);
-                for (int index = 0; index < urls.Count; index++)
+                    settings);
+                string usedUrl;
+                string downloadError;
+                if (DownloadSupport.Download(
+                    urls,
+                    targetPath,
+                    settings,
+                    DownloadSupport.DefaultThreads,
+                    progress,
+                    log,
+                    out usedUrl,
+                    out downloadError))
                 {
-                    try
+                    if (log != null)
                     {
-                        using (TimeoutWebClient client = new TimeoutWebClient())
-                        {
-                            client.Headers[HttpRequestHeader.UserAgent] =
-                                Constants.UserAgent;
-                            ProxySupport.Apply(client);
-                            if (progress != null)
-                            {
-                                client.DownloadProgressChanged +=
-                                    delegate(object sender, DownloadProgressChangedEventArgs args)
-                                    {
-                                        progress(args.BytesReceived, args.TotalBytesToReceive);
-                                    };
-                            }
-
-                            client.DownloadFile(urls[index], targetPath);
-                        }
-
-                        if (log != null)
-                        {
-                            log("插件下载成功：" + urls[index]);
-                        }
-
-                        return null;
+                        log("插件下载成功：" + usedUrl);
                     }
-                    catch (Exception exception)
-                    {
-                        failures.Add(urls[index] + " -> " + exception.Message);
-                        if (log != null)
-                        {
-                            log("插件下载源失败：" + urls[index] + " : " + exception.Message);
-                        }
-                    }
+
+                    return null;
+                }
+
+                failures.Add(downloadError);
+                if (log != null)
+                {
+                    log("插件下载失败：" + downloadError);
                 }
             }
 
             return "所有下载源都失败：\r\n" + String.Join("\r\n", failures.ToArray());
         }
 
+        /// <summary>
+        /// 归档候选统一由 <see cref="GitHubAccelerator.ArchiveCandidates"/> 出，别再在这里
+        /// 自己排顺序 —— 顺序是实测出来的，两处各写一遍必然走偏。
+        /// </summary>
         private static List<string> BuildTarballUrls(
             PluginSpec spec,
             string reference,
             bool pinned,
-            bool official)
+            LauncherSettings settings)
         {
             string archiveReference = pinned
                 ? Uri.EscapeDataString(reference)
                 : "refs/heads/" + Uri.EscapeDataString(reference);
-            string archive = "https://github.com/"
-                + spec.Owner + "/" + spec.Repository
-                + "/archive/" + archiveReference + ".tar.gz";
-            string codeload = "https://codeload.github.com/"
-                + spec.Owner + "/" + spec.Repository
-                + "/tar.gz/" + archiveReference;
-
-            List<string> urls = new List<string>();
-            if (official)
-            {
-                urls.Add(codeload);
-                urls.Add(archive);
-                urls.Add("https://ghproxy.net/" + archive);
-            }
-            else
-            {
-                urls.Add("https://ghproxy.net/" + archive);
-                urls.Add("https://ghfast.top/" + archive);
-                urls.Add(codeload);
-                urls.Add(archive);
-            }
-
-            return urls;
+            return GitHubAccelerator.ArchiveCandidates(
+                spec.Owner,
+                spec.Repository,
+                archiveReference,
+                settings);
         }
 
         /// <summary>解压 tar.gz，并剥掉 GitHub 自动加的那层 owner-repo-sha 目录。</summary>
+        /// <summary>
+        /// pnpm install 的 registry 参数。大陆 CDN 线路套 npmmirror，官方线路不套第三方镜像。
+        ///
+        /// 不套的时候国内是直连 registry.npmjs.org 拉依赖，插件安装会长时间停在
+        /// 「安装中」——看着像卡死，其实是在慢慢下依赖。
+        /// </summary>
+        private static string RegistryArgument(LauncherSettings settings)
+        {
+            string registry = DshUpdateService.ResolveInstallRegistry(settings);
+            return String.IsNullOrWhiteSpace(registry)
+                ? String.Empty
+                : " --registry=" + registry;
+        }
+
         private static string ExtractTarGz(string archivePath, string targetDirectory)
         {
+            List<string> skipped = new List<string>();
             try
             {
                 if (Directory.Exists(targetDirectory))
@@ -584,15 +576,39 @@ namespace DeepSeekHarnessLauncher
                             Directory.CreateDirectory(parent);
                         }
 
-                        entry.ExtractToFile(path, true);
+                        // 逐条容错：某一条进不去（路径太长 / 非法名字 / 特殊类型）不该
+                        // 让整包装不上。失败的名字记下来，最后一起报出去。
+                        try
+                        {
+                            if (entry.EntryType != System.Formats.Tar.TarEntryType.RegularFile
+                                && entry.EntryType != System.Formats.Tar.TarEntryType.V7RegularFile)
+                            {
+                                skipped.Add(entry.EntryType + " " + name);
+                                continue;
+                            }
+
+                            entry.ExtractToFile(path, true);
+                        }
+                        catch (Exception entryError)
+                        {
+                            skipped.Add(name + "（" + entryError.Message + "）");
+                        }
                     }
                 }
 
-                return null;
+                return skipped.Count == 0
+                    ? null
+                    : "有 " + skipped.Count + " 个文件没解出来（已跳过）："
+                        + String.Join("；", skipped.GetRange(
+                            0,
+                            Math.Min(5, skipped.Count)).ToArray());
             }
             catch (Exception exception)
             {
-                return "解压失败：" + exception.Message;
+                return "解压失败：" + exception.Message
+                    + (skipped.Count == 0
+                        ? String.Empty
+                        : "（已跳过 " + skipped.Count + " 个：" + skipped[0] + "）");
             }
         }
 

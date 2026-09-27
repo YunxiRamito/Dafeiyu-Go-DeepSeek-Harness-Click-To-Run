@@ -32,6 +32,9 @@ namespace DeepSeekHarnessLauncher
         private const string Branch = "main";
         private const string ManifestFile = "manifest.json";
 
+        /// <summary>预览通道的清单。仓库里没有这个文件时自动退回 manifest.json。</summary>
+        private const string PreviewManifestFile = "manifest-preview.json";
+
         private const int FetchTimeoutMs = 20000;
         private const int DownloadTimeoutMs = 180000;
 
@@ -41,13 +44,26 @@ namespace DeepSeekHarnessLauncher
         /// 版本清单地址。默认用启动器仓库根目录的 manifest.json;
         /// 同目录的 launcher.json 可以通过 updateManifestUrls 覆盖(镜像 / 自建源 / 内网用)。
         /// </summary>
-        private static string[] ResolveManifestUrls(bool official)
+        private static string[] ResolveManifestUrls(
+            bool official,
+            LauncherSettings settings)
         {
             List<string> configured = ReadConfiguredManifestUrls();
             if (configured.Count > 0)
             {
                 return configured.ToArray();
             }
+
+            // 预览通道先试 manifest-preview.json，拿不到再退回正式清单——仓库里还
+            // 没有预览清单时，选了预览也不该让检查更新直接失败。
+            bool preview = settings != null
+                && String.Equals(
+                    settings.LauncherChannel,
+                    "Preview",
+                    StringComparison.OrdinalIgnoreCase);
+            string[] files = preview
+                ? new string[] { PreviewManifestFile, ManifestFile }
+                : new string[] { ManifestFile };
 
             // 清单要"实时",但 raw.githubusercontent 在国内经常直接超时,
             // jsDelivr 也可能因为 TLS 中间设备连不上。所以准备一长串候选,挨个试:
@@ -65,8 +81,16 @@ namespace DeepSeekHarnessLauncher
             {
                 foreach (string repository in Repositories)
                 {
-                    AddOfficialRepositoryUrls(urls, repository, nonce);
+                    for (int fileIndex = 0; fileIndex < files.Length; fileIndex++)
+                    {
+                        AddOfficialRepositoryUrls(
+                            urls,
+                            repository,
+                            files[fileIndex],
+                            nonce);
+                    }
                 }
+
                 return urls.ToArray();
             }
 
@@ -78,19 +102,27 @@ namespace DeepSeekHarnessLauncher
             // 所以官方 API 放最前,它给的 releases/latest 结构在 ParseGitHubRelease 里转换。
             foreach (string repository in Repositories)
             {
-                string rawPath = repository + "/" + Branch + "/" + ManifestFile;
-                string raw = "https://raw.githubusercontent.com/" + rawPath + "?t=" + nonce;
-                string jsdelivr = "https://cdn.jsdelivr.net/gh/" + repository + "@" + Branch + "/" + ManifestFile + "?t=" + nonce;
-
-                urls.Add("https://api.github.com/repos/" + repository + "/releases/latest");
-
-                for (int index = 0; index < GitHubPrefixes.Length; index++)
+                for (int fileIndex = 0; fileIndex < files.Length; fileIndex++)
                 {
-                    urls.Add(GitHubPrefixes[index] + raw);
-                }
+                    string file = files[fileIndex];
+                    string rawPath = repository + "/" + Branch + "/" + file;
+                    string raw = "https://raw.githubusercontent.com/" + rawPath + "?t=" + nonce;
+                    string jsdelivr = "https://cdn.jsdelivr.net/gh/" + repository + "@" + Branch + "/" + file + "?t=" + nonce;
 
-                urls.Add(raw);
-                urls.Add(jsdelivr);
+                    if (String.Equals(file, ManifestFile, StringComparison.Ordinal))
+                    {
+                        // releases/latest 对应的是正式清单，预览清单没有这条兜底。
+                        urls.Add("https://api.github.com/repos/" + repository + "/releases/latest");
+                    }
+
+                    for (int index = 0; index < GitHubPrefixes.Length; index++)
+                    {
+                        urls.Add(GitHubPrefixes[index] + raw);
+                    }
+
+                    urls.Add(raw);
+                    urls.Add(jsdelivr);
+                }
             }
 
             return urls.ToArray();
@@ -99,9 +131,10 @@ namespace DeepSeekHarnessLauncher
         private static void AddOfficialRepositoryUrls(
             List<string> urls,
             string repository,
+            string file,
             string nonce)
         {
-            string rawPath = repository + "/" + Branch + "/" + ManifestFile;
+            string rawPath = repository + "/" + Branch + "/" + file;
             string raw = "https://raw.githubusercontent.com/" + rawPath + "?t=" + nonce;
             urls.Add(raw);
             urls.Add("https://api.github.com/repos/" + repository + "/releases/latest");
@@ -189,7 +222,7 @@ namespace DeepSeekHarnessLauncher
                     settings.UpdateSource,
                     "Official",
                     StringComparison.OrdinalIgnoreCase);
-            string[] urls = ResolveManifestUrls(official);
+            string[] urls = ResolveManifestUrls(official, settings);
 
             string json = null;
             List<string> failures = new List<string>();
@@ -217,12 +250,12 @@ namespace DeepSeekHarnessLauncher
                 return null;
             }
 
-            UpdateManifest manifest = ParseManifest(json, out error);
+            UpdateManifest manifest = ParseManifest(json, settings, out error);
             if (manifest == null && !string.IsNullOrEmpty(json) && json.IndexOf("\"tag_name\"", StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 // 走到 GitHub API 的 releases/latest 了:那个返回的是 GitHub 自己的结构,
                 // 不是我们的清单格式,得转换一下
-                manifest = ParseGitHubRelease(json, out error);
+                manifest = ParseGitHubRelease(json, settings, out error);
             }
 
             if (manifest != null && official)
@@ -242,7 +275,10 @@ namespace DeepSeekHarnessLauncher
         /// 把 GitHub API 的 releases/latest 响应转成我们的清单结构。
         /// 这是最后一道兜底:官方 api.github.com 一般不会被中间设备拦。
         /// </summary>
-        internal static UpdateManifest ParseGitHubRelease(string json, out string error)
+        internal static UpdateManifest ParseGitHubRelease(
+            string json,
+            LauncherSettings settings,
+            out string error)
         {
             error = null;
 
@@ -263,7 +299,7 @@ namespace DeepSeekHarnessLauncher
                 string url = names[index].Groups[1].Value.Replace("\\/", "/");
                 if (url.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                 {
-                    manifest.Urls.AddRange(Mirrorize(url));
+                    manifest.Urls.AddRange(Mirrorize(url, settings));
                 }
             }
 
@@ -302,7 +338,10 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        internal static UpdateManifest ParseManifest(string json, out string error)
+        internal static UpdateManifest ParseManifest(
+            string json,
+            LauncherSettings settings,
+            out string error)
         {
             error = null;
             UpdateManifest manifest = new UpdateManifest();
@@ -315,7 +354,7 @@ namespace DeepSeekHarnessLauncher
             string github = MatchNestedString(json, "assets", "github");
             if (!string.IsNullOrEmpty(github))
             {
-                manifest.Urls.AddRange(Mirrorize(github));
+                manifest.Urls.AddRange(Mirrorize(github, settings));
             }
 
             MatchCollection mirrors = Regex.Matches(
@@ -341,7 +380,7 @@ namespace DeepSeekHarnessLauncher
                 string simple = MatchString(json, "url");
                 if (!string.IsNullOrEmpty(simple))
                 {
-                    manifest.Urls.AddRange(Mirrorize(simple));
+                    manifest.Urls.AddRange(Mirrorize(simple, settings));
                 }
             }
 
@@ -464,31 +503,14 @@ namespace DeepSeekHarnessLauncher
             return null;
         }
 
-        /// <summary>给 GitHub 资产地址配上加速前缀:只有在中国大陆才套 CDN 加速。</summary>
-        private static List<string> Mirrorize(string assetUrl)
+        /// <summary>
+        /// 给 GitHub 资产地址配上加速前缀。走不走加速只看设置里的档位
+        /// （加速源 → 镜像排前面、原地址垫底；官方源 → 只给原地址），
+        /// 不再按「机器在不在大陆」猜。
+        /// </summary>
+        private static List<string> Mirrorize(string assetUrl, LauncherSettings settings)
         {
-            List<string> urls = new List<string>();
-            if (string.IsNullOrEmpty(assetUrl))
-            {
-                return urls;
-            }
-
-            if (RegionInfo.IsChinaMainland)
-            {
-                for (int index = 0; index < GitHubPrefixes.Length; index++)
-                {
-                    urls.Add(GitHubPrefixes[index] + assetUrl);
-                }
-            }
-
-            urls.Add(assetUrl);
-
-            if (!RegionInfo.IsChinaMainland)
-            {
-                urls.Add("https://ghproxy.net/" + assetUrl);
-            }
-
-            return urls;
+            return GitHubAccelerator.Candidates(assetUrl, settings);
         }
 
         private static string MatchString(string json, string key)

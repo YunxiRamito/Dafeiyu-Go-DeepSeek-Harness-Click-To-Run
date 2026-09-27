@@ -30,3 +30,12 @@ desktop.ini
 # 所以镜像要用的那份 zip 必须进仓库(其余 *.zip 仍然排除)。
 # 路径和 tag 一起变:见 RELEASE.md 的"jsDelivr 镜像"一节。
 !assets/*.zip
+
+# 新增工具项目与新目录的编译产物(以前没排,差点把 500 多 MB 的 dll 提上去)
+PluginJsonTool/bin/
+PluginJsonTool/obj/
+PluginJsonTool/dist/
+PluginJsonTool/dist-*/
+PluginJsonTool.Tests/bin/
+PluginJsonTool.Tests/obj/
+preview-artifacts/

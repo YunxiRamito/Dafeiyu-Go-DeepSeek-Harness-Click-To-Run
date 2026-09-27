@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "updatedAtUtc": "2026-09-23T16:41:32.5431422Z",
+  "items": [
+    {
+      "owner": "Nagi-ovo",
+      "repository": "dsh-ads",
+      "description": "把 DSH 变成 2005 年门户网站｜Parody ads, fake games, and popups for the DSH Web UI",
+      "language": "TypeScript",
+      "license": "BSD-3-Clause",
+      "pushedAt": "2026-09-18T23:09:29Z",
+      "category": "界面增强",
+      "version": "最新",
+      "stars": 633,
+      "verified": true,
+      "defaultBranch": "main",
+      "installStatus": "recognized",
+      "selectedSpecifier": "npm:@nagi-ovo/dsh-ads",
+      "selectedSource": "npm",
+      "installCandidates": [
+        {
+          "source": "npm",
+          "target": "@nagi-ovo/dsh-ads",
+          "action": "add",
+          "specifier": "npm:@nagi-ovo/dsh-ads",
+          "executable": true,
+          "evidenceSource": "readme"
+        }
+      ],
+      "sourceSha": "7cbc5e5c937a8eb22c6e0169b61ff3298ab0fb58",
+      "imageUrl": "https://avatars.githubusercontent.com/u/101612750?v=4",
+      "note": "把 DSH 变成 2005 ",
+      "order": 1
+    }
+  ]
+}

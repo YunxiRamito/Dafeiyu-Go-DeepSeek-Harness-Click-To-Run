@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -40,9 +40,9 @@ namespace DeepSeekHarnessLauncher
 {
     internal static class Constants
     {
-        public const string Title = "大肥鱼Go";
+        public const string Title = "Dafeiyu-Go";
         public const string EnglishTitle = "Dafeiyu-Go";
-        public const string Version = "1.4.9.1";
+        public const string Version = "1.5.0";
         public const string Repository = "YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run";
         public const string LegacyRepository = "YunxiRamito/DSH-Launcher";
         public const string UserAgent = "Dafeiyu-Go/" + Version;
@@ -191,8 +191,7 @@ namespace DeepSeekHarnessLauncher
 
             string mutexName = _settingsPreview
                 ? MutexName + ".Preview"
-                : MutexName;
-            string openPageEventName = _settingsPreview
+                : MutexName;            string openPageEventName = _settingsPreview
                 ? OpenPageEventName + ".Preview"
                 : OpenPageEventName;
 
@@ -412,7 +411,7 @@ namespace DeepSeekHarnessLauncher
             if (string.IsNullOrEmpty(nodePath))
             {
                 problem = "没有找到 Node.js。";
-                detail = "大肥鱼Go需要 Node.js 才能运行。\r\n\r\n"
+                detail = "Dafeiyu-Go 需要 Node.js 才能运行。\r\n\r\n"
                     + "如果你是用 DSH Installer 装的,说明安装没走完;\r\n"
                     + "否则请先安装 Node.js 22 或更高版本,然后重新打开本程序。";
             }
@@ -490,7 +489,7 @@ namespace DeepSeekHarnessLauncher
             if (alreadyElevatedAttempt)
             {
                 WinFormsMessageBox.Show(
-                    "无法获得管理员权限，大肥鱼Go不能启动。",
+                    "无法获得管理员权限，Dafeiyu-Go 不能启动。",
                     Constants.Title,
                     WinFormsMessageBoxButtons.OK,
                     WinFormsMessageBoxIcon.Error);
@@ -1028,7 +1027,7 @@ namespace DeepSeekHarnessLauncher
                     System.Reflection.BindingFlags.SetProperty,
                     null,
                     shortcut,
-                    new object[] { "大肥鱼Go开机自启(静默驻留托盘)" });
+                    new object[] { "Dafeiyu-Go 开机自启(静默驻留托盘)" });
                 shortcutType.InvokeMember(
                     "Save",
                     System.Reflection.BindingFlags.InvokeMethod,
@@ -1271,6 +1270,14 @@ namespace DeepSeekHarnessLauncher
             _logWriter.AutoFlush = true;
             WriteLog("Launcher started. Version " + Constants.Version + ", elevated=" + IsAdministrator());
             WriteLog("网络代理：" + ProxySupport.Describe(_settings));
+
+            // 每次运行都测一遍各加速源的延迟：自动模式按实测最快的排，
+            // 自选模式只把结果展示给用户。放后台，不挡启动。
+            AcceleratorLatencyWatcher.Start(_settings, WriteLog);
+            AcceleratorLatencyService.MeasureInBackground(
+                _settings,
+                WriteLog,
+                null);
 
             _appIcon = LoadAppIcon();
             _trayIcon = new NativeTrayIcon(Constants.TrayIconId, Constants.Title + " 正在启动...", _appIcon);
@@ -2439,13 +2446,13 @@ namespace DeepSeekHarnessLauncher
                 UpdateDshUi(
                     UpdateUiActivity.Installing,
                     latest,
-                    "准备安装",
+                    "安装中 · 正在进行准备工作",
                     0,
                     false,
                     String.Empty);
                 UpdateWindow(
                     "正在更新 DSH v" + latest,
-                    "安装中 / 请不要关闭计算机",
+                    "安装中 · 正在准备",
                     0);
                 StopService();
                 string installError;
@@ -2453,20 +2460,19 @@ namespace DeepSeekHarnessLauncher
                     _settings.DshRoot,
                     _settings.NodePath,
                     packagePath,
+                    DshUpdateService.ResolveInstallRegistry(_settings),
                     delegate(string text, double percent)
                     {
-                        string detail = "安装中 / 请不要关闭计算机"
-                            + (String.IsNullOrWhiteSpace(text)
-                                ? String.Empty
-                                : " · " + text);
+                        // 文案由进度跟踪器统一给（形如「安装中 · 部署 DSH 核心 12.4 / 300 MB」）。
+                        // 这里不要再拼第二遍，否则设置页会把同一句话连着显示两遍。
                         UpdateDshUi(
                             UpdateUiActivity.Installing,
                             latest,
                             text,
                             percent,
                             false,
-                            text);
-                        UpdateWindow(null, detail, percent);
+                            String.Empty);
+                        UpdateWindow(null, text, percent);
                     },
                     out installError);
                 if (!installedOk)
@@ -2486,6 +2492,8 @@ namespace DeepSeekHarnessLauncher
                             _settings.DshRoot,
                             _settings.NodePath,
                             installed,
+                            DshUpdateService.ResolveInstallRegistry(_settings),
+                            null,
                             out rollbackError);
                         WriteLog(
                             rolledBack
@@ -2696,6 +2704,11 @@ namespace DeepSeekHarnessLauncher
                     bool newer = DshUpdateService.IsNewer(
                         package,
                         installed);
+                    // 把命中的发布通道带出去，界面上就能显示「v0.1.7-rc.1（next 通道）」，
+                    // 免得用户看到版本号和 npm 上的 latest 对不上时一头雾水。
+                    string channelNote = String.IsNullOrWhiteSpace(package.Channel)
+                        ? String.Empty
+                        : package.Channel + " 通道";
                     UpdateDshUi(
                         newer
                             ? UpdateUiActivity.Available
@@ -2706,7 +2719,7 @@ namespace DeepSeekHarnessLauncher
                             : "已是新版本",
                         0,
                         false,
-                        String.Empty);
+                        channelNote);
                 }
                 finally
                 {
@@ -3126,7 +3139,7 @@ namespace DeepSeekHarnessLauncher
             if (_serviceRunning)
             {
                 WinFormsDialogResult result = WinFormsMessageBox.Show(
-                    "退出大肥鱼Go将同时停止 DSH 服务。是否继续？",
+                    "退出 Dafeiyu-Go 将同时停止 DSH 服务。是否继续？",
                     Constants.Title,
                     WinFormsMessageBoxButtons.OKCancel,
                     WinFormsMessageBoxIcon.Question,
@@ -4187,7 +4200,6 @@ namespace DeepSeekHarnessLauncher
                 }
 
                 _trayMenu.Close();
-                DeveloperCenterServer.Stop();
                 NotificationService.Shutdown();
                 _trayIcon.Dispose();
                 WriteLog("Launcher stopped.");
@@ -4229,7 +4241,7 @@ namespace DeepSeekHarnessLauncher
         public WinUIApiSettingsDialog(string currentApiKey)
         {
             _window = new WinUIWindow();
-            _window.Title = "大肥鱼Go API 设置";
+            _window.Title = "Dafeiyu-Go API 设置";
             _window.AppWindow.IsShownInSwitchers = true;
 
             OverlappedPresenter presenter = _window.AppWindow.Presenter as OverlappedPresenter;
@@ -6224,10 +6236,10 @@ namespace DeepSeekHarnessLauncher
                     .AddText(
                         "已更新 " + count + " 个插件，重启 DSH 后生效。")
                     .AddButton(
-                        new AppNotificationButton("好的")
+                        new AppNotificationButton("重启 DSH")
                             .AddArgument("action", "restart"))
                     .AddButton(
-                        new AppNotificationButton("稍后再说")
+                        new AppNotificationButton("稍后")
                             .AddArgument("action", "later"))
                     .BuildNotification();
                 AppNotificationManager.Default.Show(notification);

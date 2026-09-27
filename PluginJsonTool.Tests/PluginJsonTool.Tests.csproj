@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\PluginJsonTool\JsonOutputBuilder.cs" Link="JsonOutputBuilder.cs" />
+    <Compile Include="..\PluginJsonTool\Models.cs" Link="Models.cs" />
+    <Compile Include="..\PluginJsonTool\PluginRepositoryParser.cs" Link="PluginRepositoryParser.cs" />
+    <Compile Include="..\PluginJsonTool\RepositoryInputParser.cs" Link="RepositoryInputParser.cs" />
+  </ItemGroup>
+</Project>

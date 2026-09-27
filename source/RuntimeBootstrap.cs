@@ -9,11 +9,11 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Dafeiyu-Go")]
 [assembly: AssemblyProduct("Dafeiyu-Go")]
 [assembly: AssemblyCompany("高性能萝卜子鲸鲸有限公司")]
-[assembly: AssemblyDescription("大肥鱼Go，面向 DeepSeek Harness 的 Windows 安装、启动与管理工具。")]
+[assembly: AssemblyDescription("Dafeiyu-Go，面向 DeepSeek Harness 的 Windows 安装、启动与管理工具。")]
 [assembly: AssemblyCopyright("Copyright © 2026 Deepseek/KitamaruRamito")]
-[assembly: AssemblyVersion("1.4.9.1")]
-[assembly: AssemblyFileVersion("1.4.9.1")]
-[assembly: AssemblyInformationalVersion("1.4.9.1")]
+[assembly: AssemblyVersion("1.5.0.0")]
+[assembly: AssemblyFileVersion("1.5.0.0")]
+[assembly: AssemblyInformationalVersion("1.5.0")]
 
 namespace DeepSeekHarnessBootstrap
 {
@@ -40,8 +40,8 @@ namespace DeepSeekHarnessBootstrap
             if (!File.Exists(corePath))
             {
                 MessageBox.Show(
-                    "缺少主程序文件：\r\n" + corePath + "\r\n\r\n请重新解压或重新安装大肥鱼Go。",
-                    "大肥鱼Go",
+                    "缺少主程序文件：\r\n" + corePath + "\r\n\r\n请重新解压或重新安装 Dafeiyu-Go。",
+                    "Dafeiyu-Go",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
                 return 2;
@@ -78,8 +78,8 @@ namespace DeepSeekHarnessBootstrap
             catch (Exception exception)
             {
                 MessageBox.Show(
-                    "启动大肥鱼Go失败：\r\n" + exception.Message,
-                    "大肥鱼Go",
+                    "启动 Dafeiyu-Go 失败：\r\n" + exception.Message,
+                    "Dafeiyu-Go",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
                 return 3;
@@ -178,7 +178,7 @@ namespace DeepSeekHarnessBootstrap
         private static void ShowDependencyError(bool dotNetReady, bool appRuntimeReady)
         {
             string message =
-                "大肥鱼Go缺少运行组件。\r\n\r\n"
+                "Dafeiyu-Go 缺少运行组件。\r\n\r\n"
                 + ".NET 8 Desktop Runtime："
                 + (dotNetReady ? "已安装" : "未安装")
                 + "\r\n"
@@ -194,7 +194,7 @@ namespace DeepSeekHarnessBootstrap
 
             DialogResult result = MessageBox.Show(
                 message,
-                "大肥鱼Go",
+                "Dafeiyu-Go",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning);
             if (result != DialogResult.Yes)

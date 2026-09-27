@@ -341,6 +341,14 @@ namespace DeepSeekHarnessLauncher
                 "Accelerated",
                 "Accelerated",
                 "Official");
+            settings.MirrorSource = NormalizeChoice(
+                settings.MirrorSource,
+                "Auto",
+                "Auto",
+                "ghproxy",
+                "gh-proxy",
+                "ghfast",
+                "jsdelivr");
             settings.PluginSource = NormalizeChoice(
                 settings.PluginSource,
                 "Market",
@@ -364,6 +372,19 @@ namespace DeepSeekHarnessLauncher
                 "Install",
                 "Check",
                 "Off");
+            settings.LauncherChannel = NormalizeChoice(
+                settings.LauncherChannel,
+                "Stable",
+                "Auto",
+                "Stable",
+                "Preview");
+            settings.DshChannel = NormalizeChoice(
+                settings.DshChannel,
+                "Auto",
+                "Auto",
+                "latest",
+                "next",
+                "alpha");
             settings.ProxyMode = NormalizeChoice(
                 settings.ProxyMode,
                 "None",

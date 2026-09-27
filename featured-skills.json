@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "updatedAtUtc": "2026-09-24T00:00:00Z",
+  "note": "启动器「技能 → 官方推荐」页的内容源。改动这个文件并推到 main，装了 1.4.9.2 及以后版本的用户点刷新就能看到。",
+  "items": [
+    {
+      "owner": "anthropics",
+      "repository": "skills",
+      "path": "skills/docx",
+      "name": "docx",
+      "category": "文档与写作",
+      "description": "读写和编辑 Word 文档：解析结构、改样式、按需求重排内容。",
+      "note": "读写和编辑 Word 文档：解析结构、改样式、按需求重排内容。",
+      "order": 0,
+      "defaultBranch": "main"
+    },
+    {
+      "owner": "anthropics",
+      "repository": "skills",
+      "path": "skills/pptx",
+      "name": "pptx",
+      "category": "文档与写作",
+      "description": "生成和修改 PowerPoint 演示文稿，配合模板保持版式统一。",
+      "note": "生成和修改 PowerPoint 演示文稿，配合模板保持版式统一。",
+      "order": 1,
+      "defaultBranch": "main"
+    },
+    {
+      "owner": "anthropics",
+      "repository": "skills",
+      "path": "skills/xlsx",
+      "name": "xlsx",
+      "category": "数据与研究",
+      "description": "读写 Excel 表格：公式、图表、多 sheet 数据的整理与汇总。",
+      "note": "读写 Excel 表格：公式、图表、多 sheet 数据的整理与汇总。",
+      "order": 2,
+      "defaultBranch": "main"
+    },
+    {
+      "owner": "anthropics",
+      "repository": "skills",
+      "path": "skills/pdf",
+      "name": "pdf",
+      "category": "文档与写作",
+      "description": "处理 PDF：抽取文本与表格、切分合并、填写表单。",
+      "note": "处理 PDF：抽取文本与表格、切分合并、填写表单。",
+      "order": 3,
+      "defaultBranch": "main"
+    },
+    {
+      "owner": "oil-oil",
+      "repository": "beautify-github-readme",
+      "path": "skills/beautify-github-readme",
+      "name": "beautify-github-readme",
+      "category": "文档与写作",
+      "description": "整理并设计仓库 README，把项目价值、真实案例和安装方式讲清楚。",
+      "note": "整理并设计仓库 README，把项目价值、真实案例和安装方式讲清楚。",
+      "order": 10,
+      "defaultBranch": "main"
+    },
+    {
+      "owner": "vercel-labs",
+      "repository": "skills",
+      "path": "",
+      "name": "vercel-labs-skills",
+      "category": "开发与调试",
+      "description": "社区技能合集：Web 开发、部署与前端调试相关的成套指令。",
+      "note": "社区技能合集：Web 开发、部署与前端调试相关的成套指令。",
+      "order": 20,
+      "defaultBranch": "main"
+    },
+    {
+      "owner": "addyosmani",
+      "repository": "agent-skills",
+      "path": "",
+      "name": "agent-skills",
+      "category": "开发与调试",
+      "description": "面向编码 Agent 的工程实践技能合集，覆盖重构、测试与评审。",
+      "note": "面向编码 Agent 的工程实践技能合集，覆盖重构、测试与评审。",
+      "order": 21,
+      "defaultBranch": "main"
+    }
+  ]
+}

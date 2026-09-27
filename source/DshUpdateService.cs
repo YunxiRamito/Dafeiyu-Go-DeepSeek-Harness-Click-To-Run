@@ -14,6 +14,10 @@ namespace DeepSeekHarnessLauncher
     {
         public string Version { get; set; }
         public string TarballUrl { get; set; }
+
+        /// <summary>这个版本是从哪个 dist-tag 挑出来的（latest / next / alpha…）。</summary>
+        public string Channel { get; set; }
+
         public DateTimeOffset? PublishedAt { get; set; }
         public Dictionary<string, DateTimeOffset> PublishedTimes { get; } =
             new Dictionary<string, DateTimeOffset>(
@@ -25,7 +29,6 @@ namespace DeepSeekHarnessLauncher
         private const string PackageName = "@deepseek-ai/dsh";
         private const int DownloadTimeoutMs = 600000;
         private const int DownloadBufferSize = 81920;
-        private const double ExpectedDshSizeMb = 230.0;
         private const string AcceleratedRegistry =
             "https://registry.npmmirror.com/@deepseek-ai/dsh";
         private const string OfficialRegistry =
@@ -110,10 +113,6 @@ namespace DeepSeekHarnessLauncher
                                 "dist-tags",
                                 out distTags)
                             || distTags.ValueKind != JsonValueKind.Object
-                            || !distTags.TryGetProperty(
-                                "latest",
-                                out JsonElement latestElement)
-                            || latestElement.ValueKind != JsonValueKind.String
                             || !document.RootElement.TryGetProperty(
                                 "versions",
                                 out versions)
@@ -123,7 +122,20 @@ namespace DeepSeekHarnessLauncher
                             return null;
                         }
 
-                        string latest = latestElement.GetString();
+                        // 只看 dist-tags.latest 会漏掉别的通道：DSH 的 latest 长期停在
+                        // 0.1.5-rc.3，更新的 0.1.7-rc.1 挂在 next 上，于是永远显示
+                        // 「已是最新」。把所有 tag 都当候选，按语义化版本取最高的。
+                        string channel;
+                        string latest = SelectNewestVersion(
+                            distTags,
+                            versions,
+                            settings == null ? null : settings.DshChannel,
+                            out channel);
+                        if (String.IsNullOrWhiteSpace(latest))
+                        {
+                            error = "DSH 更新源没有返回任何可用版本。";
+                            return null;
+                        }
                         JsonElement latestPackage;
                         if (String.IsNullOrWhiteSpace(latest)
                             || !versions.TryGetProperty(
@@ -151,6 +163,7 @@ namespace DeepSeekHarnessLauncher
                         DshUpdatePackage package = new DshUpdatePackage
                         {
                             Version = latest,
+                            Channel = channel,
                             TarballUrl = tarball.GetString()
                         };
                         ReadPublishedTimes(
@@ -167,6 +180,77 @@ namespace DeepSeekHarnessLauncher
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// 从 npm 的 dist-tags 里挑要装的版本。
+        /// <para>
+        /// 以前只读 <c>dist-tags.latest</c>，而 DSH 的 latest 长期停在 0.1.5-rc.3，
+        /// 更新的 0.1.7-rc.1 挂在 next 上——于是永远显示「已是最新」。
+        /// 现在：用户指定通道就用那个 tag 的版本；选「自动」时取所有 tag 里
+        /// 语义化版本最高的那个。指定通道不存在时退回自动，不因为 tag 改名就整
+        /// 个检查失败。
+        /// </para>
+        /// </summary>
+        private static string SelectNewestVersion(
+            JsonElement distTags,
+            JsonElement versions,
+            string preferredChannel,
+            out string selectedChannel)
+        {
+            selectedChannel = null;
+
+            if (!String.IsNullOrWhiteSpace(preferredChannel)
+                && !String.Equals(
+                    preferredChannel,
+                    "Auto",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                JsonElement tagged;
+                if (distTags.TryGetProperty(preferredChannel, out tagged)
+                    && tagged.ValueKind == JsonValueKind.String)
+                {
+                    string taggedVersion = tagged.GetString();
+                    JsonElement taggedPackage;
+                    if (!String.IsNullOrWhiteSpace(taggedVersion)
+                        && versions.TryGetProperty(taggedVersion, out taggedPackage)
+                        && taggedPackage.ValueKind == JsonValueKind.Object)
+                    {
+                        selectedChannel = preferredChannel;
+                        return taggedVersion;
+                    }
+                }
+            }
+
+            string best = null;
+            foreach (JsonProperty tag in distTags.EnumerateObject())
+            {
+                if (tag.Value.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                string candidate = tag.Value.GetString();
+                if (String.IsNullOrWhiteSpace(candidate))
+                {
+                    continue;
+                }
+
+                JsonElement candidatePackage;
+                if (!versions.TryGetProperty(candidate, out candidatePackage)
+                    || candidatePackage.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                if (best == null || UpdateSupport.IsNewer(candidate, best))
+                {
+                    best = candidate;
+                    selectedChannel = tag.Name;
+                }
+            }
+
+            return best;
         }
 
         internal static bool IsNewer(
@@ -406,6 +490,23 @@ namespace DeepSeekHarnessLauncher
             Action<string, double> progress,
             out string error)
         {
+            return InstallVersion(
+                dshRoot,
+                nodePath,
+                version,
+                null,
+                progress,
+                out error);
+        }
+
+        internal static bool InstallVersion(
+            string dshRoot,
+            string nodePath,
+            string version,
+            string registry,
+            Action<string, double> progress,
+            out string error)
+        {
             if (String.IsNullOrWhiteSpace(version))
             {
                 error = "DSH 更新参数不完整。";
@@ -416,8 +517,27 @@ namespace DeepSeekHarnessLauncher
                 dshRoot,
                 nodePath,
                 PackageName + "@" + version,
+                registry,
                 progress,
                 out error);
+        }
+
+        /// <summary>
+        /// npm install 该用哪个 registry。大陆 CDN 线路套 npmmirror，官方线路不套第三方镜像
+        /// （与「大陆 CDN / 官方源严格分流」的规则一致）。
+        /// <para>
+        /// 这一步以前完全不传 registry，于是国内用户是在直连 registry.npmjs.org 装
+        /// 500MB 依赖——实测虚拟机上跑了 8 分钟还没结束，看着像卡死。
+        /// </para>
+        /// </summary>
+        internal static string ResolveInstallRegistry(LauncherSettings settings)
+        {
+            bool official = settings != null
+                && String.Equals(
+                    settings.UpdateSource,
+                    "Official",
+                    StringComparison.OrdinalIgnoreCase);
+            return official ? null : "https://registry.npmmirror.com";
         }
 
         internal static bool InstallPackage(
@@ -431,6 +551,7 @@ namespace DeepSeekHarnessLauncher
                 nodePath,
                 packagePath,
                 null,
+                null,
                 out error);
         }
 
@@ -438,6 +559,23 @@ namespace DeepSeekHarnessLauncher
             string dshRoot,
             string nodePath,
             string packagePath,
+            Action<string, double> progress,
+            out string error)
+        {
+            return InstallPackage(
+                dshRoot,
+                nodePath,
+                packagePath,
+                null,
+                progress,
+                out error);
+        }
+
+        internal static bool InstallPackage(
+            string dshRoot,
+            string nodePath,
+            string packagePath,
+            string registry,
             Action<string, double> progress,
             out string error)
         {
@@ -452,6 +590,7 @@ namespace DeepSeekHarnessLauncher
                 dshRoot,
                 nodePath,
                 packagePath,
+                registry,
                 progress,
                 out error);
         }
@@ -460,6 +599,7 @@ namespace DeepSeekHarnessLauncher
             string dshRoot,
             string nodePath,
             string packageSpec,
+            string registry,
             Action<string, double> progress,
             out string error)
         {
@@ -484,6 +624,10 @@ namespace DeepSeekHarnessLauncher
                 + Quote(packageSpec)
                 + " --prefix " + Quote(dshRoot)
                 + " --no-audit --no-fund --progress=true --loglevel=http";
+            if (!String.IsNullOrWhiteSpace(registry))
+            {
+                installArguments += " --registry=" + Quote(registry);
+            }
             if (!String.IsNullOrWhiteSpace(npmCli))
             {
                 fileName = nodePath;
@@ -614,8 +758,17 @@ namespace DeepSeekHarnessLauncher
 
         private sealed class NpmInstallProgress : IDisposable
         {
+            /// <summary>
+            /// 一次升级大致会往 node_modules 里净增多少 MB。
+            /// 实测 0.1.5-rc.3 → 0.1.7-rc.2：223MB 涨到 504MB，净增约 281MB。
+            /// 以前把「总大小 230MB」当分母，于是升级一开始就报 223 / 230，
+            /// 装到后面又出现 503.8 / 230 这种自相矛盾的读数。
+            /// </summary>
+            private const double ExpectedGrowthMb = 300.0;
+
             private readonly Action<string, double> _report;
             private readonly string _modulesDirectory;
+            private readonly double _baselineMb;
             private readonly DateTime _startedUtc = DateTime.UtcNow;
             private readonly object _gate = new object();
             private readonly Timer _timer;
@@ -631,6 +784,9 @@ namespace DeepSeekHarnessLauncher
                 _modulesDirectory = Path.Combine(
                     dshRoot ?? String.Empty,
                     "node_modules");
+                // 升级是替换不是从零装：先量一份基线，之后只看净增了多少，
+                // 否则进度条会在还没开始写的时候就冲到 90%。
+                _baselineMb = DirectorySizeMb(_modulesDirectory);
                 if (_report != null)
                 {
                     _timer = new Timer(
@@ -659,7 +815,7 @@ namespace DeepSeekHarnessLauncher
                             " packages",
                             StringComparison.OrdinalIgnoreCase) >= 0)
                 {
-                    Publish(true, "正在完成安装", 97);
+                    Publish(true, "安装中 · 正在完成安装", 97);
                     return;
                 }
 
@@ -692,10 +848,16 @@ namespace DeepSeekHarnessLauncher
                 double elapsedSeconds =
                     Math.Max(0.0, (DateTime.UtcNow - _startedUtc).TotalSeconds);
                 double sizeMb = DirectorySizeMb(_modulesDirectory);
+                double growthMb = Math.Max(0.0, sizeMb - _baselineMb);
+
+                // 从 0 起步：进度只由「这次净增了多少」驱动。
                 double sizeProgress =
-                    5.0 + Math.Min(0.95, sizeMb / ExpectedDshSizeMb) * 90.0;
-                double timeProgress =
-                    5.0 + 90.0 * (1.0 - Math.Exp(-elapsedSeconds / 90.0));
+                    Math.Min(0.94, growthMb / ExpectedGrowthMb) * 94.0;
+                // 时间兜底放慢到 300 秒的时间常数、并压在 90% 以内。
+                // 原来 90 秒就跑满 95%，慢机器上会一直贴着 95% 看着像卡死。
+                double timeProgress = Math.Min(
+                    90.0,
+                    88.0 * (1.0 - Math.Exp(-elapsedSeconds / 300.0)));
                 double percent = percentOverride >= 0
                     ? percentOverride
                     : Math.Max(sizeProgress, timeProgress);
@@ -707,17 +869,31 @@ namespace DeepSeekHarnessLauncher
                 string detail = detailOverride;
                 if (String.IsNullOrWhiteSpace(detail))
                 {
-                    detail = sizeMb < 0.5
-                        ? "正在初始化 npm，可能需要一些时间"
-                        : "正在部署 DSH 核心 "
-                            + sizeMb.ToString(
+                    if (growthMb < 1.0)
+                    {
+                        detail = "安装中 · 正在进行准备工作";
+                    }
+                    else if (growthMb <= ExpectedGrowthMb)
+                    {
+                        detail = "安装中 · 部署 DSH 核心 "
+                            + growthMb.ToString(
                                 "0.0",
                                 CultureInfo.InvariantCulture)
                             + " / "
-                            + ExpectedDshSizeMb.ToString(
+                            + ExpectedGrowthMb.ToString(
                                 "0",
                                 CultureInfo.InvariantCulture)
                             + " MB";
+                    }
+                    else
+                    {
+                        // 超出预估就只报实际写入量，不再出现 503.8 / 300 这种读数。
+                        detail = "安装中 · 部署 DSH 核心 已写入 "
+                            + growthMb.ToString(
+                                "0.0",
+                                CultureInfo.InvariantCulture)
+                            + " MB";
+                    }
                 }
 
                 lock (_gate)

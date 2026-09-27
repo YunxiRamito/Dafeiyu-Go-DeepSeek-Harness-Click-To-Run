@@ -325,21 +325,14 @@ namespace DeepSeekHarnessLauncher
             out string error)
         {
             error = null;
-            bool official = settings != null
-                && String.Equals(
-                    settings.UpdateSource,
-                    "Official",
-                    StringComparison.OrdinalIgnoreCase);
-            string raw = "https://raw.githubusercontent.com/"
-                + Repository + "/main/" + RemotePath;
-            string jsdelivr = "https://cdn.jsdelivr.net/gh/"
-                + Repository + "@main/" + RemotePath;
-            string[] urls = official
-                ? new[] { raw, jsdelivr }
-                : new[] { jsdelivr, raw };
+            List<string> urls = GitHubAccelerator.RawCandidates(
+                Repository,
+                "main",
+                RemotePath,
+                settings);
 
             List<string> failures = new List<string>();
-            for (int index = 0; index < urls.Length; index++)
+            for (int index = 0; index < urls.Count; index++)
             {
                 try
                 {
@@ -352,7 +345,14 @@ namespace DeepSeekHarnessLauncher
                     request.ReadWriteTimeout = 20000;
                     request.AutomaticDecompression =
                         DecompressionMethods.GZip | DecompressionMethods.Deflate;
-                    ProxySupport.Apply(request);
+                    if (settings != null)
+                    {
+                        ProxySupport.Apply(request, settings);
+                    }
+                    else
+                    {
+                        ProxySupport.Apply(request);
+                    }
                     using (WebResponse response = request.GetResponse())
                     using (Stream stream = response.GetResponseStream())
                     using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))

@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "updatedAtUtc": "2026-09-23T16:41:52.4345822Z",
+  "items": [
+    {
+      "owner": "psf",
+      "repository": "requests",
+      "description": "A simple, yet elegant, HTTP library.",
+      "language": "Python",
+      "license": "Apache-2.0",
+      "pushedAt": "2026-09-21T20:22:36Z",
+      "category": "开发辅助",
+      "version": "611c616",
+      "stars": 54337,
+      "verified": false,
+      "defaultBranch": "main",
+      "installStatus": "recognized",
+      "selectedSpecifier": "github:psf/requests#611c6162cbc4ac2020a2f91c7cfa4f3abf9bbb60",
+      "selectedSource": "github",
+      "installCandidates": [
+        {
+          "source": "github",
+          "target": "psf/requests",
+          "action": "add",
+          "specifier": "github:psf/requests#611c6162cbc4ac2020a2f91c7cfa4f3abf9bbb60",
+          "executable": true,
+          "evidenceSource": "manual"
+        }
+      ],
+      "sourceSha": "",
+      "imageUrl": "https://avatars.githubusercontent.com/u/50630501?v=4",
+      "note": "A simple, yet ",
+      "order": 1
+    }
+  ]
+}

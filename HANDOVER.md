@@ -7,7 +7,146 @@
 > 当前启动器工作版本为 `1.4.9.1`。本文件只描述当前有效状态、操作流程、风险和下一步，
 > 不再保留 1.3.x 历史开发记录。
 
-最后更新：2026-09-23
+最后更新：2026-09-24
+
+---
+
+## 1.4.10 本轮交接：技能中心 + 开发者中心 + 主页公告（2026-09-27）
+
+代码已完成、本地构建通过；逻辑测试 107 项离线全绿（联网那轮 66 项另算），界面自检见下面「本轮验证」。
+**版本号还没升，CHANGELOG 里这一节标的是「未发布」**。发版前先确认版本号，再走父级 `set-version.ps1` + `release-all.ps1`。
+
+### 新增文件
+
+| 文件 | 作用 |
+|------|------|
+| `source/SkillsModels.cs` | `SkillEntry` / `SkillRootInfo` / `SkillInstallRecord` / `SkillCardItem`（技能卡片数据形状） |
+| `source/SkillStore.cs` | 技能根解析、扫本地技能、frontmatter 解析、启停（`SKILL.md` ⇄ `SKILL.md.disabled`）、删除进回收站、`SkillInstalls.json` |
+| `source/SkillMarketService.cs` | 在线目录：GitHub topic 搜索 → 递归 tree 找 `SKILL.md` → raw 拉 frontmatter；4 小时磁盘缓存；单仓库读取 |
+| `source/SkillInstallService.cs` | 整仓库 tar.gz 下载 → 解压 → 只复制目标技能目录 → 写安装记录；覆盖安装带备份回滚 |
+| `source/SkillUpdateService.cs` | 用 `SkillInstalls.json` 的 `pushedAt` 对比在线目录，产出可更新项 |
+| `source/FeaturedSkillService.cs` | 官方推荐：远端 `featured-skills.json` → 本地缓存 → 内置兜底 |
+| `featured-skills.json` | 仓库根目录，推荐页的内容源 |
+| `source/FeaturedAdminService.cs` | 开发者页的仓库读写：Contents API 读文件 / 带 sha 提交 / 从仓库导入插件与技能 / 把接口错误翻成人话 |
+| `source/DeveloperCenterModels.cs` | `DeveloperEntryCard`（卡片：`Kind` + 序号 + 标题 + 副标题 + 原索引） |
+| `source/GitHubAccelerator.cs` | 加速前缀池的唯一出处：按「在线源」档位把 GitHub 地址展开成候选（raw / 资产 / 归档 / 检索），API 恒直连 |
+| `source/AnnouncementService.cs` | 主页公告：远端 `announcements.json` → 本地缓存 → 内置兜底；解析 / 序列化 / 排序 / 已读判断 |
+| `source/ChangelogService.cs` | 关于页更新日志：GitHub Release → `CHANGELOG.md` 同名小节 → 本地缓存；Markdown 小节抽取 |
+| `source/AcceleratorLatency.cs` | 加速源延迟测速与落盘（`AcceleratorProbe.json`），给「自动」排序和「高级设置」面板用 |
+| `announcements.json` | 仓库根目录，主页公告栏的内容源（schemaVersion 1） |
+
+**删掉的文件**：`source/DeveloperCenterServer.cs`（1300 行的本地 `HttpListener` 后台：`127.0.0.1:8788`、10 条路由、内嵌 HTML 页面、设备码登录、角色判定）——整条链路换成设置窗口里的开发者页 + GitHub Contents API。
+
+### 改动过的文件
+
+| 文件 | 改动 |
+|------|------|
+| `source/LauncherSettings.cs` | 新增 `SkillRoots`、`LauncherChannel`、`DshChannel`、`LastSeenAnnouncementId` |
+| `source/LauncherSettingsStore.cs` | `Normalize` 接受新字段的取值（Stable/Preview；Auto/latest/next/alpha） |
+| `source/DshUpdateService.cs` | 新增 `DshUpdatePackage.Channel` 与 `SelectNewestVersion`；不再只读 `dist-tags.latest` |
+| `source/UpdateSupport.cs` | 清单地址按通道解析：预览版优先 `manifest-preview.json`，缺失时退回 `manifest.json`；资产镜像改走 `GitHubAccelerator` |
+| `source/FeaturedSkillService.cs`、`FeaturedPluginService.cs`、`SkillMarketService.cs`、`PluginStoreService.cs`、`SkillInstallService.cs` | raw / 归档候选统一交给 `GitHubAccelerator`；顺手补上插件推荐读取时漏传的代理设置 |
+| `source/SettingsWindow.xaml` | 技能页（三页签 + 详情弹窗）；**更新页整体重排**；**开发者页**（模块列表 + 推荐管理 + 公告模块 + 下载源/权限预留）；**主页**（欢迎卡 + 三格状态 + 公告栏 + 快捷入口）；**关于页更新日志卡**；`assets/SettingsNavIcons*/skills.svg`、`home.svg` |
+| `source/SettingsWindow.xaml.cs` | 技能页全部交互；更新页通道与摘要；代理就绪闸门；开发者页交互（含公告增删改与发布）；主页状态与公告；关于页更新日志；默认落地页改为「主页」 |
+| `source/WinUIProgram.cs` | DSH 检查结果带上命中的发布通道；去掉 `DeveloperCenterServer` 的启动与停止 |
+| `CHANGELOG.md` | 新增 1.4.10 小节（技能中心 / 开发者中心 / 主页与公告 / 加速源） |
+
+### 关键设计约定（改这块前先读）
+
+1. **技能根**：`<dshRoot>\.dsh\skills`（写入首选）、`%USERPROFILE%\.agents\skills`、`LauncherSettings.SkillRoots` 里用户自己加的目录。DSH 只认根下一层，嵌套 `**/SKILL.md` 不扫，我们也不扫。
+2. **停用不是删除**：`SKILL.md` 改名成 `SKILL.md.disabled`，DSH 的 watcher 下一步就把它从目录里摘掉，资源一个不动。
+3. **删除是挪走**：整目录或单个 md 挪到 `%LocalAppData%\DeepSeekHarness\skills-trash\<时间戳>-<名字>`，永远可以捞回来。
+4. **在线目录靠 tree 不靠整包**：一次 `/git/trees/<branch>?recursive=1` 列出全部 `SKILL.md`，简介再由 `raw.githubusercontent.com`（不占 API 配额）并发补齐。
+5. **GitHub API 恒走 `api.github.com`**：第三方加速域名对搜索/tree 不稳定；线路差异只体现在 raw 与 tarball 的候选地址上。所有请求都接 `ProxySupport.Apply(request, settings)`。
+6. **只有启动器装的技能能检查更新**：靠 `SkillInstalls.json` 里的 `pushedAt` 对比，手工放进技能根的技能没有来源，只会提示「不是启动器装的」。
+7. **推荐页内容源是仓库根 `featured-skills.json`**：`schemaVersion` 必须为 1，字段 `owner/repository/path/name/description/category/note/order/defaultBranch`。远端拿不到时不写缓存，继续回退内置列表——这样下次启动还会重试远端。
+8. **压缩包来源走 `LocalArchive`**：`SkillMarketItem.LocalArchive` 非空时 `Install` 直接转 `InstallFromArchive`，不碰 GitHub；解压按文件头 `1F 8B` 嗅探 tar.gz、否则当 zip，后缀写错也认。落地逻辑统一在 `PlaceSkill`，GitHub 与压缩包两条链共用。
+9. **更新通道是两个开关，不是一个**：启动器用 `LauncherChannel`（Stable→`manifest.json`，Preview→`manifest-preview.json`，缺失自动退回），DSH 用 `DshChannel`（Auto 取所有 npm tag 里版本最高的，也可钉住 `latest`/`next`/`alpha`）。**DSH 的 npm `latest` 不等于最新版**，只读它就会漏掉挂在 `next` 上的版本。
+10. **RadioButtons 不要写死 `SelectedIndex`**：控件首次布局会按内部索引重排选中项，触发一次 `SelectionChanged`。代理设置曾经因此被覆盖成「不使用代理」——`SelectRadioByTag` 现在同时设置 `SelectedIndex` 和 `SelectedItem`，`SaveProxySettings` 也要等 `_proxyUiReady` 才允许落盘。
+11. **软件内产品名一律写 `Dafeiyu-Go`**（英文 + 空格 + 用途，例如「Dafeiyu-Go 设置」）。中文名只留在仓库名、发布说明和文档里；改文案时不要写回中文名。
+12. **技能卡片只放条目自身的信息**：分类可以留；Stars、编程语言、「套装 N 个技能」都是仓库级数据，同一个仓库几十条技能会每张卡重复一遍，已经移除，改放详情弹窗。图标用 GitHub 头像（本地技能读自己目录的 icon / logo）。
+13. **「优先显示中文内容」的判定不能看分类**：分类是启动器自己写的中文标签，算进去会让全体条目都命中，排序等于没生效。只看名字、简介和仓库路径。
+14. **DSH 更新进度的分母是「净增」，不是「总大小」**：升级是替换不是从零装。必须先在开始时量一份 `node_modules` 基线，进度只由 delta 驱动；`NpmInstallProgress.ExpectedGrowthMb = 300`（实测 223MB → 504MB，净增约 281MB）。拿总大小当分母就会出现「一开始 223/230」和「后面 503.8/230」两个假读数。
+15. **npm install 必须带 registry**：`ResolveInstallRegistry` 在大陆 CDN 线路返回 npmmirror，官方线路返回 null（不套第三方镜像）。不带的话国内是直连 registry.npmjs.org 装 500MB 依赖——虚拟机上实测 8 分钟没结束，看起来就是卡死。
+16. **技能目录是两段式并发**：先并发拉各仓库 git tree（8 线程，一仓库一请求），再统一并发补 raw frontmatter（16 线程）。**别在 tree 线程内部各自再开 raw 线程**，那是 8×8=64 个瞬时请求，会被 GitHub 限速反而更慢。匿名 API 额度只有 60 次/小时，一次全量目录要约 45 次请求，所以 4 小时磁盘缓存和「写入 Token」提示都不是可选项。
+17. **下载进度不能依赖总长度**：镜像/加速源常用 chunked，`TotalBytesToReceive` 会是 -1。任何 `DownloadProgressChanged` 的处理都要在 total 未知时改用「已下载量」的单调曲线（插件 2%→70%、技能 8%→82% 各自的分段），否则进度条会卡死在起始值而文案照常跳。
+18. **文案标准（本仓库沿用）**：砍半再砍半、信息前置、用户视角、按钮用动词。具体到落地：描述不超过约 22 字；按钮禁止「确定/是/好的」（用「关闭/重启 DSH/稍后」）；空列表写成「还没有 X，去 Y 装一个」；错误文案是「发生了什么 + 怎么办」，不要重复标题里已有的「XX 失败」，技术细节进日志。
+19. **开发者页是模块拼装**：左边 `DeveloperModuleList` 的列表项 `Tag` 对应右边一个面板，代码里 `DeveloperPanels()` 登记 `(Tag / 标题 / 面板)`。加板块 = XAML 加一条列表项 + 一个 `x:Name="Developer<X>Panel"` 面板 + 代码模块表加一项，`SelectPage("Developer")` 会自动显示并加载。**面板必须是 `SettingsContentHost` 的直接子级（20 格缩进）**：塞进别的页面里会被那个页面的 `Collapsed` 连带压成 0×0，页面看起来就是一片空白（这个坑踩过一次，诊断日志里 `W=0 H=0`）。
+20. **开发者页写仓库靠 Token，不靠登录**：没有本地服务、没有网页、没有设备码。`FeaturedAdminService.Publish` 每次发布前重新 GET 一次 sha 再 PUT，避免两边同时改文件撞 409；读的时候如果 Token 被 GitHub 拒（401 Bad credentials），自动匿名重读一次并在 InfoBar 提示换 Token——公开仓库的读取不该被一个过期 Token 卡死。
+21. **加速看档位，不看地域**：`GitHubAccelerator.IsEnabled` 只认设置里的「在线源」——加速源就把 GitHub 地址展开成「镜像在前、官方垫底」的候选，官方源就只给官方地址。以前按 `RegionInfo.IsChinaMainland` 判断，海外的用户选了加速源也吃不到加速，国内用户想走官方源也甩不掉镜像。**唯一例外是 `api.github.com` / `uploads.github.com`**：第三方域名对 API 不稳定，带 Token 的请求也不该交给第三方。前缀池只有 `GitHubAccelerator.Prefixes` 一份，别再各自维护数组。
+
+    **候选顺序是实测出来的，别凭感觉换**（2026-09-27 虚拟机 `192.168.188.130` 实测，只要响应头）：
+
+    | 地址 | 结果 |
+    |------|------|
+    | `codeload.github.com/.../tar.gz/...` | ✅ 0.65~0.84s（不跳转，最稳） |
+    | `ghproxy.net/<github 归档或 raw>` | ✅ 归档 2.7s / raw 0.95s |
+    | `gh-proxy.com/<...>` | ✅ 归档 2.8s / raw 1.6s |
+    | `ghfast.top/<...>` | ❌ 每次都是超时 |
+    | `github.com/.../archive/...`（直连） | ❌ 超时 |
+    | `cdn.jsdelivr.net/gh/...`（raw） | ❌ 超时（但别的线路它更快，所以留在第二位） |
+    | `raw.githubusercontent.com`（直连） | ❌ 超时 |
+
+    所以**归档候选 = `codeload → 镜像 → 直连`**，**raw 候选 = 镜像（按优先级）→ 直连**。踩过的坑：把 `codeload` 排到直连归档后面，装技能包要先等两条死路走完，看起来就是「下载不动」。
+
+22. **加速源可以自选，默认自动**：`LauncherSettings.MirrorSource`（`Auto` / `ghproxy` / `gh-proxy` / `ghfast` / `jsdelivr`）对应 `GitHubAccelerator.Sources` 里那四个源。规则就两条：
+    - **自动**：启动时测一轮（`AcceleratorLatencyWatcher.Start` + `MeasureInBackground`），**网络环境一变再测一轮**（`NetworkChange` 的网络可用性/地址变化，以及用户在设置里换代理时手工叫一次 `NetworkChanged`，10 秒防抖），`OrderedSourceIds` 按**实测延迟升序**排候选；归档的第一位固定是 `codeload`（它不是镜像、实测最快，不参与源排序）。
+    - **自选**：选中的源排第一，其余保持默认顺序兜底，**不再按延迟做任何自动重排** —— 用户选了就听用户的，哪怕它比别人慢。
+    界面在常规页「在线引擎」那一行左边（`高级设置` 按钮 → `AcceleratorAdvancedPanel`），单选框文案由 `RebuildAcceleratorSourceOptions` 填成「名字 · 0.9 秒 / 超时 / 还没测」。**「大陆 CDN 加速」和「自动」是同一个档位**，`SyncAcceleratorControls` 负责两边对上：自动 → 下拉是「大陆 CDN 加速」；钉了具体源 → 下拉就地变「自定义」（`ComboBoxItem.Tag="Custom"`，读出来还要折算回 `UpdateSource="Accelerated"`，别把 Custom 写进设置）；选「官方源」→ `高级设置` 按钮整个藏起来。**`ComboBox` / `RadioButtons` 的程序化选中都会触发 `SelectionChanged`**，重建时要先关掉 `_acceleratorUiReady` 再选、选完再打开 —— 跟代理那套 `_proxyUiReady` 是同一个坑。
+23. **下载前必须探活**：`TimeoutWebClient` 里 `request.Timeout` 只管握手、`ReadWriteTimeout` 管下载中，所以一个「连上了但不吐数据」的镜像会把整条下载吊到下载超时为止，进度条一动不动。`GitHubAccelerator.Probe(url, settings, 15000)` 只等响应头、不读正文，不通过就换下一个候选；插件和技能安装的候选循环都要先过这一步。
+24. **主页公告和更新日志都是「远端 → 缓存 → 兜底」三级**：`announcements.json` 与 `Changelog.json` 各自缓存在 `%LocalAppData%\DeepSeekHarness`。主页先同步读缓存立刻出内容（`forceRefresh=false` 只读缓存，**不要在这条路上发网络请求**，否则会卡 UI 线程），再后台 `forceRefresh=true` 刷远端；更新日志的缓存带版本号，版本对不上就丢掉重取，免得显示上一个版本的说明。公告正文里的 `order` 就是文件数组顺序，开发者页「上移 / 下移」改的也是它，两个页面看到的顺序才会一致；置顶永远压在非置顶上面。
+25. **开发者页三个列表共用一套卡片模板与按钮**：按钮只能靠 `DeveloperEntryCard.Kind`（plugin / skill / announce）判断该动哪份数据。**不要按「当前选中哪个页签」分派**——公告模块下页签状态还是「技能推荐」，会误改技能列表（这个 bug 真出现过）。
+26. **下载一律走 `DownloadSupport.Download`**（插件包、技能包）：4 线程分片（服务端不支持 `Range` 就用探测结果退回单线程）、每个分片单独落 `.partN`、失败带 `Range` 续传（每片 2 次）、下完拼成一个文件再删临时文件。进度是真进度：
+    - **不要再用同步 `WebClient.DownloadFile`** —— 它根本不触发 `DownloadProgressChanged`，界面只能等下载结束才从 0 跳到 100（用户报的「有进度但不显示、直接跳完了」就是这个）。现在自己读流、每 80KB 报一次。
+    - 界面文案：按钮只放动词（`ProgressActionLabel` 取第一个空格前的词），速度和体积进 InfoBar（`1.2 MB/s · 8.4 MB / 24.0 MB`；总长未知时 `1.2 MB/s · 已收 8.4 MB`）。
+    - **停滞看门狗**：20 秒没有新字节就 Abort 当前候选。`request.Timeout` 只管握手、`ReadWriteTimeout` 管单次读；把 3 分钟的下载预算塞进 `ReadWriteTimeout` 会出现「连得上、响应头秒回、正文不吐数据」的镜像吊满 3 分钟（虚拟机日志实测一条候选卡了 6 分 18 秒）。
+27. **技能卡片的三个坑**：星星的可见性看的是 `Stars`（文案），`StarsCount` 只是数据 —— 只塞 `StarsCount` 就永远不显示；仓库头像走加速档位（`SkillAvatar`），`github.com/<owner>.png` 国内直连经常超时；「只看中文内容」必须是**真过滤**（`IsLocalLanguageCard`），只把中文顶到前面的话用户翻两页就以为没生效。
+28. **插件市场的「已验证」必然命中全部**：市场 API 自己写着 `stats.verified == fetched`（2026-09-27 实测 2500/2500，每条 `validation.overall == "verified"`），也就是市场只出版验证过的插件。所以筛选必须给解释文案 + 一个「未验证」选项，并提示「想看未验证的把插件来源切成 GitHub」—— 不然会被当成筛选坏了。
+
+### 本轮验证
+
+- `build-winui.ps1` 等价命令发布通过（注意：本机 XAML 编译器需要 cmd.exe 管道，受限沙箱会报 `Win32Exception (5) 拒绝访问`，用完整权限跑）。
+- 临时控制台工程复用生产源码，绕过 WinUI 跑真实逻辑：
+  - 扫描/解析/启停/删除/安装记录：通过（含 `>` 与 `|` 块标量、嵌套目录不扫、停用往返）。
+  - 在线目录：160 条技能 / 40 个仓库，缓存命中一致。
+  - 安装：子目录安装、references 一起复制、覆盖安装、无 `SKILL.md` 报错，全部通过。
+  - 更新：判定有新版本 → 覆盖安装 → `pushedAt` 刷新 → 再查无更新 → 手放技能不参与，全部通过。
+  - 推荐：远端 404 时回退内置 7 条，且能直接安装，全部通过。
+  - 压缩包：输入识别、多技能 zip 列表 + 按子目录安装 + 只复制目标目录、单技能自动定位、tar.gz 安装、空包报错，全部通过。
+  - DSH 通道：打真 registry，Auto→`0.1.7-rc.1`(next)、latest→`0.1.5-rc.3`、next→`0.1.7-rc.1`、alpha→`0.1.7-alpha.2`、不存在的 tag 自动退回 Auto，全部通过。
+- 用 `--settings-preview=<页>` 起真窗口做了界面自检（只按自己启动的 PID 取窗口，避免误伤用户自己的启动器）：
+  - 技能页三个分页、160 条在线目录、卡片与分页控件渲染正常。
+  - 代理设置：把配置改成 `Custom` 起窗，修前 1 秒后会被写成 `None`，修后保持不变；再用 UI Automation 真点「系统代理 / 自定义代理 / 不使用代理」，三次都正确落盘。
+  - 更新页：控件清单确认新的四张卡、两个通道下拉、三行「当前版本 · 通道」摘要都在；窗口标题与页眉显示为 `Dafeiyu-Go 设置`；两个通道默认都是「正式版」，启动器通道置灰。
+  - 进度条相位：`--settings-preview=Updates:Installing` 下按钮显示「更新中」、进度文本为「下载中 12.4 MB / 230 MB · 请不要关闭软件」。
+  - 技能卡片：UI Automation 清单确认星星、语言标签、「套装 N 个技能」都已消失。
+- **没验到的**：技能卡片的头像图标只做了代码层设置，因为截图时用户的其它窗口一直占着前台，没能目视确认；卡片图标走的是插件页同一套模板，插件页的头像是正常显示的。
+- 开发者页（`--settings-preview=Developer`，UI Automation 逐个选中模块）：模块清单 4 项都在，四个面板各自渲染出自己的内容；推荐管理读到远端 `featured-plugins.json` 的 4 条并渲染成「序号 + 仓库 + 分类 + 备注 + 编辑/移除」；公告模块在远端还没有 `announcements.json` 时显示「还没有公告。点「新增」写一条。」；点「新增」能弹出公告编辑弹窗（标题 / 正文 / 标签 / 日期 / 置顶 / 详情链接 / 保存 / 取消，日期默认今天）。修前这一整页空白，原因是 `DeveloperPage` 被嵌在「关于」页里面。
+- 主页与关于页（`--settings-preview=Home`）：主页渲染出欢迎卡（`启动器 1.4.9.1 · DSH v0.1.5-rc.3`）、三格状态（DSH 服务 / 启动器 / DSH 本体）、公告卡与四个快捷入口；切到「关于」后更新日志卡显示 `v1.4.9.1 · 来自 GitHub Release` 并渲染出发布说明正文。
+- 逻辑自测（`G:\DeepSeek DSH\DSH Works\.ui-check\full-test`，直接编译生产源码 + 最小 shim，`dotnet run -- --online`）：**离线 62 项、联网 66 项全绿**。覆盖加速器候选展开与档位开关、公告解析/容错/序列化往返/排序/缓存、更新日志小节抽取与版本失配丢弃、候选去重；联网那轮实测 GitHub Release 命中 `v1.4.9.1`（606 字发布说明），远端还没有 `announcements.json` 时正确回落到内置三条。
+- 自测里发现的两件事：`ghfast.top` 连续超时（已挪到池子最后）；`ghproxy.net` / `gh-proxy.com` / `jsDelivr` 都能正常拿到本仓库的 404/内容，说明路由是通的。
+- **加速候选顺序回归（虚拟机实测定位）**：第一版加速改写把归档的 `codeload` 排到了直连 `github.com/.../archive` 后面。虚拟机日志里旧行为是 `ghproxy 失败 → ghfast 超时 → codeload 成功`，改完还要多走 `gh-proxy` 和直连归档两条死路。在虚拟机上逐条实测响应头：`codeload` 0.65s ✅、`ghproxy` 归档 2.7s / raw 0.95s ✅、`gh-proxy` 归档 2.8s / raw 1.6s ✅、`ghfast` 超时 ❌、直连归档超时 ❌、`jsDelivr`(raw) 超时 ❌、raw 直连超时 ❌。按实测重排后虚拟机复测**第一发 codeload 0.65 秒**命中。同一次日志还确认插件安装走 `ghproxy.net` 第一发就成功（13:26），所以坏的只是归档那条链的顺序。
+- **加速源自选 + 测速的界面自检**（`--settings-preview=General`）：默认收起，点「高级设置」展开；展开时四个源先显示「还没测」，后台测完自动变成实测值——本机实测 `ghproxy.net 0.9 秒 / gh-proxy.com 1.3 秒 / ghfast.top 超时 / jsDelivr 超时`，摘要「测于 13:34 · 最快 ghproxy.net 0.9 秒」；选中的项写进 `LauncherSettings.json` 的 `MirrorSource`。UI Automation 里这个按钮只暴露成 `[Text] 高级设置`，脚本要往上找一层父按钮才点得到。
+- 逻辑测试扩到 **93 项离线全绿**，新增源选择与排序 26 项：自动按延迟升序、自选不做自动重排（哪怕别人更快）、jsDelivr 不参与归档、官方档位下自选不生效、延迟文案（0.9 秒 / 超时 / 还没测）、`AcceleratorProbe.json` 落盘。
+- **下拉与高级设置的联动自检**（脚本 `.ui-check\check-accelerator-sync.ps1`，改前先把设置还原成默认）：① 默认「大陆 CDN 加速」+ 自动；② 在高级设置里钉 ghproxy.net → 下拉就地变「自定义」，`MirrorSource=ghproxy`；③ 下拉里选回「大陆 CDN 加速」→ 高级设置的单选自动跳回「自动」，`MirrorSource=Auto`，且「自定义」这一项又从列表里消失；④ 钉 gh-proxy 后选「官方源」→ **「高级设置」按钮整个不可见**，`UpdateSource=Official`；⑤ 收尾恢复默认。
+- 自检脚本踩的坑：页面上不止一个 `ComboBox`（「静默启动」那个也是），按控件树往上找会抓错邻居，最后改成**按纵向位置**匹配「在线引擎」标签同一行的下拉框；弹层里的 `ListItem` 挂在窗口子树里、要展开后才可见。
+- **下载链路自测**：`DownloadSupport.FormatSize/FormatSpeed` 的文案（512.0 MB / 1.5 MB/s / 未知长度 → ?）、百分比按字节算、总长未知时百分比返回 -1 且文案只说已收多少；**真下了一个文件**（本仓库 CHANGELOG.md，10459 字节）验证分片拼回的内容一致、且不留下 `.part` 临时文件。
+- **插件市场「已验证」的实测结论**：拉实时 `api.dshmk.com`（9.6 MB，带 `Accept-Encoding: gzip`）统计：`"validation"` 出现 2500 次、`"overall":"verified"` 2500 次、`stats.verified = 2500 = fetched`，`verificationUrl` 非空的只有 1 条。结论是**市场只出版验证过的插件**，筛选命中全部不是 bug。
+- **踩坑记录**：预览模式（`--settings-preview`）用独立互斥体 `MutexName + ".Preview"`，**上一个预览进程没退干净时，后面起的预览会静默退出且退出码是 0**（看起来就像「窗口打不开」）。自检脚本要么显式 kill 自己起的进程，要么在开头清理 `dist*` 下的残留进程——但**绝不能碰用户自己那个启动器**。
+- 虚拟机（`DESKTOP-G4QS2K7`，Win10，`192.168.188.130`，SSH 脚本见 `.fix-lasso-state\vm-ssh.ps1`）本轮实测记录，三个问题的根因都在日志里：
+  - 技能目录：`09:36:41 搜索到 100 个仓库` → `09:38:12 160 条`，**冷启动 91 秒**；`awesome-*` 那类超大仓库单次能吃掉一分钟。
+  - DSH 更新：`09:38:07` 开始，`09:38:09` 起 npm 进程一直跑，**09:46 仍未结束**（8 分钟+），进度条停在 `503.8 / 230`；此时 `package.json` 其实早已是 0.1.7-rc.2、`node_modules` 504MB——是「慢 + 假进度」，不是卡死。日志里还夹着几十条重复的「本地插件列表」，就是进度每跳一次重扫一次。
+  - 修后本地实测：技能目录冷启动 **20.9 秒**（tree 8 线程）、缓存命中 **120 毫秒**；raw 并发提到 16 后没能复测（本机匿名额度被测试打爆，core 限流 60/小时）。
+- **未做**：真机 Windows 10 上的图标与布局复核。
+
+### 发版前还欠
+
+1. 确认版本号并跑 `set-version.ps1`。
+2. 把 `featured-skills.json` 推到 `main`，否则推荐页一直走内置兜底。
+3. 想要「启动器预览版通道」真正生效，需要在仓库里发布 `manifest-preview.json`；没有这个文件时预览通道会静默退回正式清单。
+4. Windows 10 主题下的导航图标目视复核（本次只按 Fluent regular 对齐了写法，没法在本机看到 Win10 渲染）。
+5. 开发者页发布推荐或公告前必须换一个新 Token：本机存的旧 Token 已被 GitHub 判定失效（`GET /user` 返回 401），读取会自动匿名兜底，但写仓库会直接失败。
+6. 把 `announcements.json` 推到 `main`（或在开发者页「公告」里点一次「发布到仓库」），否则主页公告栏一直是内置的三条兜底。
 
 ---
 
@@ -46,7 +185,7 @@
 | 插件更新 | 完成。对比 `PluginInstalls.json` 与在线目录的 `pushedAt`，支持单个检查、单个更新、全部更新和更新策略 |
 | 更新通知 | 完成。更新后发 AppNotification，按钮为“好的 / 稍后再说”；“好的”重启 DSH |
 | 官方推荐 | 完成。读仓库根目录 `featured-plugins.json`，支持远端、磁盘缓存、内置兜底、搜索和分页 |
-| 开发者管理中心 | 完成。`127.0.0.1:8788` 本地后台，GitHub 设备码或 Token 登录、`developer-roles.json` 角色校验、推荐列表增删改和 GitHub Contents API 提交 |
+| 开发者管理中心 | 完成。设置窗口内的「开发者」页（连点五次版本号解锁），模块化布局：推荐管理 + 预留下载源/公告/权限。直接用 GitHub Contents API 读写 `featured-plugins.json` / `featured-skills.json`，支持仓库地址一键导入、排序、编辑、移除、发布；不再起本地服务、不再开网页、没有设备码登录 |
 | 组件页 | 完成检测+安装六项：.NET 8 桌面运行时、Windows App Runtime 1.8、Node 22 LTS、MinGit、pnpm、Python；源跟随在线引擎 |
 | 组件 PATH | 完成。便携 Node、Git、pnpm、Python 目录写入当前用户 PATH，同时保留启动器绝对路径兜底 |
 | 插件页 UI | 三处分页（官方推荐/在线插件/本地插件）、每页 9/18/36/54、搜索、分类(含"已验证")、排序、本语言优先、图标三级回退(API 图片→仓库 icon→GitHub 标记)、卡片内嵌进度按钮、详情卡片、卸载确认 |
@@ -55,8 +194,8 @@
 ### 当前状态与剩余收尾
 
 1. 尚未在**真实用户 profile** 上执行安装、更新和卸载；目前使用临时 DSH 根目录验证，避免污染环境。
-2. GitHub 设备码流程需要实际 OAuth App 的 Client ID 才能联调；页面支持输入 Client ID，也支持 `DSH_GITHUB_CLIENT_ID` 环境变量。
-3. `developer-roles.json` 的成员列表目前为空，只有仓库所有者 `YunxiRamito` 默认是超级管理员。
+2. 开发者页写仓库需要一个能写该仓库的 GitHub Token。本机存的旧 Token 已失效（GitHub 回 401 Bad credentials），读取会自动匿名兜底并提示，但**发布前必须先去「API」页换一个新的**。
+3. `featured-skills.json` 目前只在本地仓库里还没提交，开发者页第一次读会显示 0 条——在推荐管理里导入条目后点「发布到仓库」，它才会出现在远端。
 4. 在线插件卡片底部按钮已改为两列等宽，`查看详情` 内容恢复居中；还需要在目标机器上做最后一轮视觉确认。
 5. Windows 10 真机仍需复核应用内视觉、完整更新链和退出行为。
 

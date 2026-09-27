@@ -31,9 +31,6 @@ namespace DeepSeekHarnessLauncher
         private const double NavigationCompactThreshold = 880;
         private const int GwlpExtendedStyle = -20;
 
-        /// <summary>开发者管理后台。只在回环地址上监听，由启动器自己拉起来。</summary>
-        private const string DeveloperCenterUrl = "http://127.0.0.1:8788/";
-
         private readonly AppWindow _appWindow;
         private readonly IntPtr _windowHandle;
         private readonly SettingsWindowHost _host;
@@ -65,7 +62,7 @@ namespace DeepSeekHarnessLauncher
             _settings = _host.Settings ?? new LauncherSettings();
             AccentColorPicker.Color = Windows.UI.Color.FromArgb(255, 10, 132, 255);
 
-            Title = "大肥鱼Go设置";
+            Title = "Dafeiyu-Go 设置";
             VersionText.Text = "v" + Constants.Version;
             ExtendsContentIntoTitleBar = true;
             SetTitleBar(AppTitleBar);
@@ -103,8 +100,8 @@ namespace DeepSeekHarnessLauncher
             Closed += SettingsWindow_Closed;
 
             _initializing = false;
-            SettingsNavigationView.SelectedItem = GeneralNavItem;
-            SelectPage("General");
+            SettingsNavigationView.SelectedItem = HomeNavItem;
+            SelectPage("Home");
             ApplyResponsiveLayout(SettingsRoot.ActualWidth > 0 ? SettingsRoot.ActualWidth : DefaultWindowWidth);
             _ = RefreshApiBalanceAsync();
         }
@@ -198,12 +195,14 @@ namespace DeepSeekHarnessLauncher
                 : (SettingsRoot.ActualTheme == ElementTheme.Dark
                     ? "SettingsNavIconsWin10Dark"
                     : "SettingsNavIconsWin10");
+            SetSvgIcon(HomeNavItem, folder, "home.svg");
             SetSvgIcon(GeneralNavItem, folder, "general.svg");
             SetSvgIcon(ThemeNavItem, folder, "theme.svg");
             SetSvgIcon(ApiNavItem, folder, "api.svg");
             SetSvgIcon(AlertsNavItem, folder, "alerts.svg");
             SetSvgIcon(ServiceNavItem, folder, "service.svg");
             SetSvgIcon(PluginsNavItem, folder, "plugins.svg");
+            SetSvgIcon(SkillsNavItem, folder, "skills.svg");
             SetSvgIcon(ComponentsNavItem, folder, "components.svg");
             SetSvgIcon(UpdatesNavItem, folder, "updates.svg");
             SetSvgIcon(AboutNavItem, folder, "about.svg");
@@ -260,12 +259,14 @@ namespace DeepSeekHarnessLauncher
             SelectTaggedItem(
                 PluginUpdateModeComboBox,
                 _settings.PluginUpdateMode);
+            SelectTaggedItem(LauncherChannelComboBox, _settings.LauncherChannel);
+            SelectTaggedItem(DshChannelComboBox, _settings.DshChannel);
 
-            UpdateReminderToggle.IsOn = _settings.UpdateReminder;
-            PluginUpdateReminderToggle.IsOn = _settings.PluginUpdateReminder;
+            UpdateReminderToggle.IsOn = _settings.UpdateReminder;            PluginUpdateReminderToggle.IsOn = _settings.PluginUpdateReminder;
             ServiceReminderToggle.IsOn = _settings.ServiceStartReminder;
             RechargeReminderToggle.IsOn = _settings.RechargeReminder;
 
+            _proxyUiReady = false;
             SelectRadioByTag(ProxyModeSelector, _settings.ProxyMode, "None");
             SelectRadioByTag(ProxyProtocolSelector, _settings.ProxyProtocol, "Http");
             ProxyHostBox.Text = _settings.ProxyHost;
@@ -305,6 +306,7 @@ namespace DeepSeekHarnessLauncher
             DeveloperNavItem.Visibility = Visibility.Collapsed;
             RefreshServiceState();
             UpdateCustomThresholdStates();
+            SyncAcceleratorControls();
         }
 
         private void WireSettingsEvents()
@@ -320,6 +322,13 @@ namespace DeepSeekHarnessLauncher
             // 代理模式覆盖成 None。等 LoadSettingsIntoControls 完成后再接事件。
             ProxyModeSelector.SelectionChanged += ProxyModeSelector_SelectionChanged;
             ProxyProtocolSelector.SelectionChanged += ProxySetting_SelectionChanged;
+            // RadioButtons 第一次布局会按控件内部的索引把选中项重排一遍。等它真正
+            // Loaded 之后再按配置选一次，选稳之前一律不允许保存。
+            ProxyModeSelector.Loaded += ProxyModeSelector_Loaded;
+            // 兜底：只要用户碰过这两个单选控件，就视为可以保存，避免就绪标记没点上
+            // 导致用户的选择反而存不下去。
+            ProxyModeSelector.Tapped += ProxyControl_Tapped;
+            ProxyProtocolSelector.Tapped += ProxyControl_Tapped;
             ProxyHostBox.TextChanged += ProxyHostBox_TextChanged;
             ProxyPortBox.ValueChanged += ProxyPortBox_ValueChanged;
             RecheckComponentsButton.Click += delegate
@@ -358,6 +367,15 @@ namespace DeepSeekHarnessLauncher
                 PluginActionInfoBar.Title = "正在更新全部插件";
                 PluginActionInfoBar.Message = "更新在后台继续执行。";
                 PluginActionInfoBar.IsOpen = true;
+                ApplyLocalPluginUpdateFeedback();
+            };
+            CheckLocalPluginsUpdateButton.Click += delegate
+            {
+                // 站在本地插件页点「检查更新」，结果必须也显示在本地插件页，
+                // 以前只更新「更新」页那张卡，看着就是「点了没反应」。
+                _host.Log("本地插件页：点了检查更新。");
+                ApplyLocalPluginUpdateFeedback(UpdateUiActivity.Checking);
+                _host.CheckPluginUpdates();
             };
             CheckPluginUpdateButton.Click += delegate
             {
@@ -391,6 +409,103 @@ namespace DeepSeekHarnessLauncher
             {
                 _localPage++;
                 RebuildLocalPage();
+            };
+
+            // ------------------------------------------------------------ 技能页
+            LocalSkillSearchBox.TextChanged += LocalSkillSearch_Changed;
+            CheckSkillUpdatesButton.Click += CheckSkillUpdatesButton_Click;
+            UpdateAllSkillsButton.Click += UpdateAllSkillsButton_Click;
+            SkillMarketSearchBox.TextChanged += SkillMarketSearch_Changed;
+            SkillCategoryComboBox.SelectionChanged += SkillMarketFilter_Changed;
+            SkillSortComboBox.SelectionChanged += SkillMarketFilter_Changed;
+            SkillLanguageComboBox.SelectionChanged += SkillMarketFilter_Changed;
+            SkillMarketPageSizeComboBox.SelectionChanged += SkillMarketPageSize_Changed;
+            FeaturedSkillSearchBox.TextChanged += FeaturedSkillSearch_Changed;
+            LocalSkillLanguageComboBox.SelectionChanged += LocalSkillFilter_Changed;
+            FeaturedSkillPreviousPageButton.Click += delegate
+            {
+                _featuredSkillPage--;
+                RebuildFeaturedSkillPage();
+            };
+            FeaturedSkillNextPageButton.Click += delegate
+            {
+                _featuredSkillPage++;
+                RebuildFeaturedSkillPage();
+            };
+            RefreshSkillCatalogButton.Click += delegate
+            {
+                LoadSkillCatalog(true);
+            };
+            ScanSkillRepositoryButton.Click += ScanSkillRepositoryButton_Click;
+            SkillMarketPreviousPageButton.Click += delegate
+            {
+                _skillMarketPage--;
+                RebuildSkillMarketPage();
+            };
+            SkillMarketNextPageButton.Click += delegate
+            {
+                _skillMarketPage++;
+                RebuildSkillMarketPage();
+            };
+            LocalSkillPageSizeComboBox.SelectionChanged += LocalSkillPageSize_Changed;
+            LocalSkillPreviousPageButton.Click += delegate
+            {
+                _localSkillPage--;
+                RebuildLocalSkillPage();
+            };
+            LocalSkillNextPageButton.Click += delegate
+            {
+                _localSkillPage++;
+                RebuildLocalSkillPage();
+            };
+
+            // ------------------------------------------------------------ 开发者页
+            DeveloperPluginImportButton.Click += DeveloperPluginImportButton_Click;
+            DeveloperPluginLoadButton.Click += delegate
+            {
+                LoadDeveloperPluginsFromRepo();
+            };
+            DeveloperPluginPublishButton.Click += DeveloperPluginPublishButton_Click;
+            DeveloperSkillImportButton.Click += DeveloperSkillImportButton_Click;
+            DeveloperSkillLoadButton.Click += delegate
+            {
+                LoadDeveloperSkillsFromRepo();
+            };
+            DeveloperSkillPublishButton.Click += DeveloperSkillPublishButton_Click;
+            DeveloperAnnounceAddButton.Click += DeveloperAnnounceAddButton_Click;
+            DeveloperAnnounceLoadButton.Click += delegate
+            {
+                LoadDeveloperAnnouncementsFromRepo();
+            };
+            DeveloperAnnouncePublishButton.Click += DeveloperAnnouncePublishButton_Click;
+
+            // ------------------------------------------------------------ 主页
+            HomeCheckUpdateButton.Click += delegate
+            {
+                _host.CheckLauncherUpdate();
+                _host.CheckDshUpdate();
+                _host.CheckPluginUpdates();
+                RefreshHomeSummary();
+            };
+            HomeRestartButton.Click += delegate
+            {
+                _host.RestartService();
+                RefreshHomeSummary();
+            };
+            HomeAnnouncementRefreshButton.Click += delegate
+            {
+                LoadAnnouncements(true);
+            };
+            HomeAnnouncementReadButton.Click += delegate
+            {
+                MarkAnnouncementsRead();
+            };
+            HomePluginsButton.Click += delegate { SelectPage("Plugins"); };            HomeSkillsButton.Click += delegate { SelectPage("Skills"); };
+            HomeComponentsButton.Click += delegate { SelectPage("Components"); };
+            HomeUpdatesButton.Click += delegate { SelectPage("Updates"); };
+            ChangelogRefreshButton.Click += delegate
+            {
+                LoadChangelog(true);
             };
 
             UpdateReminderToggle.Toggled += ReminderToggle_Toggled;
@@ -464,16 +579,70 @@ namespace DeepSeekHarnessLauncher
             };
             _host.UpdateStateChanged += Host_UpdateStateChanged;
             _host.ServiceStateChanged += Host_ServiceStateChanged;
+            WireAcceleratorEvents();
             RefreshUpdateStates();
         }
+
+        private string _lastPluginStateSignature = String.Empty;
 
         private void Host_UpdateStateChanged()
         {
             RefreshUpdateStates();
+
+            // 主页那三格状态跟着更新走，只读快照，不发请求。
+            RefreshHomeSummary();
+
+            // 本地插件页的结果条也跟一下。
+            ApplyLocalPluginUpdateFeedback();
+
+            // 「官方推荐 / 在线插件」这两页也要能看到检查结果，
+            // 不然站在那些页点完检查会觉得没反应。
+            UpdateUiSnapshot pluginCheckState = _host.GetPluginUpdateState();
+            if (pluginCheckState != null
+                && (pluginCheckState.Activity == UpdateUiActivity.Available
+                    || pluginCheckState.Activity == UpdateUiActivity.UpToDate
+                    || pluginCheckState.Activity == UpdateUiActivity.Completed
+                    || pluginCheckState.Activity == UpdateUiActivity.Failed))
+            {
+                PluginActionInfoBar.Severity =
+                    pluginCheckState.Activity == UpdateUiActivity.Failed
+                        ? InfoBarSeverity.Error
+                        : InfoBarSeverity.Success;
+                PluginActionInfoBar.Title = pluginCheckState.Activity == UpdateUiActivity.Available
+                    ? "发现插件更新"
+                    : (pluginCheckState.Activity == UpdateUiActivity.UpToDate
+                        ? "插件已是最新"
+                        : (pluginCheckState.Activity == UpdateUiActivity.Completed
+                            ? "插件更新完成"
+                            : "插件检查失败"));
+                PluginActionInfoBar.Message = String.IsNullOrWhiteSpace(pluginCheckState.Detail)
+                    ? "检查完的结果会写在这里。"
+                    : pluginCheckState.Detail;
+                PluginActionInfoBar.IsOpen = true;
+            }
+
+            // DSH / 启动器的进度每次跳动都会走到这里。插件状态没变就别重扫本地插件——
+            // 否则一次 DSH 更新会顺带把本地插件列表刷上百遍（每次都要读 profile 再扫目录，
+            // 实测虚拟机日志里连刷了几十条）。
             UpdateUiSnapshot pluginState = _host.GetPluginUpdateState();
+            string signature = pluginState == null
+                ? String.Empty
+                : pluginState.Activity
+                    + "|" + pluginState.Version
+                    + "|" + pluginState.Detail;
+            if (String.Equals(
+                signature,
+                _lastPluginStateSignature,
+                StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _lastPluginStateSignature = signature;
             if (pluginState != null
                 && (pluginState.Activity == UpdateUiActivity.Completed
-                    || pluginState.Activity == UpdateUiActivity.UpToDate))
+                    || pluginState.Activity == UpdateUiActivity.UpToDate
+                    || pluginState.Activity == UpdateUiActivity.Failed))
             {
                 LoadLocalPlugins();
             }
@@ -482,10 +651,19 @@ namespace DeepSeekHarnessLauncher
         private void Host_ServiceStateChanged()
         {
             RefreshServiceState();
+            RefreshHomeSummary();
         }
 
         private void RefreshUpdateStates()
         {
+            // 预览模式可能被要求钉在某个相位上（见 ApplyPreviewUpdatePhase），
+            // 这样下载中 / 安装中的进度条才有办法目视检查——真跑一遍要下 230MB。
+            if (_host != null && _host.IsPreview && _previewUpdatePhase != null)
+            {
+                ApplyPreviewUpdateSnapshot();
+                return;
+            }
+
             ApplyUpdateState(
                 _host.GetLauncherUpdateState(),
                 CheckLauncherUpdateButton,
@@ -507,6 +685,207 @@ namespace DeepSeekHarnessLauncher
                 PluginUpdateProgressText,
                 PluginUpdateProgressBar,
                 PluginUpdateResultInfoBar);
+
+            // 摘要是「当前版本 · 通道」，每次刷新都要读一次本机 DSH 版本。
+            // 更新进行中每秒会来好几次，这时候没必要反复读盘。
+            if (!IsAnyUpdateBusy())
+            {
+                RefreshUpdateSummaries();
+            }
+        }
+
+        /// <summary>
+        /// 本地插件页自己的结果条。以前「检查更新」只写「更新」页那张卡，
+        /// 站在本地插件页看到的是一片平静，所以要么以为按钮坏了、要么以为没更新。
+        /// </summary>
+        private void ApplyLocalPluginUpdateFeedback(UpdateUiActivity? forced = null)
+        {
+            if (LocalPluginUpdateInfoBar == null || _host == null)
+            {
+                return;
+            }
+
+            UpdateUiSnapshot state = _host.GetPluginUpdateState();
+            UpdateUiActivity activity = forced
+                ?? (state == null ? UpdateUiActivity.Idle : state.Activity);
+            string detail = state == null ? String.Empty : state.Detail;
+            switch (activity)
+            {
+                case UpdateUiActivity.Checking:
+                    LocalPluginUpdateInfoBar.Severity = InfoBarSeverity.Informational;
+                    LocalPluginUpdateInfoBar.Title = "正在检测插件更新";
+                    LocalPluginUpdateInfoBar.Message = "检测完这里会直接说结果。";
+                    LocalPluginUpdateInfoBar.IsOpen = true;
+                    break;
+                case UpdateUiActivity.Available:
+                    LocalPluginUpdateInfoBar.Severity = InfoBarSeverity.Success;
+                    LocalPluginUpdateInfoBar.Title = "发现可更新的插件";
+                    LocalPluginUpdateInfoBar.Message =
+                        String.IsNullOrWhiteSpace(detail)
+                            ? "点「全部更新」一次装完。"
+                            : detail + " 点「全部更新」一次装完。";
+                    LocalPluginUpdateInfoBar.IsOpen = true;
+                    break;
+                case UpdateUiActivity.UpToDate:
+                    LocalPluginUpdateInfoBar.Severity = InfoBarSeverity.Success;
+                    LocalPluginUpdateInfoBar.Title = "插件已是最新";
+                    LocalPluginUpdateInfoBar.Message = "没有发现可更新的插件。";
+                    LocalPluginUpdateInfoBar.IsOpen = true;
+                    break;
+                case UpdateUiActivity.Installing:
+                    LocalPluginUpdateInfoBar.Severity = InfoBarSeverity.Informational;
+                    LocalPluginUpdateInfoBar.Title = "正在更新插件";
+                    LocalPluginUpdateInfoBar.Message = String.IsNullOrWhiteSpace(detail)
+                        ? "更新在后台继续执行。"
+                        : detail;
+                    LocalPluginUpdateInfoBar.IsOpen = true;
+                    break;
+                case UpdateUiActivity.Completed:
+                    LocalPluginUpdateInfoBar.Severity = InfoBarSeverity.Success;
+                    LocalPluginUpdateInfoBar.Title = "插件更新完成";
+                    LocalPluginUpdateInfoBar.Message = String.IsNullOrWhiteSpace(detail)
+                        ? "重启 DSH 后生效。"
+                        : detail;
+                    LocalPluginUpdateInfoBar.IsOpen = true;
+                    break;
+                case UpdateUiActivity.Failed:
+                    LocalPluginUpdateInfoBar.Severity = InfoBarSeverity.Error;
+                    LocalPluginUpdateInfoBar.Title = "插件检查失败";
+                    LocalPluginUpdateInfoBar.Message = String.IsNullOrWhiteSpace(detail)
+                        ? "稍后重试。"
+                        : detail;
+                    LocalPluginUpdateInfoBar.IsOpen = true;
+                    break;
+                default:
+                    LocalPluginUpdateInfoBar.IsOpen = false;
+                    break;
+            }
+        }
+
+        private bool IsAnyUpdateBusy()        {
+            UpdateUiSnapshot[] states =
+            {
+                _host.GetLauncherUpdateState(),
+                _host.GetDshUpdateState(),
+                _host.GetPluginUpdateState()
+            };
+            for (int index = 0; index < states.Length; index++)
+            {
+                UpdateUiSnapshot state = states[index];
+                if (state != null
+                    && (state.Activity == UpdateUiActivity.Checking
+                        || state.Activity == UpdateUiActivity.Installing))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>预览模式被钉住的更新相位；为 null 时按主进程状态走。</summary>
+        private string _previewUpdatePhase;
+
+        /// <summary>
+        /// 预览专用：<c>--settings-preview=Updates:Installing</c> 这样的写法把三张卡
+        /// 强制成指定状态，用来目视检查进度条、按钮文案和结果条。只在预览模式生效。
+        /// 相位：checking / installing / available / uptodate / completed / failed。
+        /// </summary>
+        private void ApplyPreviewUpdatePhase(string phase)
+        {
+            if (_host == null
+                || !_host.IsPreview
+                || String.IsNullOrWhiteSpace(phase))
+            {
+                return;
+            }
+
+            _previewUpdatePhase = phase.Trim();
+            ApplyPreviewUpdateSnapshot();
+        }
+
+        private void ApplyPreviewUpdateSnapshot()
+        {
+            UpdateUiSnapshot snapshot = BuildPreviewUpdateSnapshot(_previewUpdatePhase);
+            if (snapshot == null)
+            {
+                return;
+            }
+
+            ApplyUpdateState(
+                snapshot,
+                CheckLauncherUpdateButton,
+                LauncherUpdateProgressPanel,
+                LauncherUpdateProgressText,
+                LauncherUpdateProgressBar,
+                LauncherUpdateResultInfoBar);
+            ApplyUpdateState(
+                snapshot,
+                CheckDshUpdateButton,
+                DshUpdateProgressPanel,
+                DshUpdateProgressText,
+                DshUpdateProgressBar,
+                DshUpdateResultInfoBar);
+            ApplyUpdateState(
+                snapshot,
+                CheckPluginUpdateButton,
+                PluginUpdateProgressPanel,
+                PluginUpdateProgressText,
+                PluginUpdateProgressBar,
+                PluginUpdateResultInfoBar);
+            RefreshUpdateSummaries();
+        }
+
+        private static UpdateUiSnapshot BuildPreviewUpdateSnapshot(string phase)
+        {
+            string value = (phase ?? String.Empty).Trim().ToLowerInvariant();
+            switch (value)
+            {
+                case "checking":
+                    return new UpdateUiSnapshot
+                    {
+                        Activity = UpdateUiActivity.Checking,
+                        ProgressText = "检测更新中",
+                        IsIndeterminate = true
+                    };
+                case "installing":
+                    return new UpdateUiSnapshot
+                    {
+                        Activity = UpdateUiActivity.Installing,
+                        ProgressText = "下载中 12.4 MB / 230 MB",
+                        Detail = "请不要关闭软件",
+                        Progress = 38,
+                        IsIndeterminate = false
+                    };
+                case "available":
+                    return new UpdateUiSnapshot
+                    {
+                        Activity = UpdateUiActivity.Available,
+                        Version = "0.1.7-rc.1",
+                        Detail = "next 通道"
+                    };
+                case "uptodate":
+                    return new UpdateUiSnapshot
+                    {
+                        Activity = UpdateUiActivity.UpToDate,
+                        Version = "0.1.5-rc.3",
+                        Detail = "next 通道"
+                    };
+                case "completed":
+                    return new UpdateUiSnapshot
+                    {
+                        Activity = UpdateUiActivity.Completed,
+                        Detail = "已更新到 v0.1.7-rc.1，服务已重启"
+                    };
+                case "failed":
+                    return new UpdateUiSnapshot
+                    {
+                        Activity = UpdateUiActivity.Failed,
+                        Detail = "下载失败：连接被重置"
+                    };
+                default:
+                    return null;
+            }
         }
 
         private static void ApplyUpdateState(
@@ -546,11 +925,23 @@ namespace DeepSeekHarnessLauncher
                     break;
                 case UpdateUiActivity.Installing:
                     actionButton.Content = "更新中";
+                    // 主进程有时会把同一句话同时塞进 ProgressText 和 Detail，
+                    // 拼起来就变成「正在部署… · 正在部署…」。重复就别拼第二遍。
+                    string installDetail = state.Detail;
+                    if (!String.IsNullOrWhiteSpace(installDetail)
+                        && String.Equals(
+                            installDetail,
+                            state.ProgressText,
+                            StringComparison.Ordinal))
+                    {
+                        installDetail = String.Empty;
+                    }
+
                     progressText.Text =
                         state.ProgressText
-                        + (String.IsNullOrWhiteSpace(state.Detail)
+                        + (String.IsNullOrWhiteSpace(installDetail)
                             ? String.Empty
-                            : " · " + state.Detail);
+                            : " · " + installDetail);
                     progressBar.IsIndeterminate = state.IsIndeterminate;
                     progressBar.Value = Math.Max(0, state.Progress);
                     resultBar.IsOpen = false;
@@ -558,16 +949,12 @@ namespace DeepSeekHarnessLauncher
                 case UpdateUiActivity.UpToDate:
                     actionButton.Content = "立即检查";
                     resultBar.Title = "已是新版本";
-                    resultBar.Message = String.IsNullOrWhiteSpace(state.Version)
-                        ? state.Detail
-                        : "v" + state.Version;
+                    resultBar.Message = ComposeVersionMessage(state);
                     break;
                 case UpdateUiActivity.Available:
                     actionButton.Content = "立即更新";
                     resultBar.Title = "发现新版本";
-                    resultBar.Message = String.IsNullOrWhiteSpace(state.Version)
-                        ? state.Detail
-                        : "v" + state.Version;
+                    resultBar.Message = ComposeVersionMessage(state);
                     break;
                 case UpdateUiActivity.Completed:
                     actionButton.Content = "立即检查";
@@ -626,13 +1013,34 @@ namespace DeepSeekHarnessLauncher
             _settings.SilentStart = GetSelectedTag(
                 SilentStartComboBox,
                 "StartupOnly");
-            _settings.UpdateSource = GetSelectedTag(
+            string updateSource = GetSelectedTag(
                 UpdateSourceComboBox,
                 "Accelerated");
-            if (ReferenceEquals(sender, UpdateSourceComboBox))
+            if (String.Equals(updateSource, "Custom", StringComparison.OrdinalIgnoreCase))
             {
+                // 「自定义」不是新档位：还是加速，只是源由用户自己钉。
+                updateSource = "Accelerated";
+            }
+
+            _settings.UpdateSource = updateSource;
+            bool sourceChanged = ReferenceEquals(sender, UpdateSourceComboBox)
+                && _acceleratorUiReady;
+            if (sourceChanged)
+            {
+                if (String.Equals(updateSource, "Accelerated", StringComparison.OrdinalIgnoreCase))
+                {
+                    // 选回「大陆 CDN 加速」就等于回到自动挑源。
+                    _settings.MirrorSource = GitHubAccelerator.AutoSource;
+                }
+
                 // 换档位会改变插件来源的可选项（GitHub 大陆节点 / GitHub 官方）
                 RebuildPluginSourceOptions();
+                SyncAcceleratorControls();
+                if (String.Equals(updateSource, "Accelerated", StringComparison.OrdinalIgnoreCase))
+                {
+                    // 切回加速档又没测速数据时，补一轮。
+                    EnsureAcceleratorLatency();
+                }
             }
 
             _settings.PluginSource = GetSelectedTag(
@@ -773,6 +1181,45 @@ namespace DeepSeekHarnessLauncher
 
         // ---------------------------------------------------------------- 常规：代理设置
 
+        /// <summary>
+        /// 选中项是否已经被控件稳定下来了。控件加载完成前发生的选中变更一律不落盘——
+        /// 「重启后代理设置变回不使用代理」就是被这种早期变更覆盖出来的。
+        /// </summary>
+        private bool _proxyUiReady;
+
+        private void ProxyModeSelector_Loaded(object sender, RoutedEventArgs args)
+        {
+            if (ProxyModeSelector != null)
+            {
+                ProxyModeSelector.Loaded -= ProxyModeSelector_Loaded;
+            }
+
+            ApplyProxySelectionFromSettings();
+            DispatcherQueue.TryEnqueue(delegate
+            {
+                ApplyProxySelectionFromSettings();
+                _proxyUiReady = true;
+            });
+        }
+
+        private void ProxyControl_Tapped(object sender, TappedRoutedEventArgs args)
+        {
+            _proxyUiReady = true;
+        }
+
+        /// <summary>按配置里的值重设两个单选控件的选中项。</summary>
+        private void ApplyProxySelectionFromSettings()
+        {
+            if (_settings == null)
+            {
+                return;
+            }
+
+            SelectRadioByTag(ProxyModeSelector, _settings.ProxyMode, "None");
+            SelectRadioByTag(ProxyProtocolSelector, _settings.ProxyProtocol, "Http");
+            UpdateProxyCustomPanel();
+        }
+
         private void UpdateProxyCustomPanel()
         {
             if (ProxyModeSelector == null || ProxyCustomPanel == null)
@@ -819,7 +1266,7 @@ namespace DeepSeekHarnessLauncher
 
         private void SaveProxySettings()
         {
-            if (_initializing || _settings == null)
+            if (_initializing || !_proxyUiReady || _settings == null)
             {
                 return;
             }
@@ -848,6 +1295,8 @@ namespace DeepSeekHarnessLauncher
                     ? 7890
                     : (int)ProxyPortBox.Value;
             SaveSettings();
+            // 换了代理就是换了网络环境：自动模式下重新测一遍，挑最快的源。
+            AcceleratorLatencyWatcher.NetworkChanged("代理设置变化");
             _host.Log(
                 "Proxy settings saved: "
                 + _settings.ProxyMode
@@ -869,7 +1318,7 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
-            RadioButton fallbackItem = null;
+            int fallbackIndex = -1;
             for (int index = 0; index < selector.Items.Count; index++)
             {
                 RadioButton item = selector.Items[index] as RadioButton;
@@ -879,13 +1328,13 @@ namespace DeepSeekHarnessLauncher
                 }
 
                 string itemTag = item.Tag as string;
-                if (fallbackItem == null
+                if (fallbackIndex < 0
                     && String.Equals(
                         itemTag,
                         fallback,
                         StringComparison.OrdinalIgnoreCase))
                 {
-                    fallbackItem = item;
+                    fallbackIndex = index;
                 }
 
                 if (String.Equals(
@@ -893,14 +1342,19 @@ namespace DeepSeekHarnessLauncher
                     tag,
                     StringComparison.OrdinalIgnoreCase))
                 {
+                    // SelectedIndex 和 SelectedItem 必须一起设。只设 SelectedItem 时，
+                    // 控件内部索引还停在原来的位置，首次布局会把选中项按索引改回去，
+                    // 紧接着 SelectionChanged 就覆盖掉刚读出来的设置。
+                    selector.SelectedIndex = index;
                     selector.SelectedItem = item;
                     return;
                 }
             }
 
-            if (fallbackItem != null)
+            if (fallbackIndex >= 0)
             {
-                selector.SelectedItem = fallbackItem;
+                selector.SelectedIndex = fallbackIndex;
+                selector.SelectedItem = selector.Items[fallbackIndex];
             }
         }
 
@@ -1169,7 +1623,9 @@ namespace DeepSeekHarnessLauncher
             _catalogItems = result == null
                 ? new List<PluginCatalogItem>()
                 : result.Items;
+            _catalogFromMarket = result != null && result.FromMarket;
             _pluginRecords = PluginInstallStore.Load();
+            _profilePluginKeys = null;
             _catalogPage = 0;
             RebuildOnlinePage(result != null && result.FromCache);
             MergeFeaturedWithCatalog();
@@ -1205,10 +1661,19 @@ namespace DeepSeekHarnessLauncher
                 + "，限流=" + (result != null && result.RateLimited));
         }
 
+        /// <summary>多个插件同时下载时的顶部汇总，避免各自往同一条 InfoBar 写。</summary>
+        private readonly DownloadSession _pluginDownloadSession = new DownloadSession();
+
+        /// <summary>多个技能同时下载时的顶部汇总。</summary>
+        private readonly DownloadSession _skillDownloadSession = new DownloadSession();
+
         // ---------------------------------------------------------------- 在线分页
 
         private List<PluginCatalogItem> _catalogItems =
             new List<PluginCatalogItem>();
+
+        /// <summary>这份目录是不是来自插件市场（市场只收录验证过的插件，筛选文案要据此说明）。</summary>
+        private bool _catalogFromMarket;
         private Dictionary<string, PluginInstallRecord> _pluginRecords =
             new Dictionary<string, PluginInstallRecord>(
                 StringComparer.OrdinalIgnoreCase);
@@ -1255,11 +1720,30 @@ namespace DeepSeekHarnessLauncher
             }
 
             OnlinePluginRepeater.ItemsSource = cards;
+            string categoryFilter = GetSelectedTag(PluginCategoryComboBox, "All");
+            string verificationHint = String.Empty;
+            if (_catalogFromMarket)
+            {
+                // 市场 API 自己说 stats.verified == fetched，也就是它只出版验证过的插件，
+                // 所以「已验证」在这里必然命中全部 —— 得说清楚，不然看着像筛选坏了。
+                if (String.Equals(categoryFilter, "Verified", StringComparison.OrdinalIgnoreCase))
+                {
+                    verificationHint = " · 市场只收录验证过的插件";
+                }
+                else if (String.Equals(categoryFilter, "Unverified", StringComparison.OrdinalIgnoreCase))
+                {
+                    verificationHint = filtered.Count == 0
+                        ? " · 市场里没有未验证的；想看未验证的请把「插件来源」切成 GitHub"
+                        : String.Empty;
+                }
+            }
+
             PluginCatalogSummaryText.Text = _catalogItems.Count == 0
                 ? "没有拉到插件"
                 : "共 " + _catalogItems.Count + " 个插件，命中 "
                     + filtered.Count + " 个"
-                    + (fromCache ? "（缓存）" : String.Empty);
+                    + (fromCache ? "（缓存）" : String.Empty)
+                    + verificationHint;
             PluginPageText.Text = (_catalogPage + 1) + " / " + totalPages;
             PluginPreviousPageButton.IsEnabled = _catalogPage > 0;
             PluginNextPageButton.IsEnabled = _catalogPage + 1 < totalPages;
@@ -1292,6 +1776,13 @@ namespace DeepSeekHarnessLauncher
                         break;
                     case "Verified":
                         if (!item.Verified)
+                        {
+                            continue;
+                        }
+
+                        break;
+                    case "Unverified":
+                        if (item.Verified)
                         {
                             continue;
                         }
@@ -1483,11 +1974,92 @@ namespace DeepSeekHarnessLauncher
             return fallback;
         }
 
+        /// <summary>
+        /// 「已安装」以**本机实际状态**为准：只认 `PluginInstalls.json` 的话，
+        /// 记录缺一条（手工装过、或上次安装中途失败）重启后就会显示成没装。
+        /// </summary>
         private bool IsInstalled(PluginCatalogItem item)
         {
-            return _pluginRecords.ContainsKey(item.Repository)
-                || _pluginRecords.ContainsKey(item.FullName);
+            if (_pluginRecords.ContainsKey(item.Repository)
+                || _pluginRecords.ContainsKey(item.FullName))
+            {
+                return true;
+            }
+
+            HashSet<string> keys = ProfilePluginKeys();
+            if (keys.Contains(item.Repository ?? String.Empty)
+                || keys.Contains(item.FullName ?? String.Empty))
+            {
+                return true;
+            }
+
+            // profile 里的依赖长这样："@xmanrui/dsh-im@link:..." 或 "dsh-meme@link:..."。
+            string scoped = "@" + item.Owner + "/" + item.Repository + "@";
+            string plain = (item.Repository ?? String.Empty) + "@";
+            foreach (string key in keys)
+            {
+                if (key.StartsWith(scoped, StringComparison.OrdinalIgnoreCase)
+                    || key.StartsWith(plain, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
+
+        /// <summary>profile 里实际挂着的插件键，缓存在窗口会话内用。</summary>
+        private HashSet<string> ProfilePluginKeys()
+        {
+            if (_profilePluginKeys != null)
+            {
+                return _profilePluginKeys;
+            }
+
+            HashSet<string> keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                List<DshProfilePlugin> plugins = DshProfileService.ReadPlugins(
+                    _settings.DshRoot,
+                    _pluginRecords);
+                for (int index = 0; index < plugins.Count; index++)
+                {
+                    DshProfilePlugin plugin = plugins[index];
+                    if (!String.IsNullOrWhiteSpace(plugin.Key))
+                    {
+                        keys.Add(plugin.Key);
+                    }
+
+                    if (!String.IsNullOrWhiteSpace(plugin.Dependency))
+                    {
+                        keys.Add(plugin.Dependency);
+                    }
+
+                    // **最靠谱的一条**：插件目录名。profile 里的包名常常跟仓库名不一样
+                    // （dsh-whale-widget vs DeepSeek-Balance-Whale-Widget），
+                    // 只比包名的话官方推荐那四个永远显示「没安装」。
+                    try
+                    {
+                        if (!String.IsNullOrWhiteSpace(plugin.LinkedDirectory))
+                        {
+                            keys.Add(Path.GetFileName(
+                                plugin.LinkedDirectory.TrimEnd('\\', '/')));
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            _profilePluginKeys = keys;
+            return keys;
+        }
+
+        private HashSet<string> _profilePluginKeys;
 
         /// <summary>本语言判定：简介里含中日韩字符就算本语言内容。</summary>
         private static bool IsLocalLanguage(PluginCatalogItem item)
@@ -1743,15 +2315,36 @@ namespace DeepSeekHarnessLauncher
                     {
                         DispatcherQueue.TryEnqueue(delegate
                         {
-                            PluginActionInfoBar.Message = text;
                             card.PrimaryAction = PluginProgressAction(text);
                             card.ProgressValue = Math.Max(0, Math.Min(100, fraction));
                         });
                     },
-                    _host.Log);
+                    _host.Log,
+                    delegate(DownloadProgressInfo info)
+                    {
+                        // 顶部只写汇总：多个插件同时下时各写各的会来回抢（看着就是抽搐）。
+                        string summary = _pluginDownloadSession.Update(card.Name, info);
+                        if (summary != null)
+                        {
+                            DispatcherQueue.TryEnqueue(delegate
+                            {
+                                PluginActionInfoBar.Message = summary;
+                            });
+                        }
+                    });
+
+                _pluginDownloadSession.Remove(card.Name);
 
                 DispatcherQueue.TryEnqueue(delegate
                 {
+                    // 安装失败以前只在界面上报，日志里什么都没有，出问题查不到原因。
+                    _host.Log(
+                        (result.Ok ? "插件安装完成：" : "插件安装失败：")
+                        + name
+                        + (result.Ok
+                            ? (result.PnpmFailed ? "（pnpm install 没成功）" : String.Empty)
+                            : " · " + (result.Error ?? "未知错误")));
+                    _profilePluginKeys = null;
                     if (result.Ok)
                     {
                         PluginActionInfoBar.Severity = result.PnpmMissing
@@ -1802,6 +2395,22 @@ namespace DeepSeekHarnessLauncher
             }
 
             return "安装中";
+        }
+
+        /// <summary>
+        /// 按钮上只放动词短语，细节（实时速度、已下载体积、正在做什么）留给 InfoBar。
+        /// 「下载中 1.2 MB/s · 8.4 / 24.0 MB」→「下载中」。
+        /// </summary>
+        private static string ProgressActionLabel(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text))
+            {
+                return "处理中";
+            }
+
+            string trimmed = text.Trim();
+            int cut = trimmed.IndexOf(' ');
+            return cut > 0 ? trimmed.Substring(0, cut) : trimmed;
         }
 
         // ---------------------------------------------------------------- 插件卡片动作
@@ -2173,10 +2782,18 @@ namespace DeepSeekHarnessLauncher
             }
 
             LocalPluginRepeater.ItemsSource = page;
-            LocalPluginSummaryText.Text = _localKeyword.Length == 0
-                ? "共 " + _localPlugins.Count + " 个已安装插件"
-                : "命中 " + filtered.Count + " / " + _localPlugins.Count
-                    + " 个已安装插件";
+            if (_localPlugins.Count == 0)
+            {
+                LocalPluginSummaryText.Text = "还没有安装插件。去在线插件页挑一个。";
+            }
+            else
+            {
+                LocalPluginSummaryText.Text = _localKeyword.Length == 0
+                    ? "共 " + _localPlugins.Count + " 个已安装插件"
+                    : "命中 " + filtered.Count + " / " + _localPlugins.Count
+                        + " 个已安装插件";
+            }
+
             LocalPageText.Text = (_localPage + 1) + " / " + totalPages;
             LocalPreviousPageButton.IsEnabled = _localPage > 0;
             LocalNextPageButton.IsEnabled = _localPage + 1 < totalPages;
@@ -2509,51 +3126,13 @@ namespace DeepSeekHarnessLauncher
             UnlockDeveloperCenter();
         }
 
+        /// <summary>
+        /// 连点五次版本号解锁开发者入口。不再起本地服务，直接切到开发者页。
+        /// </summary>
         private void UnlockDeveloperCenter()
         {
-            if (!DeveloperCenterServer.EnsureStarted(_settings, _host.Log))
-            {
-                _ = ShowMessageDialogAsync(
-                    "开发者管理中心",
-                    "本地后台启动失败，请查看 launcher.log。");
-                return;
-            }
-
             DeveloperNavItem.Visibility = Visibility.Visible;
-            _ = ShowMessageDialogAsync(
-                "开发者管理中心",
-                "本地后台已启动，入口在左侧栏左下角。");
-        }
-
-        private void SettingsNavigationView_ItemInvoked(
-            NavigationView sender,
-            NavigationViewItemInvokedEventArgs args)
-        {
-            NavigationViewItem item = args.InvokedItemContainer
-                as NavigationViewItem;
-            if (item == null
-                || !String.Equals(
-                    item.Tag as string,
-                    "Developer",
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
-
-            OpenDeveloperCenter();
-        }
-
-        private void OpenDeveloperCenter()
-        {
-            if (!DeveloperCenterServer.EnsureStarted(_settings, _host.Log))
-            {
-                _ = ShowMessageDialogAsync(
-                    "开发者管理中心",
-                    "本地后台启动失败，请查看 launcher.log。");
-                return;
-            }
-
-            OpenUrl(DeveloperCenterUrl);
+            SelectPage("Developer");
         }
 
         public void ShowWindow(string pageTag)
@@ -2582,52 +3161,68 @@ namespace DeepSeekHarnessLauncher
         {
             string target = String.IsNullOrEmpty(pageTag) ? "General" : pageTag;
             string pluginTab = null;
+            string skillTab = null;
             int tabSeparator = target.IndexOf(':');
             if (tabSeparator > 0)
             {
                 pluginTab = target.Substring(tabSeparator + 1);
+                skillTab = pluginTab;
                 target = target.Substring(0, tabSeparator);
             }
 
+            HomePage.Visibility = target == "Home" ? Visibility.Visible : Visibility.Collapsed;
             GeneralPage.Visibility = target == "General" ? Visibility.Visible : Visibility.Collapsed;
             ThemePage.Visibility = target == "Theme" ? Visibility.Visible : Visibility.Collapsed;
             ApiPage.Visibility = target == "Api" ? Visibility.Visible : Visibility.Collapsed;
             AlertsPage.Visibility = target == "Alerts" ? Visibility.Visible : Visibility.Collapsed;
             ServicePage.Visibility = target == "Service" ? Visibility.Visible : Visibility.Collapsed;
             PluginsPage.Visibility = target == "Plugins" ? Visibility.Visible : Visibility.Collapsed;
+            SkillsPage.Visibility = target == "Skills" ? Visibility.Visible : Visibility.Collapsed;
             ComponentsPage.Visibility = target == "Components" ? Visibility.Visible : Visibility.Collapsed;
             UpdatesPage.Visibility = target == "Updates" ? Visibility.Visible : Visibility.Collapsed;
             AboutPage.Visibility = target == "About" ? Visibility.Visible : Visibility.Collapsed;
+            DeveloperPage.Visibility = target == "Developer" ? Visibility.Visible : Visibility.Collapsed;
 
             FrameworkElement page = target switch
             {
-                "Theme" => ThemePage,
-                "Api" => ApiPage,
+                "Home" => HomePage,
+                "Theme" => ThemePage,                "Api" => ApiPage,
                 "Alerts" => AlertsPage,
                 "Service" => ServicePage,
                 "Plugins" => PluginsPage,
+                "Skills" => SkillsPage,
                 "Components" => ComponentsPage,
                 "Updates" => UpdatesPage,
                 "About" => AboutPage,
+                "Developer" => DeveloperPage,
                 _ => GeneralPage
             };
 
             NavigationViewItem item = target switch
             {
+                "Home" => HomeNavItem,
                 "Theme" => ThemeNavItem,
                 "Api" => ApiNavItem,
                 "Alerts" => AlertsNavItem,
                 "Service" => ServiceNavItem,
                 "Plugins" => PluginsNavItem,
+                "Skills" => SkillsNavItem,
                 "Components" => ComponentsNavItem,
                 "Updates" => UpdatesNavItem,
                 "About" => AboutNavItem,
+                "Developer" => DeveloperNavItem,
                 _ => GeneralNavItem
             };
 
             _suppressNavigation = true;
             try
             {
+                if (target == "Developer")
+                {
+                    // 开发者入口默认隐藏（五连点才解锁）。预览或直接切页时也要能选中它。
+                    DeveloperNavItem.Visibility = Visibility.Visible;
+                }
+
                 SettingsNavigationView.SelectedItem = item;
                 SettingsScroller.ChangeView(null, 0, null, true);
             }
@@ -2637,19 +3232,51 @@ namespace DeepSeekHarnessLauncher
             }
 
             AnimatePage(page);
+            if (target == "Home")
+            {
+                LoadHomePage();
+            }
+
             if (target == "Plugins" && !String.IsNullOrEmpty(pluginTab))
             {
                 SelectPluginTab(pluginTab);
             }
 
+            if (target == "Skills")
+            {
+                SelectSkillTab(skillTab);
+                LoadLocalSkills();
+                if (!_skillsLoaded)
+                {
+                    _skillsLoaded = true;
+                    LoadSkillCatalog(false);
+                }
+
+                if (!_featuredSkillsLoaded)
+                {
+                    LoadFeaturedSkills(false);
+                }
+            }
+
+            if (target == "Updates")
+            {
+                ApplyPreviewUpdatePhase(skillTab);
+            }
+
             if (target == "About")
             {
                 _ = LoadAuthorAvatarAsync();
+                LoadChangelog(false);
             }
 
             if (target == "Components")
             {
                 RefreshComponents();
+            }
+
+            if (target == "Developer")
+            {
+                LoadDeveloperCenter();
             }
         }
 
@@ -2669,6 +3296,24 @@ namespace DeepSeekHarnessLauncher
             }
 
             PluginViewTabs.SelectedItem = FeaturedPluginsTab;
+        }
+
+        /// <summary>预览用：允许 --settings-preview=Skills:Local 直接落在指定分页。</summary>
+        private void SelectSkillTab(string tab)
+        {
+            if (String.Equals(tab, "Local", StringComparison.OrdinalIgnoreCase))
+            {
+                SkillViewTabs.SelectedItem = LocalSkillsTab;
+                return;
+            }
+
+            if (String.Equals(tab, "Featured", StringComparison.OrdinalIgnoreCase))
+            {
+                SkillViewTabs.SelectedItem = FeaturedSkillsTab;
+                return;
+            }
+
+            SkillViewTabs.SelectedItem = MarketSkillsTab;
         }
 
         private void AnimatePage(FrameworkElement page)
@@ -2713,6 +3358,10 @@ namespace DeepSeekHarnessLauncher
             storyboard.Children.Add(opacity);
             storyboard.Children.Add(offset);
             storyboard.Begin();
+
+            // 兜底：动画没跑起来时（例如窗口还没 Show，或元素刚建好就切页），
+            // Opacity 会停在 0，整页看不见。动画在跑的话它会覆盖这个本地值。
+            page.Opacity = 1;
         }
 
         private void ConfigureWindow(WindowId windowId)
@@ -3154,6 +3803,104 @@ namespace DeepSeekHarnessLauncher
             UpdateUpdateOptions();
         }
 
+        /// <summary>切换发布通道：存下来，然后立刻按新通道重查一次（只检查，不自动装）。</summary>
+        private void UpdateChannelComboBox_SelectionChanged(
+            object sender,
+            SelectionChangedEventArgs args)
+        {
+            if (_initializing)
+            {
+                return;
+            }
+
+            _settings.LauncherChannel = GetSelectedTag(
+                LauncherChannelComboBox,
+                "Stable");
+            _settings.DshChannel = GetSelectedTag(DshChannelComboBox, "Auto");
+            SaveSettings();
+            RefreshUpdateSummaries();
+            _host.CheckLauncherUpdate();
+            _host.CheckDshUpdate();
+        }
+
+        private static string DescribeDshChannel(string channel)
+        {
+            if (String.Equals(channel, "latest", StringComparison.OrdinalIgnoreCase))
+            {
+                return "正式版";
+            }
+
+            if (String.Equals(channel, "next", StringComparison.OrdinalIgnoreCase))
+            {
+                return "预览版";
+            }
+
+            if (String.Equals(channel, "alpha", StringComparison.OrdinalIgnoreCase))
+            {
+                return "内测版";
+            }
+
+            return "自动模式";
+        }
+
+        private static string DescribeLauncherChannel(string channel)
+        {
+            if (String.Equals(channel, "Preview", StringComparison.OrdinalIgnoreCase))
+            {
+                return "内测版";
+            }
+
+            if (String.Equals(channel, "Auto", StringComparison.OrdinalIgnoreCase))
+            {
+                return "自动模式";
+            }
+
+            return "正式版";
+        }
+
+        private static string ComposeVersionMessage(UpdateUiSnapshot state)
+        {
+            string message = String.IsNullOrWhiteSpace(state.Version)
+                ? state.Detail
+                : "v" + state.Version;
+            if (!String.IsNullOrWhiteSpace(state.Version)
+                && !String.IsNullOrWhiteSpace(state.Detail))
+            {
+                message += "（" + state.Detail + "）";
+            }
+
+            return message;
+        }
+
+        /// <summary>三张卡片上的「当前版本 / 通道」摘要。</summary>
+        private void RefreshUpdateSummaries()
+        {
+            if (LauncherUpdateSummaryText != null)
+            {
+                LauncherUpdateSummaryText.Text = "当前 v" + Constants.Version
+                    + " · "
+                    + DescribeLauncherChannel(
+                        GetSelectedTag(LauncherChannelComboBox, "Stable"));
+            }
+
+            if (DshUpdateSummaryText != null)
+            {
+                string installed = DshUpdateService.GetInstalledVersion(
+                    _settings.DshRoot);
+                DshUpdateSummaryText.Text = "当前 "
+                    + (String.IsNullOrWhiteSpace(installed) ? "未检测到" : installed)
+                    + " · "
+                    + DescribeDshChannel(GetSelectedTag(DshChannelComboBox, "Auto"));
+            }
+
+            if (PluginUpdateSummaryText != null)
+            {
+                PluginUpdateSummaryText.Text = "已安装 "
+                    + _localPlugins.Count
+                    + " 个插件 · 更新走在线插件页";
+            }
+        }
+
         private void UpdateUpdateOptions()
         {
             bool launcherUpdatesEnabled =
@@ -3272,7 +4019,7 @@ namespace DeepSeekHarnessLauncher
                 XamlRoot = SettingsRoot.XamlRoot,
                 Title = title,
                 Content = message,
-                CloseButtonText = "确定"
+                CloseButtonText = "关闭"
             };
             await dialog.ShowAsync();
         }
@@ -3414,6 +4161,7 @@ namespace DeepSeekHarnessLauncher
                 UIElement.PointerPressedEvent,
                 new PointerEventHandler(SettingsRoot_PointerPressed));
             _host.UpdateStateChanged -= Host_UpdateStateChanged;
+            AcceleratorLatencyService.Changed -= AcceleratorLatency_Changed;
             LauncherAppearance.Unregister(this);
             Destroyed();
         }
@@ -3514,5 +4262,3320 @@ namespace DeepSeekHarnessLauncher
             return element.Tag as string ?? String.Empty;
         }
 
+        // ================================================================ 技能页
+
+        private List<SkillCardItem> _localSkills = new List<SkillCardItem>();
+        private List<SkillCardItem> _marketSkills = new List<SkillCardItem>();
+        private List<SkillCardItem> _marketSkillsFiltered = new List<SkillCardItem>();
+        private List<SkillCardItem> _featuredSkills = new List<SkillCardItem>();
+        private List<SkillCardItem> _featuredSkillsFiltered = new List<SkillCardItem>();
+        private int _localSkillPage;
+        private int _localSkillPageSize = 9;
+        private string _localSkillKeyword = String.Empty;
+        /// <summary>
+        /// 语言筛选。**默认必须是 "All"**：下拉框默认选的是「显示全部语言」（SelectedIndex=1），
+        /// 而 XAML 里的选中不会触发 SelectionChanged，字段留成 "Local" 的话就会
+        /// 在用户没选的情况下偷偷只看中文 —— 表现是「结果一百多个，列表只有一页」。
+        /// </summary>
+        private string _localSkillLanguage = "All";
+
+        private string _skillMarketLanguage = "All";
+        private int _skillMarketPage;
+        private int _skillMarketPageSize = 9;
+        private string _skillMarketKeyword = String.Empty;
+        private int _featuredSkillPage;
+        private int _featuredSkillPageSize = 9;
+        private string _featuredSkillKeyword = String.Empty;
+        private bool _skillsLoaded;
+        private bool _skillMarketLoading;
+        private bool _featuredSkillsLoaded;
+
+        /// <summary>官方推荐技能：启动器仓库的 featured-skills.json，失败回退内置列表。</summary>
+        private void LoadFeaturedSkills(bool forceRefresh)
+        {
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                FeaturedSkillResult result = FeaturedSkillService.Load(
+                    _settings,
+                    forceRefresh,
+                    _host.Log);
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    _featuredSkillsLoaded = true;
+                    _featuredSkills = new List<SkillCardItem>();
+                    for (int index = 0; index < result.Items.Count; index++)
+                    {
+                        _featuredSkills.Add(FeaturedCardFrom(result.Items[index]));
+                    }
+
+                    _featuredSkillPage = 0;
+                    RebuildFeaturedSkillPage();
+
+                    if (result.Items.Count == 0)
+                    {
+                        FeaturedSkillSummaryText.Text = "没拿到推荐技能";
+                    }
+                });
+            });
+        }
+
+        private SkillCardItem FeaturedCardFrom(FeaturedSkillItem item)
+        {
+            bool installed = IsSkillInstalled(item.Name);
+            return new SkillCardItem
+            {
+                Name = item.Name,
+                Description = String.IsNullOrWhiteSpace(item.Description)
+                    ? "官方推荐的技能。"
+                    : item.Description,
+                Status = installed ? "已安装" : String.Empty,
+                Tag1 = item.Category,
+                Tag2 = "官方推荐",
+                Meta = item.FullName
+                    + (String.IsNullOrWhiteSpace(item.RepositoryPath)
+                        ? String.Empty
+                        : "/" + item.RepositoryPath),
+                IconSource = SkillAvatar(item.Owner),
+                // 语言判定用仓库原文（卡片上的 Name/Description 会被拼上中文）。
+                LanguageSample = (item.Name ?? String.Empty)
+                    + " " + (item.Description ?? String.Empty)
+                    + " " + (item.FullName ?? String.Empty),
+                Repository = item.FullName,
+                RepositoryPath = item.RepositoryPath,
+                DefaultBranch = item.DefaultBranch,
+                Category = item.Category,
+                SourceKind = SkillSourceKind.Market,
+                ShowLocalActions = false,
+                ShowOnlineActions = true,
+                PrimaryAction = installed ? "重新安装" : "安装",
+                PrimaryEnabled = true
+            };
+        }
+
+        private void RebuildFeaturedSkillPage()
+        {
+            if (FeaturedSkillRepeater == null || FeaturedSkillSummaryText == null)
+            {
+                return;
+            }
+
+            Dictionary<string, SkillInstallRecord> records = SkillInstallStore.Load();
+            List<SkillCardItem> filtered = new List<SkillCardItem>();
+            for (int index = 0; index < _featuredSkills.Count; index++)
+            {
+                SkillCardItem item = _featuredSkills[index];
+                if (_featuredSkillKeyword.Length > 0
+                    && !Matches(item, _featuredSkillKeyword))
+                {
+                    continue;
+                }
+
+                item.PrimaryAction = records.ContainsKey(item.Name)
+                    ? "重新安装"
+                    : "安装";
+                filtered.Add(item);
+            }
+
+            _featuredSkillsFiltered = filtered;
+
+            int pageSize = Math.Max(1, _featuredSkillPageSize);
+            int totalPages = Math.Max(
+                1,
+                (int)Math.Ceiling(filtered.Count / (double)pageSize));
+            if (_featuredSkillPage > totalPages - 1)
+            {
+                _featuredSkillPage = totalPages - 1;
+            }
+
+            if (_featuredSkillPage < 0)
+            {
+                _featuredSkillPage = 0;
+            }
+
+            int start = _featuredSkillPage * pageSize;
+            int end = Math.Min(start + pageSize, filtered.Count);
+            List<SkillCardItem> page = new List<SkillCardItem>();
+            for (int index = start; index < end; index++)
+            {
+                page.Add(filtered[index]);
+            }
+
+            FeaturedSkillRepeater.ItemsSource = page;
+            if (_featuredSkills.Count == 0)
+            {
+                FeaturedSkillSummaryText.Text = "没拿到推荐技能，稍后重试。";
+            }
+            else
+            {
+                FeaturedSkillSummaryText.Text = _featuredSkillKeyword.Length == 0
+                    ? "共 " + _featuredSkills.Count + " 个推荐技能"
+                    : "命中 " + filtered.Count + " / " + _featuredSkills.Count
+                        + " 个推荐技能";
+            }
+
+            FeaturedSkillPageText.Text = (_featuredSkillPage + 1) + " / " + totalPages;
+            FeaturedSkillPreviousPageButton.IsEnabled = _featuredSkillPage > 0;
+            FeaturedSkillNextPageButton.IsEnabled = _featuredSkillPage + 1 < totalPages;
+        }
+
+        private void FeaturedSkillSearch_Changed(
+            AutoSuggestBox sender,
+            AutoSuggestBoxTextChangedEventArgs args)
+        {
+            if (_initializing)
+            {
+                return;
+            }
+
+            _featuredSkillKeyword = (FeaturedSkillSearchBox.Text ?? String.Empty).Trim();
+            _featuredSkillPage = 0;
+            RebuildFeaturedSkillPage();
+        }
+
+
+        /// <summary>在线技能目录：本地 / 在线两页共用的加载入口。</summary>
+        private void LoadSkillCatalog(bool forceRefresh)
+        {
+            if (_skillMarketLoading)
+            {
+                return;
+            }
+
+            _skillMarketLoading = true;
+            SkillCatalogInfoBar.Severity = InfoBarSeverity.Informational;
+            SkillCatalogInfoBar.Title = "正在读取技能目录";
+            SkillCatalogInfoBar.Message = "正在从 GitHub 搜索带 SKILL.md 的仓库…";
+            SkillCatalogInfoBar.IsOpen = true;
+
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                SkillMarketService.MarketResult result =
+                    SkillMarketService.Load(_settings, forceRefresh, _host.Log);
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    _skillMarketLoading = false;
+                    ApplySkillCatalog(result);
+                });
+            });
+        }
+
+        private void ApplySkillCatalog(SkillMarketService.MarketResult result)
+        {
+            _marketSkills = new List<SkillCardItem>();
+            if (result != null)
+            {
+                for (int index = 0; index < result.Items.Count; index++)
+                {
+                    _marketSkills.Add(MarketCardFrom(result.Items[index]));
+                }
+            }
+
+            _skillMarketPage = 0;
+            RebuildSkillMarketPage();
+
+            if (result == null)
+            {
+                SkillCatalogInfoBar.Severity = InfoBarSeverity.Error;
+                SkillCatalogInfoBar.Title = "技能目录读取失败";
+                SkillCatalogInfoBar.Message = "没有拿到任何数据。";
+                SkillCatalogInfoBar.IsOpen = true;
+                return;
+            }
+
+            if (result.RateLimited)
+            {
+                SkillCatalogInfoBar.Severity = InfoBarSeverity.Warning;
+                SkillCatalogInfoBar.Title = "GitHub 接口限流";
+                SkillCatalogInfoBar.Message = "在插件页填一个 GitHub Token 再刷新，目录会大很多。";
+                SkillCatalogInfoBar.IsOpen = true;
+                return;
+            }
+
+            if (_marketSkills.Count == 0)
+            {
+                SkillCatalogInfoBar.Severity = InfoBarSeverity.Error;
+                SkillCatalogInfoBar.Title = "没找到技能";
+                SkillCatalogInfoBar.Message = result.Error ?? "换个刷新时机再试。";
+                SkillCatalogInfoBar.IsOpen = true;
+                return;
+            }
+
+            SkillCatalogInfoBar.Severity = InfoBarSeverity.Success;
+            SkillCatalogInfoBar.Title = result.FromCache ? "技能目录（本地缓存）" : "技能目录已更新";
+            SkillCatalogInfoBar.Message = _marketSkills.Count + " 条技能。"
+                + "安装后 DSH 会自动扫到，不用重启。";
+            SkillCatalogInfoBar.IsOpen = true;
+        }
+
+        private SkillCardItem MarketCardFrom(SkillMarketService.SkillMarketItem item)
+        {
+            return new SkillCardItem
+            {
+                Name = item.DisplayName,
+                Description = String.IsNullOrWhiteSpace(item.Description)
+                    ? "这个仓库没有写简介。"
+                    : item.Description,
+                // 卡片上只留分类和 stars：套装数量、语言都是仓库级信息，
+                // 一个仓库几十条技能时每张卡都重复一遍，等于噪音。
+                Tag1 = item.Category,
+                // 之前这里只塞了 StarsCount 没塞 Stars，而卡片的可见性由 Stars 决定，
+                // 于是星星永远不显示。
+                Stars = item.Stars > 0 ? FormatStars(item.Stars) : String.Empty,
+                // 语言判定要用仓库原文，不能看卡片上被拼过中文的字段。
+                LanguageSample = (item.Name ?? String.Empty)
+                    + " " + (item.Description ?? String.Empty)
+                    + " " + (item.FullName ?? String.Empty)
+                    + " " + (item.RepositoryPath ?? String.Empty),
+                Meta = item.FullName
+                    + (String.IsNullOrWhiteSpace(item.RepositoryPath)
+                        ? String.Empty
+                        : "/" + item.RepositoryPath),
+                IconSource = SkillAvatar(item.Owner),
+                Repository = item.FullName,
+                RepositoryPath = item.RepositoryPath,
+                ArchivePath = item.LocalArchive,
+                DefaultBranch = item.DefaultBranch,
+                PushedAt = item.PushedAt,
+                StarsCount = item.Stars,
+                RepoSkillCount = item.RepoSkillCount,
+                Category = item.Category,
+                Language = item.Language,
+                License = item.License,
+                SourceKind = SkillSourceKind.Market,
+                ShowLocalActions = false,
+                ShowOnlineActions = true,
+                PrimaryAction = IsSkillInstalled(item.Name) ? "重新安装" : "安装",
+                PrimaryEnabled = true
+            };
+        }
+
+        /// <summary>
+        /// 仓库头像。走加速档位：`github.com/&lt;owner&gt;.png` 在国内直连经常超时，
+        /// 套一层加速前缀才看得见（插件页的头像用的是市场图床，所以一直正常）。
+        /// </summary>
+        private ImageSource SkillAvatar(string owner)
+        {
+            if (String.IsNullOrWhiteSpace(owner))
+            {
+                return null;
+            }
+
+            string url = "https://github.com/" + owner.Trim() + ".png?size=64";
+            try
+            {
+                if (GitHubAccelerator.IsEnabled(_settings))
+                {
+                    List<string> candidates = GitHubAccelerator.Candidates(url, _settings);
+                    if (candidates.Count > 0)
+                    {
+                        url = candidates[0];
+                    }
+                }
+
+                return new BitmapImage(new Uri(url));
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static bool IsSkillInstalled(string name)
+        {
+            if (String.IsNullOrWhiteSpace(name))
+            {
+                return false;
+            }
+
+            return SkillInstallStore.Load().ContainsKey(name);
+        }
+
+        // ---------------------------------------------------------------- 本地技能
+
+        private void LoadLocalSkills()
+        {
+            List<SkillCardItem> cards = new List<SkillCardItem>();
+            List<SkillRootInfo> roots = SkillStore.CollectRoots(_settings);
+            try
+            {
+                List<SkillEntry> entries = SkillStore.Scan(_settings);
+                for (int index = 0; index < entries.Count; index++)
+                {
+                    SkillEntry entry = entries[index];
+                    cards.Add(new SkillCardItem
+                    {
+                        Name = entry.Name,
+                        Description = String.IsNullOrWhiteSpace(entry.Description)
+                            ? "这个技能没有写 description。"
+                            : entry.Description,
+                        Status = entry.Disabled ? "已停用" : String.Empty,
+                        Tag1 = entry.RootLabel,
+                        Tag2 = entry.IsBundle
+                            ? (entry.ResourceCount > 0
+                                ? entry.ResourceCount + " 个资源"
+                                : "仅 SKILL.md")
+                            : "单文件技能",
+                        Meta = entry.Directory,
+                        IconSource = SkillStore.ResolveIcon(entry.Directory),
+                        // 语言判定用技能自己的原文，不看上面被填过中文的 Description。
+                        LanguageSample = (entry.Name ?? String.Empty)
+                            + " " + (entry.Description ?? String.Empty)
+                            + " " + (entry.Directory ?? String.Empty),
+                        FilePath = entry.FilePath,
+                        Folder = entry.Directory,
+                        RootPath = entry.RootPath,
+                        Disabled = entry.Disabled,
+                        IsBundle = entry.IsBundle,
+                        Repository = entry.Repository,
+                        RepositoryPath = entry.RepositoryPath,
+                        SourceKind = SkillSourceKind.Local,
+                        ShowLocalActions = true,
+                        ShowOnlineActions = false,
+                        PrimaryAction = entry.Disabled ? "启用" : "停用"
+                    });
+                }
+            }
+            catch (Exception exception)
+            {
+                _host.Log("本地技能扫描失败：" + exception.Message);
+            }
+
+            _localSkills = cards;
+            _localSkillPage = 0;
+            RebuildLocalSkillPage();
+
+            if (SkillRootsText != null)
+            {
+                List<string> paths = new List<string>();
+                for (int index = 0; index < roots.Count; index++)
+                {
+                    paths.Add(roots[index].Label + " → " + roots[index].Path
+                        + (Directory.Exists(roots[index].Path) ? "（已存在）" : "（未创建）"));
+                }
+
+                SkillRootsText.Text = "技能根：" + String.Join("　", paths.ToArray());
+            }
+
+            _host.Log("本地技能列表：" + cards.Count + " 个");
+        }
+
+        private void LocalSkillSearch_Changed(
+            AutoSuggestBox sender,
+            AutoSuggestBoxTextChangedEventArgs args)
+        {
+            if (_initializing)
+            {
+                return;
+            }
+
+            _localSkillKeyword = (LocalSkillSearchBox.Text ?? String.Empty).Trim();
+            _localSkillPage = 0;
+            RebuildLocalSkillPage();
+        }
+
+        private void LocalSkillPageSize_Changed(
+            object sender,
+            SelectionChangedEventArgs args)
+        {
+            if (_initializing)
+            {
+                return;
+            }
+
+            int size;
+            if (Int32.TryParse(GetSelectedTag(LocalSkillPageSizeComboBox, "9"), out size)
+                && size > 0)
+            {
+                _localSkillPageSize = size;
+            }
+
+            _localSkillPage = 0;
+            RebuildLocalSkillPage();
+        }
+
+        private void RebuildLocalSkillPage()
+        {
+            if (LocalSkillRepeater == null || LocalSkillSummaryText == null)
+            {
+                return;
+            }
+
+            List<SkillCardItem> filtered = new List<SkillCardItem>();
+            for (int index = 0; index < _localSkills.Count; index++)
+            {
+                SkillCardItem item = _localSkills[index];
+                if (_localSkillKeyword.Length == 0
+                    || Matches(item, _localSkillKeyword))
+                {
+                    filtered.Add(item);
+                }
+            }
+
+            if (String.Equals(
+                _localSkillLanguage,
+                "Local",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                // 「只看中文内容」是真过滤，不是只排个序 —— 以前只把中文顶到前面，
+                // 目录里九成是英文，用户看到的就是「选了跟没选一样」。
+                List<SkillCardItem> chinese = new List<SkillCardItem>();
+                for (int index = 0; index < filtered.Count; index++)
+                {
+                    if (IsLocalLanguageCard(filtered[index]))
+                    {
+                        chinese.Add(filtered[index]);
+                    }
+                }
+
+                filtered = chinese;
+            }
+            int pageSize = Math.Max(1, _localSkillPageSize);
+            int totalPages = Math.Max(
+                1,
+                (int)Math.Ceiling(filtered.Count / (double)pageSize));
+            if (_localSkillPage > totalPages - 1)
+            {
+                _localSkillPage = totalPages - 1;
+            }
+
+            if (_localSkillPage < 0)
+            {
+                _localSkillPage = 0;
+            }
+
+            int start = _localSkillPage * pageSize;
+            int end = Math.Min(start + pageSize, filtered.Count);
+            List<SkillCardItem> page = new List<SkillCardItem>();
+            for (int index = start; index < end; index++)
+            {
+                page.Add(filtered[index]);
+            }
+
+            LocalSkillRepeater.ItemsSource = page;
+            if (_localSkills.Count == 0)
+            {
+                LocalSkillSummaryText.Text = "还没有本地技能。去在线技能页装一个。";
+            }
+            else
+            {
+                LocalSkillSummaryText.Text = _localSkillKeyword.Length == 0
+                    ? "共 " + _localSkills.Count + " 个本地技能"
+                    : "命中 " + filtered.Count + " / " + _localSkills.Count
+                        + " 个本地技能";
+            }
+
+            LocalSkillPageText.Text = (_localSkillPage + 1) + " / " + totalPages;
+            LocalSkillPreviousPageButton.IsEnabled = _localSkillPage > 0;
+            LocalSkillNextPageButton.IsEnabled = _localSkillPage + 1 < totalPages;
+        }
+
+        // ---------------------------------------------------------------- 在线技能
+
+        private void SkillMarketSearch_Changed(
+            AutoSuggestBox sender,
+            AutoSuggestBoxTextChangedEventArgs args)
+        {
+            if (_initializing)
+            {
+                return;
+            }
+
+            _skillMarketKeyword = (SkillMarketSearchBox.Text ?? String.Empty).Trim();
+            _skillMarketPage = 0;
+            RebuildSkillMarketPage();
+        }
+
+        private void SkillMarketFilter_Changed(
+            object sender,
+            SelectionChangedEventArgs args)
+        {
+            if (_initializing)
+            {
+                return;
+            }
+
+            _skillMarketLanguage = GetSelectedTag(SkillLanguageComboBox, "Local");
+            _skillMarketPage = 0;
+            RebuildSkillMarketPage();
+        }
+
+        private void LocalSkillFilter_Changed(
+            object sender,
+            SelectionChangedEventArgs args)
+        {
+            if (_initializing)
+            {
+                return;
+            }
+
+            _localSkillLanguage = GetSelectedTag(LocalSkillLanguageComboBox, "Local");
+            _localSkillPage = 0;
+            RebuildLocalSkillPage();
+        }
+
+        private void SkillMarketPageSize_Changed(
+            object sender,
+            SelectionChangedEventArgs args)
+        {
+            if (_initializing)
+            {
+                return;
+            }
+
+            int size;
+            if (Int32.TryParse(GetSelectedTag(SkillMarketPageSizeComboBox, "9"), out size)
+                && size > 0)
+            {
+                _skillMarketPageSize = size;
+            }
+
+            _skillMarketPage = 0;
+            RebuildSkillMarketPage();
+        }
+
+        private void RebuildSkillMarketPage()
+        {
+            if (SkillMarketRepeater == null || SkillCatalogSummaryText == null)
+            {
+                return;
+            }
+
+            string category = GetSelectedTag(SkillCategoryComboBox, "All");
+            string sort = GetSelectedTag(SkillSortComboBox, "Stars");
+            Dictionary<string, SkillInstallRecord> records = SkillInstallStore.Load();
+
+            List<SkillCardItem> filtered = new List<SkillCardItem>();
+            for (int index = 0; index < _marketSkills.Count; index++)
+            {
+                SkillCardItem item = _marketSkills[index];
+                if (String.Equals(category, "Installed", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!records.ContainsKey(item.Name))
+                    {
+                        continue;
+                    }
+                }
+                else if (!String.Equals(category, "All", StringComparison.OrdinalIgnoreCase)
+                    && !String.Equals(
+                        category,
+                        item.Category,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (_skillMarketKeyword.Length > 0
+                    && !Matches(item, _skillMarketKeyword))
+                {
+                    continue;
+                }
+
+                if (String.Equals(
+                        _skillMarketLanguage,
+                        "Local",
+                        StringComparison.OrdinalIgnoreCase)
+                    && !IsLocalLanguageCard(item))
+                {
+                    // 「只看中文内容」是真过滤：目录里绝大多数是英文仓库，
+                    // 以前只把中文顶到最前面，用户翻两页就以为筛选没生效。
+                    continue;
+                }
+
+                item.PrimaryAction = records.ContainsKey(item.Name)
+                    ? "重新安装"
+                    : "安装";
+                filtered.Add(item);
+            }
+
+            filtered.Sort(delegate(SkillCardItem left, SkillCardItem right)
+            {
+                if (String.Equals(sort, "Name", StringComparison.OrdinalIgnoreCase))
+                {
+                    return String.Compare(
+                        left.Name,
+                        right.Name,
+                        StringComparison.OrdinalIgnoreCase);
+                }
+
+                if (String.Equals(sort, "Updated", StringComparison.OrdinalIgnoreCase))
+                {
+                    return String.Compare(
+                        right.PushedAt,
+                        left.PushedAt,
+                        StringComparison.OrdinalIgnoreCase);
+                }
+
+                return right.StarsCount.CompareTo(left.StarsCount);
+            });
+
+            _marketSkillsFiltered = filtered;
+
+            int pageSize = Math.Max(1, _skillMarketPageSize);
+            int totalPages = Math.Max(
+                1,
+                (int)Math.Ceiling(filtered.Count / (double)pageSize));
+            if (_skillMarketPage > totalPages - 1)
+            {
+                _skillMarketPage = totalPages - 1;
+            }
+
+            if (_skillMarketPage < 0)
+            {
+                _skillMarketPage = 0;
+            }
+
+            int start = _skillMarketPage * pageSize;
+            int end = Math.Min(start + pageSize, filtered.Count);
+            List<SkillCardItem> page = new List<SkillCardItem>();
+            for (int index = start; index < end; index++)
+            {
+                page.Add(filtered[index]);
+            }
+
+            SkillMarketRepeater.ItemsSource = page;
+            if (_marketSkills.Count == 0)
+            {
+                SkillCatalogSummaryText.Text = "没加载到技能。点「刷新」重试。";
+            }
+            else if (filtered.Count == 0)
+            {
+                SkillCatalogSummaryText.Text = "没有匹配的技能。";
+            }
+            else
+            {
+                string summary = _skillMarketKeyword.Length == 0
+                    ? "共 " + _marketSkills.Count + " 条技能"
+                    : "命中 " + filtered.Count + " / " + _marketSkills.Count
+                        + " 条技能";
+                if (String.Equals(
+                    _skillMarketLanguage,
+                    "Local",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    // 筛选开着时必须把过滤后的条数说出来，不然「一百多条却只有一页」看着像分页坏了。
+                    summary = "只看中文 " + filtered.Count + " 条 · 共 "
+                        + _marketSkills.Count + " 条技能";
+                }
+
+                SkillCatalogSummaryText.Text = summary;
+            }
+
+            SkillMarketPageText.Text = (_skillMarketPage + 1) + " / " + totalPages;
+            SkillMarketPreviousPageButton.IsEnabled = _skillMarketPage > 0;
+            SkillMarketNextPageButton.IsEnabled = _skillMarketPage + 1 < totalPages;
+        }
+
+        private static bool Matches(SkillCardItem item, string keyword)
+        {
+            return Contains(item.Name, keyword)
+                || Contains(item.Description, keyword)
+                || Contains(item.Meta, keyword)
+                || Contains(item.Category, keyword);
+        }
+
+        /// <summary>
+        /// 条目内容是不是中文。只看条目自己的名字、简介和仓库路径——
+        /// **不能看分类**：分类是启动器自己写的中文标签，所有条目都有，
+        /// 一算就全体命中，「优先显示中文内容」等于没生效。
+        /// </summary>
+        private static bool IsLocalLanguageCard(SkillCardItem item)
+        {
+            if (item == null)
+            {
+                return false;
+            }
+
+            // 优先用原文样本；没有的话把启动器拼的中文后缀剥掉再判。
+            string sample = item.LanguageSample;
+            if (String.IsNullOrWhiteSpace(sample))
+            {
+                sample = StripGeneratedChinese(item.Name)
+                    + " " + StripGeneratedChinese(item.Description);
+            }
+
+            return HasCjk(sample) || HasCjk(item.RepositoryPath);
+        }
+
+        /// <summary>
+        /// 去掉启动器自己拼的中文文案：「（仓库根技能）」「这个仓库没有写简介。」。
+        /// 不剥掉的话中文判定会全体命中 —— 「只看中文内容」就是被这两句搞成摆设的。
+        /// </summary>
+        private static string StripGeneratedChinese(string value)
+        {
+            if (String.IsNullOrEmpty(value))
+            {
+                return String.Empty;
+            }
+
+            return value
+                .Replace("（仓库根技能）", String.Empty)
+                .Replace("(仓库根技能)", String.Empty)
+                .Replace("这个仓库没有写简介。", String.Empty)
+                .Replace("官方推荐的技能。", String.Empty)
+                .Trim();
+        }
+
+        private static bool HasCjk(string value)
+        {
+            if (String.IsNullOrEmpty(value))
+            {
+                return false;
+            }
+
+            for (int index = 0; index < value.Length; index++)
+            {
+                char ch = value[index];
+                if (ch >= 0x2E80 && ch <= 0x9FFF)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool Contains(string value, string keyword)
+        {
+            return value != null
+                && value.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        // ---------------------------------------------------------------- 本地动作
+
+        private static SkillCardItem SkillCardFrom(object sender)
+        {
+            FrameworkElement element = sender as FrameworkElement;
+            if (element == null)
+            {
+                return null;
+            }
+
+            // ItemsRepeater 的模板不一定给按钮塞 DataContext，所以模板把整条卡片绑到了 Tag。
+            SkillCardItem card = element.Tag as SkillCardItem;
+            return card ?? element.DataContext as SkillCardItem;
+        }
+
+        private void OpenSkillFolder_Click(object sender, RoutedEventArgs args)
+        {
+            SkillCardItem card = SkillCardFrom(sender);
+            if (card == null)
+            {
+                return;
+            }
+
+            string folder = card.Folder;
+            if (String.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+            {
+                SkillActionInfoBar.Severity = InfoBarSeverity.Warning;
+                SkillActionInfoBar.Title = "找不到技能目录";
+                SkillActionInfoBar.Message = folder ?? "这个技能没有本地目录。";
+                SkillActionInfoBar.IsOpen = true;
+                return;
+            }
+
+            OpenDirectory(folder);
+        }
+
+        private void ToggleSkill_Click(object sender, RoutedEventArgs args)
+        {
+            SkillCardItem card = SkillCardFrom(sender);
+            if (card == null)
+            {
+                return;
+            }
+
+            SkillEntry entry = FindLocalSkill(card.Name, card.RootPath);
+            if (entry == null)
+            {
+                SkillActionInfoBar.Severity = InfoBarSeverity.Warning;
+                SkillActionInfoBar.Title = "找不到这个技能";
+                SkillActionInfoBar.Message = "技能文件可能已经被挪走了。";
+                SkillActionInfoBar.IsOpen = true;
+                LoadLocalSkills();
+                return;
+            }
+
+            string error;
+            bool ok = entry.Disabled
+                ? SkillStore.Enable(entry, out error)
+                : SkillStore.Disable(entry, out error);
+
+            SkillActionInfoBar.Severity = ok
+                ? InfoBarSeverity.Success
+                : InfoBarSeverity.Error;
+            SkillActionInfoBar.Title = ok
+                ? (entry.Disabled ? "已启用 " + entry.Name : "已停用 " + entry.Name)
+                : "操作失败";
+            SkillActionInfoBar.Message = ok
+                ? (entry.Disabled
+                    ? "DSH 下一步就会重新看到这个技能。"
+                    : "文件改名成了 SKILL.md.disabled，DSH 会把它从目录里摘掉。")
+                : (error ?? "未知错误。");
+            SkillActionInfoBar.IsOpen = true;
+            LoadLocalSkills();
+        }
+
+        private async void DeleteSkill_Click(object sender, RoutedEventArgs args)
+        {
+            SkillCardItem card = SkillCardFrom(sender);
+            if (card == null)
+            {
+                return;
+            }
+
+            SkillEntry entry = FindLocalSkill(card.Name, card.RootPath);
+            if (entry == null)
+            {
+                SkillActionInfoBar.Severity = InfoBarSeverity.Warning;
+                SkillActionInfoBar.Title = "找不到这个技能";
+                SkillActionInfoBar.Message = "技能文件可能已经被挪走了。";
+                SkillActionInfoBar.IsOpen = true;
+                LoadLocalSkills();
+                return;
+            }
+
+            ContentDialog confirm = new ContentDialog
+            {
+                XamlRoot = SettingsRoot.XamlRoot,
+                Title = "删除 " + entry.Name,
+                Content = "不会真的删掉：技能会被挪到 "
+                    + SkillStore.TrashDirectory
+                    + "，需要的话自己搬回来。",
+                PrimaryButtonText = "删除",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Close
+            };
+            ContentDialogResult answer = await confirm.ShowAsync();
+            if (answer != ContentDialogResult.Primary)
+            {
+                return;
+            }
+
+            string error;
+            bool ok = SkillStore.Delete(entry, out error);
+            SkillActionInfoBar.Severity = ok
+                ? InfoBarSeverity.Success
+                : InfoBarSeverity.Error;
+            SkillActionInfoBar.Title = ok ? "已删除 " + entry.Name : "删除失败";
+            SkillActionInfoBar.Message = ok
+                ? "已挪进回收目录，DSH 下一步就会把它从目录里摘掉。"
+                : (error ?? "未知错误。");
+            SkillActionInfoBar.IsOpen = true;
+            LoadLocalSkills();
+        }
+
+        private SkillEntry FindLocalSkill(string name, string rootPath)
+        {
+            if (String.IsNullOrWhiteSpace(name))
+            {
+                return null;
+            }
+
+            List<SkillEntry> entries = SkillStore.Scan(_settings);
+            for (int index = 0; index < entries.Count; index++)
+            {
+                if (!String.Equals(
+                    entries[index].Name,
+                    name,
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (String.IsNullOrWhiteSpace(rootPath)
+                    || String.Equals(
+                        entries[index].RootPath,
+                        rootPath,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return entries[index];
+                }
+            }
+
+            return null;
+        }
+
+        // ---------------------------------------------------------------- 在线动作
+
+        private void InstallSkill_Click(object sender, RoutedEventArgs args)
+        {
+            InstallSkill_Click(SkillCardFrom(sender), args);
+        }
+
+        private void InstallSkill_Click(SkillCardItem card, RoutedEventArgs args)
+        {
+            if (card == null)
+            {
+                return;
+            }
+
+            if (card.Busy)
+            {
+                return;
+            }
+
+            SkillMarketService.SkillMarketItem item =
+                new SkillMarketService.SkillMarketItem
+                {
+                    Owner = OwnerOf(card.Repository),
+                    Repository = RepositoryOf(card.Repository),
+                    RepositoryPath = card.RepositoryPath,
+                    LocalArchive = card.ArchivePath,
+                    Name = card.Name,
+                    Description = card.Description,
+                    Stars = card.StarsCount,
+                    Language = card.Language,
+                    License = card.License,
+                    PushedAt = card.PushedAt,
+                    DefaultBranch = String.IsNullOrWhiteSpace(card.DefaultBranch)
+                        ? "main"
+                        : card.DefaultBranch
+                };
+
+            card.Busy = true;
+            card.PrimaryEnabled = false;
+            card.PrimaryAction = "安装中";
+            card.ProgressValue = 0;
+            SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
+            SkillActionInfoBar.Title = "正在安装 " + card.Name;
+            SkillActionInfoBar.Message = card.Repository
+                + (String.IsNullOrWhiteSpace(card.RepositoryPath)
+                    ? String.Empty
+                    : "#" + card.RepositoryPath);
+            SkillActionInfoBar.IsOpen = true;
+
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                SkillInstallService.InstallResult installed =
+                    SkillInstallService.Install(
+                        _settings,
+                        item,
+                        delegate(string text, double value)
+                        {
+                            DispatcherQueue.TryEnqueue(delegate
+                            {
+                                card.PrimaryAction = ProgressActionLabel(text);
+                                card.ProgressValue = value;
+                            });
+                        },
+                        _host.Log,
+                        delegate(DownloadProgressInfo info)
+                        {
+                            // 顶部只写汇总，多个技能同时下时不会互相抢那一句话。
+                            string summary = _skillDownloadSession.Update(card.Name, info);
+                            if (summary != null)
+                            {
+                                DispatcherQueue.TryEnqueue(delegate
+                                {
+                                    SkillActionInfoBar.Message = summary;
+                                });
+                            }
+                        });
+
+                _skillDownloadSession.Remove(card.Name);
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    card.Busy = false;
+                    card.PrimaryEnabled = true;
+                    card.PrimaryAction = installed.Ok ? "重新安装" : "安装";
+                    SkillActionInfoBar.Severity = installed.Ok
+                        ? InfoBarSeverity.Success
+                        : InfoBarSeverity.Error;
+                    SkillActionInfoBar.Title = installed.Ok
+                        ? (installed.Replaced ? "已更新 " : "已安装 ") + card.Name
+                        : "安装失败";
+                    SkillActionInfoBar.Message = installed.Ok
+                        ? "落在 " + installed.Directory + "，DSH 会自动扫到。"
+                        : (installed.Error ?? "未知错误。");
+                    SkillActionInfoBar.IsOpen = true;
+                    LoadLocalSkills();
+                });
+            });
+        }
+
+        private SkillCardItem _detailSkillCard;
+
+        private void ShowSkillDetail_Click(object sender, RoutedEventArgs args)
+        {
+            SkillCardItem card = SkillCardFrom(sender);
+            if (card == null)
+            {
+                return;
+            }
+
+            _detailSkillCard = card;
+            _host.Log("点击：查看详情 " + card.Name);
+            SkillDetailTitle.Text = card.Name;
+            SkillDetailAuthor.Text = card.Repository
+                + (String.IsNullOrWhiteSpace(card.RepositoryPath)
+                    ? String.Empty
+                    : "/" + card.RepositoryPath);
+            SkillDetailStarsText.Text = "仓库 Stars " + card.StarsCount;
+            SkillDetailCategoryText.Text = card.Category;
+            SkillDetailLanguageText.Text = card.RepoSkillCount > 1
+                ? "同仓库 " + card.RepoSkillCount + " 个技能"
+                : "单技能仓库";
+            SkillDetailLicenseText.Text = String.IsNullOrWhiteSpace(card.License)
+                ? "未标注许可"
+                : card.License;
+            SkillDetailPushedText.Text = "最近更新 "
+                + (String.IsNullOrWhiteSpace(card.PushedAt) ? "-" : card.PushedAt);
+            SkillDetailDescription.Text = card.Description;
+            SkillDetailPathText.Text = String.IsNullOrWhiteSpace(card.RepositoryPath)
+                ? "这个技能在仓库根目录。"
+                : "技能目录：" + card.RepositoryPath;
+            InstallDetailSkillButton.Content = card.PrimaryAction;
+            InstallDetailSkillButton.IsEnabled = card.PrimaryEnabled;
+            _ = SkillDetailDialog.ShowAsync();        }
+
+        private void CloseSkillDetail_Click(object sender, RoutedEventArgs args)
+        {
+            SkillDetailDialog.Hide();
+        }
+
+        private void OpenDetailSkillRepository_Click(
+            object sender,
+            RoutedEventArgs args)
+        {
+            if (_detailSkillCard == null
+                || String.IsNullOrWhiteSpace(_detailSkillCard.Repository))
+            {
+                return;
+            }
+
+            OpenSkillRepositoryUrl(
+                _detailSkillCard.Repository,
+                _detailSkillCard.RepositoryPath,
+                _detailSkillCard.DefaultBranch);
+        }
+
+        private void InstallDetailSkill_Click(object sender, RoutedEventArgs args)
+        {
+            SkillCardItem card = _detailSkillCard;
+            SkillDetailDialog.Hide();
+            if (card == null)
+            {
+                return;
+            }
+
+            InstallSkill_Click(card, args);
+        }
+
+        // ---------------------------------------------------------------- 更新
+
+        private void CheckSkillUpdatesButton_Click(
+            object sender,
+            RoutedEventArgs args)
+        {
+            CheckSkillUpdatesButton.IsEnabled = false;
+            SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
+            SkillActionInfoBar.Title = "正在检查技能更新";
+            SkillActionInfoBar.Message = "对比安装记录和在线目录的最近提交时间。";
+            SkillActionInfoBar.IsOpen = true;
+
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                SkillUpdateCheckResult check = SkillUpdateService.Check(
+                    _settings,
+                    false,
+                    _marketSkills.Count == 0 ? null : MarketItemsFromCards(),
+                    _host.Log);
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    CheckSkillUpdatesButton.IsEnabled = true;
+                    if (check.RateLimited)
+                    {
+                        SkillActionInfoBar.Severity = InfoBarSeverity.Warning;
+                        SkillActionInfoBar.Title = "技能目录限流";
+                        SkillActionInfoBar.Message = "写入 GitHub Token 后重试。";
+                    }
+                    else if (!String.IsNullOrWhiteSpace(check.Error))
+                    {
+                        SkillActionInfoBar.Severity = InfoBarSeverity.Error;
+                        SkillActionInfoBar.Title = "检查更新失败";
+                        SkillActionInfoBar.Message = check.Error;
+                    }
+                    else if (check.Updates.Count > 0)
+                    {
+                        MarkSkillUpdates(check.Updates);
+                        SkillActionInfoBar.Severity = InfoBarSeverity.Success;
+                        SkillActionInfoBar.Title = check.Updates.Count + " 个技能有新版本";
+                        SkillActionInfoBar.Message = "点卡片里的“立即更新”。";
+                    }
+                    else
+                    {
+                        SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
+                        SkillActionInfoBar.Title = "技能都是最新的";
+                        SkillActionInfoBar.Message = "在线目录没有更新的提交时间。";
+                    }
+
+                    SkillActionInfoBar.IsOpen = true;
+                });
+            });
+        }
+
+        private void UpdateAllSkillsButton_Click(
+            object sender,
+            RoutedEventArgs args)
+        {
+            UpdateAllSkillsButton.IsEnabled = false;
+            SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
+            SkillActionInfoBar.Title = "正在更新全部技能";
+            SkillActionInfoBar.Message = "先检查有没有新版本，然后逐个覆盖安装。";
+            SkillActionInfoBar.IsOpen = true;
+
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                SkillUpdateCheckResult check = SkillUpdateService.Check(
+                    _settings,
+                    false,
+                    _marketSkills.Count == 0 ? null : MarketItemsFromCards(),
+                    _host.Log);
+
+                if (check.RateLimited || check.Updates.Count == 0)
+                {
+                    DispatcherQueue.TryEnqueue(delegate
+                    {
+                        UpdateAllSkillsButton.IsEnabled = true;
+                        if (check.RateLimited)
+                        {
+                            SkillActionInfoBar.Severity = InfoBarSeverity.Warning;
+                            SkillActionInfoBar.Title = "技能目录限流";
+                            SkillActionInfoBar.Message = "写入 GitHub Token 后重试。";
+                        }
+                        else if (!String.IsNullOrWhiteSpace(check.Error))
+                        {
+                            SkillActionInfoBar.Severity = InfoBarSeverity.Error;
+                            SkillActionInfoBar.Title = "检查更新失败";
+                            SkillActionInfoBar.Message = check.Error;
+                        }
+                        else
+                        {
+                            SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
+                            SkillActionInfoBar.Title = "没有需要更新的技能";
+                            SkillActionInfoBar.Message = "全部技能都已经是最新的。";
+                        }
+
+                        SkillActionInfoBar.IsOpen = true;
+                    });
+                    return;
+                }
+
+                MarkSkillUpdates(check.Updates);
+
+                int succeeded = 0;
+                List<string> failures = new List<string>();
+                for (int index = 0; index < check.Updates.Count; index++)
+                {
+                    SkillUpdateMatch match = check.Updates[index];
+                    SkillInstallService.InstallResult installed =
+                        SkillUpdateService.Install(_settings, match, null, _host.Log);
+                    if (installed.Ok)
+                    {
+                        succeeded++;
+                    }
+                    else
+                    {
+                        failures.Add(match.Key + "：" + (installed.Error ?? "未知错误"));
+                    }
+                }
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    UpdateAllSkillsButton.IsEnabled = true;
+                    ClearSkillUpdateMarks();
+                    LoadLocalSkills();
+                    SkillActionInfoBar.Severity = failures.Count == 0
+                        ? InfoBarSeverity.Success
+                        : InfoBarSeverity.Warning;
+                    SkillActionInfoBar.Title = "更新了 " + succeeded + " / "
+                        + check.Updates.Count + " 个技能";
+                    SkillActionInfoBar.Message = failures.Count == 0
+                        ? "DSH 下一步就会用上新版本。"
+                        : String.Join("；", failures.ToArray());
+                    SkillActionInfoBar.IsOpen = true;
+                });
+            });
+        }
+
+        private List<SkillMarketService.SkillMarketItem> MarketItemsFromCards()
+        {
+            List<SkillMarketService.SkillMarketItem> items =
+                new List<SkillMarketService.SkillMarketItem>();
+            for (int index = 0; index < _marketSkills.Count; index++)
+            {
+                SkillCardItem card = _marketSkills[index];
+                items.Add(new SkillMarketService.SkillMarketItem
+                {
+                    Owner = OwnerOf(card.Repository),
+                    Repository = RepositoryOf(card.Repository),
+                    RepositoryPath = card.RepositoryPath,
+                    LocalArchive = card.ArchivePath,
+                    Name = card.Name,
+                    Description = card.Description,
+                    Stars = card.StarsCount,
+                    Language = card.Language,
+                    License = card.License,
+                    PushedAt = card.PushedAt,
+                    DefaultBranch = String.IsNullOrWhiteSpace(card.DefaultBranch)
+                        ? "main"
+                        : card.DefaultBranch
+                });
+            }
+
+            return items;
+        }
+
+        private void MarkSkillUpdates(List<SkillUpdateMatch> updates)
+        {
+            for (int index = 0; index < updates.Count; index++)
+            {
+                SkillCardItem card = FindLocalSkillCard(updates[index].Key);
+                if (card == null)
+                {
+                    continue;
+                }
+
+                card.PrimaryAction = "立即更新";
+                card.PrimaryEnabled = true;
+                card.Status = "有新版本";
+                card.StatusBackground = new SolidColorBrush(
+                    Windows.UI.Color.FromArgb(32, 16, 124, 16));
+                card.StatusForeground = new SolidColorBrush(
+                    Windows.UI.Color.FromArgb(255, 16, 124, 16));
+            }
+        }
+
+        private void ClearSkillUpdateMarks()
+        {
+            for (int index = 0; index < _localSkills.Count; index++)
+            {
+                SkillCardItem card = _localSkills[index];
+                card.Status = card.Disabled ? "已停用" : String.Empty;
+                card.StatusBackground = new SolidColorBrush(
+                    Windows.UI.Color.FromArgb(24, 128, 128, 128));
+                card.StatusForeground = new SolidColorBrush(
+                    Windows.UI.Color.FromArgb(255, 102, 112, 133));
+                card.PrimaryAction = card.Disabled ? "启用" : "停用";
+            }
+        }
+
+        private SkillCardItem FindLocalSkillCard(string name)
+        {
+            for (int index = 0; index < _localSkills.Count; index++)
+            {
+                if (String.Equals(
+                    _localSkills[index].Name,
+                    name,
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    return _localSkills[index];
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>本地卡片上的按钮：先看是不是「立即更新」，否则检查更新。</summary>
+        private void CheckSkillUpdate_Click(object sender, RoutedEventArgs args)
+        {
+            SkillCardItem card = SkillCardFrom(sender);
+            if (card == null)
+            {
+                return;
+            }
+
+            if (String.Equals(card.PrimaryAction, "立即更新", StringComparison.Ordinal))
+            {
+                ApplySkillUpdate(card);
+                return;
+            }
+
+            if (String.Equals(card.PrimaryAction, "停用", StringComparison.Ordinal)
+                || String.Equals(card.PrimaryAction, "启用", StringComparison.Ordinal))
+            {
+                ToggleSkill_Click(sender, args);
+                return;
+            }
+
+            card.PrimaryEnabled = false;
+            card.PrimaryAction = "检查中…";
+            SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
+            SkillActionInfoBar.Title = "正在检查 " + card.Name;
+            SkillActionInfoBar.Message = "对比在线目录里的最近提交时间。";
+            SkillActionInfoBar.IsOpen = true;
+
+            string key = card.Name;
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                SkillUpdateCheckResult check = SkillUpdateService.Check(
+                    _settings,
+                    false,
+                    _marketSkills.Count == 0 ? null : MarketItemsFromCards(),
+                    _host.Log);
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    if (check.RateLimited)
+                    {
+                        card.PrimaryAction = "检查更新";
+                        card.PrimaryEnabled = true;
+                        SkillActionInfoBar.Severity = InfoBarSeverity.Warning;
+                        SkillActionInfoBar.Title = "技能目录限流";
+                        SkillActionInfoBar.Message = "写入 GitHub Token 后重试。";
+                    }
+                    else if (!String.IsNullOrWhiteSpace(check.Error))
+                    {
+                        card.PrimaryAction = "检查更新";
+                        card.PrimaryEnabled = true;
+                        SkillActionInfoBar.Severity = InfoBarSeverity.Error;
+                        SkillActionInfoBar.Title = "检查更新失败";
+                        SkillActionInfoBar.Message = check.Error;
+                    }
+                    else
+                    {
+                        SkillUpdateMatch match = null;
+                        for (int index = 0; index < check.Updates.Count; index++)
+                        {
+                            if (String.Equals(
+                                check.Updates[index].Key,
+                                key,
+                                StringComparison.OrdinalIgnoreCase))
+                            {
+                                match = check.Updates[index];
+                                break;
+                            }
+                        }
+
+                        if (match != null)
+                        {
+                            card.PrimaryAction = "立即更新";
+                            card.PrimaryEnabled = true;
+                            card.Status = "有新版本";
+                            card.StatusBackground = new SolidColorBrush(
+                                Windows.UI.Color.FromArgb(32, 16, 124, 16));
+                            card.StatusForeground = new SolidColorBrush(
+                                Windows.UI.Color.FromArgb(255, 16, 124, 16));
+                            SkillActionInfoBar.Severity = InfoBarSeverity.Success;
+                            SkillActionInfoBar.Title = key + " 有新版本";
+                            SkillActionInfoBar.Message = "再点一次按钮就覆盖安装。";
+                        }
+                        else
+                        {
+                            card.PrimaryAction = "已是最新";
+                            card.PrimaryEnabled = false;
+                            SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
+                            SkillActionInfoBar.Title = key + " 已是最新";
+                            SkillActionInfoBar.Message = "在线目录没有更新的提交时间。";
+                        }
+                    }
+
+                    SkillActionInfoBar.IsOpen = true;
+                });
+            });
+        }
+
+        /// <summary>覆盖安装本地这一条技能。手工放进去的技能没有来源时会提示。</summary>
+        private void ApplySkillUpdate(SkillCardItem card)
+        {
+            Dictionary<string, SkillInstallRecord> records = SkillInstallStore.Load();
+            SkillInstallRecord record;
+            if (!records.TryGetValue(card.Name, out record) || record == null)
+            {
+                SkillActionInfoBar.Severity = InfoBarSeverity.Warning;
+                SkillActionInfoBar.Title = "这个技能不是启动器装的";
+                SkillActionInfoBar.Message = "没有来源记录，没法自动更新。可以先去在线页搜同名技能再装一次。";
+                SkillActionInfoBar.IsOpen = true;
+                return;
+            }
+
+            SkillMarketService.SkillMarketItem item =
+                new SkillMarketService.SkillMarketItem
+                {
+                    Owner = record.Owner,
+                    Repository = record.Repository,
+                    RepositoryPath = record.RepositoryPath,
+                    Name = record.Key,
+                    Description = record.Description,
+                    PushedAt = String.Empty,
+                    DefaultBranch = String.IsNullOrWhiteSpace(record.DefaultBranch)
+                        ? "main"
+                        : record.DefaultBranch
+                };
+
+            card.PrimaryEnabled = false;
+            card.PrimaryAction = "更新中";
+            SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
+            SkillActionInfoBar.Title = "正在更新 " + card.Name;
+            SkillActionInfoBar.Message = record.Owner + "/" + record.Repository;
+            SkillActionInfoBar.IsOpen = true;
+
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                SkillInstallService.InstallResult installed =
+                    SkillInstallService.Install(
+                        _settings,
+                        item,
+                        delegate(string text, double value)
+                        {
+                            DispatcherQueue.TryEnqueue(delegate
+                            {
+                                card.PrimaryAction = text;
+                            });
+                        },
+                        _host.Log);
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    card.PrimaryEnabled = true;
+                    card.PrimaryAction = installed.Ok ? "已是最新" : "立即更新";
+                    if (installed.Ok)
+                    {
+                        card.Status = String.Empty;
+                    }
+
+                    SkillActionInfoBar.Severity = installed.Ok
+                        ? InfoBarSeverity.Success
+                        : InfoBarSeverity.Error;
+                    SkillActionInfoBar.Title = installed.Ok
+                        ? "已更新 " + card.Name
+                        : "更新失败";
+                    SkillActionInfoBar.Message = installed.Ok
+                        ? "DSH 下一步就会用上新版本。"
+                        : (installed.Error ?? "未知错误。");
+                    SkillActionInfoBar.IsOpen = true;
+                    LoadLocalSkills();
+                });
+            });
+        }
+
+        private void OpenSkillRepository_Click(
+            object sender,
+            RoutedEventArgs args)
+        {
+            SkillCardItem card = SkillCardFrom(sender);
+            if (card == null || String.IsNullOrWhiteSpace(card.Repository))
+            {
+                return;
+            }
+
+            OpenSkillRepositoryUrl(card.Repository, card.RepositoryPath, card.DefaultBranch);
+        }
+
+        private static void OpenSkillRepositoryUrl(
+            string repository,
+            string repositoryPath,
+            string branch)
+        {
+            string url = "https://github.com/" + repository
+                + (String.IsNullOrWhiteSpace(repositoryPath)
+                    ? String.Empty
+                    : "/tree/" + (String.IsNullOrWhiteSpace(branch) ? "main" : branch)
+                        + "/" + repositoryPath);
+            try
+            {
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            }
+            catch
+            {
+            }
+        }
+
+        private static string OwnerOf(string fullName)
+        {
+            if (String.IsNullOrWhiteSpace(fullName))
+            {
+                return String.Empty;
+            }
+
+            int slash = fullName.IndexOf('/');
+            return slash > 0 ? fullName.Substring(0, slash) : String.Empty;
+        }
+
+        private static string RepositoryOf(string fullName)
+        {
+            if (String.IsNullOrWhiteSpace(fullName))
+            {
+                return String.Empty;
+            }
+
+            int slash = fullName.IndexOf('/');
+            return slash > 0 ? fullName.Substring(slash + 1) : fullName;
+        }
+
+        /// <summary>粘链接读一个仓库里的技能，读到的条目直接并进在线目录。</summary>
+        private void ScanSkillRepositoryButton_Click(
+            object sender,
+            RoutedEventArgs args)
+        {
+            string input = (SkillLinkBox.Text ?? String.Empty).Trim();
+            if (input.Length == 0)
+            {
+                SkillActionInfoBar.Severity = InfoBarSeverity.Warning;
+                SkillActionInfoBar.Title = "先贴一个仓库";
+                SkillActionInfoBar.Message = "例如 oil-oil/beautify-github-readme 或 GitHub 链接。";
+                SkillActionInfoBar.IsOpen = true;
+                return;
+            }
+
+            // 压缩包（本地路径或直链）走另一条路：解压后直接装。
+            if (SkillInstallService.LooksLikeArchive(input))
+            {
+                InstallFromArchiveInput(input);
+                return;
+            }
+
+            PluginSpec spec = PluginSpec.Parse(input);
+            if (!spec.IsGitHub)
+            {
+                SkillActionInfoBar.Severity = InfoBarSeverity.Warning;
+                SkillActionInfoBar.Title = "这不是一个 GitHub 仓库";
+                SkillActionInfoBar.Message = "格式：owner/repo 或 https://github.com/owner/repo";
+                SkillActionInfoBar.IsOpen = true;
+                return;
+            }
+
+            ScanSkillRepositoryButton.IsEnabled = false;
+            SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
+            SkillActionInfoBar.Title = "正在读取 " + spec.Owner + "/" + spec.Repository;
+            SkillActionInfoBar.Message = "正在列出仓库里的 SKILL.md…";
+            SkillActionInfoBar.IsOpen = true;
+
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                SkillMarketService.MarketResult result =
+                    SkillMarketService.ScanRepository(_settings, spec, _host.Log);
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    ScanSkillRepositoryButton.IsEnabled = true;
+                    if (result.Items.Count == 0)
+                    {
+                        SkillActionInfoBar.Severity = InfoBarSeverity.Error;
+                        SkillActionInfoBar.Title = "没读到这个仓库的技能";
+                        SkillActionInfoBar.Message = result.Error ?? "仓库里没有 SKILL.md。";
+                        SkillActionInfoBar.IsOpen = true;
+                        return;
+                    }
+
+                    for (int index = 0; index < result.Items.Count; index++)
+                    {
+                        _marketSkills.Insert(0, MarketCardFrom(result.Items[index]));
+                    }
+
+                    SkillViewTabs.SelectedItem = MarketSkillsTab;
+                    _skillMarketPage = 0;
+                    RebuildSkillMarketPage();
+                    SkillActionInfoBar.Severity = InfoBarSeverity.Success;
+                    SkillActionInfoBar.Title = "读到 " + result.Items.Count + " 个技能";
+                    SkillActionInfoBar.Message = "已经在在线技能页最前面，点安装即可。";
+                    SkillActionInfoBar.IsOpen = true;
+                });
+            });
+        }
+
+        /// <summary>
+        /// 从压缩包装技能：本地路径直接读，http(s) 直链先下到临时目录。
+        /// 只有一个技能就直接装，多个就列进在线技能页让用户挑。
+        /// </summary>
+        private void InstallFromArchiveInput(string input)
+        {
+            ScanSkillRepositoryButton.IsEnabled = false;
+            SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
+            SkillActionInfoBar.Title = "正在读取压缩包";
+            SkillActionInfoBar.Message = input;
+            SkillActionInfoBar.IsOpen = true;
+
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                string archivePath = input;
+                if (!File.Exists(archivePath))
+                {
+                    archivePath = SkillInstallService.DownloadArchive(
+                        _settings,
+                        input,
+                        null,
+                        _host.Log);
+                }
+
+                if (String.IsNullOrWhiteSpace(archivePath) || !File.Exists(archivePath))
+                {
+                    DispatcherQueue.TryEnqueue(delegate
+                    {
+                        ScanSkillRepositoryButton.IsEnabled = true;
+                        SkillActionInfoBar.Severity = InfoBarSeverity.Error;
+                        SkillActionInfoBar.Title = "拿不到这个压缩包";
+                        SkillActionInfoBar.Message = "确认链接能直链下载，或者直接填本地文件路径。";
+                        SkillActionInfoBar.IsOpen = true;
+                    });
+                    return;
+                }
+
+                string error;
+                List<SkillInstallService.ArchiveSkill> skills =
+                    SkillInstallService.ListArchiveSkills(archivePath, out error);
+
+                if (skills.Count == 0)
+                {
+                    DispatcherQueue.TryEnqueue(delegate
+                    {
+                        ScanSkillRepositoryButton.IsEnabled = true;
+                        SkillActionInfoBar.Severity = InfoBarSeverity.Error;
+                        SkillActionInfoBar.Title = "压缩包里没有技能";
+                        SkillActionInfoBar.Message = error
+                            ?? ("没有找到 " + SkillStore.SkillFileName + "。");
+                        SkillActionInfoBar.IsOpen = true;
+                    });
+                    return;
+                }
+
+                if (skills.Count == 1)
+                {
+                    SkillInstallService.InstallResult installed =
+                        SkillInstallService.InstallFromArchive(
+                            _settings,
+                            archivePath,
+                            skills[0].RelativePath,
+                            skills[0].Name,
+                            null,
+                            _host.Log);
+
+                    DispatcherQueue.TryEnqueue(delegate
+                    {
+                        ScanSkillRepositoryButton.IsEnabled = true;
+                        SkillActionInfoBar.Severity = installed.Ok
+                            ? InfoBarSeverity.Success
+                            : InfoBarSeverity.Error;
+                        SkillActionInfoBar.Title = installed.Ok
+                            ? "已安装 " + skills[0].Name
+                            : "安装失败";
+                        SkillActionInfoBar.Message = installed.Ok
+                            ? "落在 " + installed.Directory + "，DSH 会自动扫到。"
+                            : (installed.Error ?? "未知错误。");
+                        SkillActionInfoBar.IsOpen = true;
+                        LoadLocalSkills();
+                    });
+                    return;
+                }
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    ScanSkillRepositoryButton.IsEnabled = true;
+                    string fileName = Path.GetFileName(archivePath);
+                    for (int index = 0; index < skills.Count; index++)
+                    {
+                        _marketSkills.Insert(0, new SkillCardItem
+                        {
+                            Name = skills[index].Name,
+                            Description = "来自压缩包：" + fileName,
+                            Tag1 = "本地压缩包",
+                            Tag2 = "多技能包",
+                            Meta = (skills[index].RelativePath.Length == 0
+                                    ? "(根目录)"
+                                    : skills[index].RelativePath)
+                                + "　·　" + archivePath,
+                            ArchivePath = archivePath,
+                            RepositoryPath = skills[index].RelativePath,
+                            DefaultBranch = "main",
+                            Category = "本地压缩包",
+                            SourceKind = SkillSourceKind.Market,
+                            ShowLocalActions = false,
+                            ShowOnlineActions = true,
+                            PrimaryAction = "安装",
+                            PrimaryEnabled = true
+                        });
+                    }
+
+                    SkillViewTabs.SelectedItem = MarketSkillsTab;
+                    _skillMarketPage = 0;
+                    RebuildSkillMarketPage();
+                    SkillActionInfoBar.Severity = InfoBarSeverity.Success;
+                    SkillActionInfoBar.Title = "这个包里有 " + skills.Count + " 个技能";
+                    SkillActionInfoBar.Message = "已经列在在线技能页最前面，逐个点安装。";
+                    SkillActionInfoBar.IsOpen = true;
+                });
+            });
+        }
+
+        // ================================================================ 在线引擎：高级设置（加速源自选 + 测速）
+
+        private bool _acceleratorAdvancedOpen;
+        private bool _acceleratorLatencyBusy;
+        private bool _acceleratorUiReady;
+
+        private void WireAcceleratorEvents()
+        {
+            AcceleratorAdvancedToggle.Click += AcceleratorAdvancedToggle_Click;
+            AcceleratorLatencyButton.Click += delegate
+            {
+                MeasureAcceleratorLatency(true);
+            };
+            AcceleratorLatencyService.Changed += AcceleratorLatency_Changed;
+        }
+
+        /// <summary>后台测速（启动时或网络变化时）跑完会叫一声，把界面上的延迟刷新掉。</summary>
+        private void AcceleratorLatency_Changed()
+        {
+            DispatcherQueue.TryEnqueue(delegate
+            {
+                if (_acceleratorLatencyBusy)
+                {
+                    _acceleratorLatencyBusy = false;
+                    AcceleratorLatencyButton.IsEnabled = true;
+                }
+
+                RebuildAcceleratorSourceOptions(AcceleratorLatencyService.Current);
+            });
+        }
+
+        private void AcceleratorAdvancedToggle_Click(object sender, RoutedEventArgs args)
+        {
+            _acceleratorAdvancedOpen = !_acceleratorAdvancedOpen;
+            AcceleratorAdvancedPanel.Visibility = _acceleratorAdvancedOpen
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            AcceleratorAdvancedChevron.Glyph = _acceleratorAdvancedOpen ? "\uE70E" : "\uE70D";
+            if (!_acceleratorAdvancedOpen)
+            {
+                return;
+            }
+
+            RebuildAcceleratorSourceOptions(AcceleratorLatencyService.Current);
+            EnsureAcceleratorLatency();
+        }
+
+        /// <summary>没测过、或者上次测得太久，就补一次；启动时也已经测过一轮。</summary>
+        private void EnsureAcceleratorLatency()
+        {
+            AcceleratorLatencyReport report = AcceleratorLatencyService.Current;
+            bool stale = report == null
+                || report.MeasuredUtc == default(DateTime)
+                || report.LatencyMs == null
+                || report.LatencyMs.Count == 0
+                || (DateTime.UtcNow - report.MeasuredUtc) > TimeSpan.FromMinutes(30);
+            if (stale)
+            {
+                MeasureAcceleratorLatency(false);
+                return;
+            }
+
+            RebuildAcceleratorSourceOptions(report);
+        }
+
+        private void MeasureAcceleratorLatency(bool byHand)
+        {
+            if (_acceleratorLatencyBusy)
+            {
+                return;
+            }
+
+            _acceleratorLatencyBusy = true;
+            AcceleratorLatencyText.Text = "正在测速…";
+            AcceleratorLatencyButton.IsEnabled = false;
+            if (byHand)
+            {
+                _host.Log("用户点了「重新测速」。");
+            }
+
+            AcceleratorLatencyService.MeasureInBackground(
+                _settings,
+                _host.Log,
+                delegate(AcceleratorLatencyReport report)
+                {
+                    DispatcherQueue.TryEnqueue(delegate
+                    {
+                        _acceleratorLatencyBusy = false;
+                        AcceleratorLatencyButton.IsEnabled = true;
+                        RebuildAcceleratorSourceOptions(report);
+                    });
+                });
+        }
+
+        /// <summary>把每个源的实测延迟写到单选框文案上，并选中用户当前存的那个源。</summary>
+        private void RebuildAcceleratorSourceOptions(AcceleratorLatencyReport report)
+        {
+            for (int index = 0; index < GitHubAccelerator.Sources.Length; index++)
+            {
+                AcceleratorSource source = GitHubAccelerator.Sources[index];
+                RadioButton button = AcceleratorRadioFor(source.Id);
+                if (button == null)
+                {
+                    continue;
+                }
+
+                int milliseconds = report == null ? 0 : report.For(source.Id);
+                button.Content = source.Name + " · " + AcceleratorLatencyService.Describe(milliseconds);
+            }
+
+            _acceleratorUiReady = false;
+            try
+            {
+                SelectAcceleratorSource(GitHubAccelerator.SelectedSourceId(_settings));
+            }
+            finally
+            {
+                _acceleratorUiReady = true;
+            }
+
+            UpdateAcceleratorLatencySummary(report);
+            SyncAcceleratorControls();
+        }
+
+        private void SelectAcceleratorSource(string id)
+        {
+            RadioButton target = String.Equals(
+                id,
+                GitHubAccelerator.AutoSource,
+                StringComparison.OrdinalIgnoreCase)
+                ? AcceleratorAutoRadio
+                : AcceleratorRadioFor(id);
+            AcceleratorSourceSelector.SelectedItem = target ?? AcceleratorAutoRadio;
+        }
+
+        private RadioButton AcceleratorRadioFor(string id)
+        {
+            if (String.Equals(id, "ghproxy", StringComparison.OrdinalIgnoreCase))
+            {
+                return AcceleratorGhproxyRadio;
+            }
+
+            if (String.Equals(id, "gh-proxy", StringComparison.OrdinalIgnoreCase))
+            {
+                return AcceleratorGhProxyRadio;
+            }
+
+            if (String.Equals(id, "ghfast", StringComparison.OrdinalIgnoreCase))
+            {
+                return AcceleratorGhfastRadio;
+            }
+
+            if (String.Equals(id, "jsdelivr", StringComparison.OrdinalIgnoreCase))
+            {
+                return AcceleratorJsdelivrRadio;
+            }
+
+            return null;
+        }
+
+        private void AcceleratorSourceSelector_SelectionChanged(
+            object sender,
+            SelectionChangedEventArgs args)
+        {
+            if (_initializing || !_acceleratorUiReady)
+            {
+                return;
+            }
+
+            RadioButton selected = AcceleratorSourceSelector.SelectedItem as RadioButton;
+            string id = selected == null
+                ? GitHubAccelerator.AutoSource
+                : (selected.Tag as string ?? GitHubAccelerator.AutoSource);
+            _settings.MirrorSource = id;
+            LauncherSettingsStore.Save(_settings);
+            SyncAcceleratorControls();
+            _host.Log("加速源改为：" + GitHubAccelerator.Describe(_settings)
+                + "，候选顺序 " + String.Join(
+                    " → ",
+                    GitHubAccelerator.OrderedSourceIds(_settings).ToArray()));
+        }
+
+        /// <summary>
+        /// 「大陆 CDN 加速」和高级设置里的「自动」是同一个东西，两边必须绑在一起：
+        /// 自动 → 下拉就是「大陆 CDN 加速」；钉了具体源 → 下拉变成「自定义」；
+        /// 选了「官方源」→ 高级设置整个收起来（官方源不用镜像，留着只会让人误会）。
+        /// 程序化改选中项会触发 SelectionChanged，所以这里也要关一次就绪闸门。
+        /// </summary>
+        private void SyncAcceleratorControls()
+        {
+            if (_settings == null || UpdateSourceComboBox == null)
+            {
+                return;
+            }
+
+            _acceleratorUiReady = false;
+            try
+            {
+                bool official = String.Equals(
+                    _settings.UpdateSource,
+                    "Official",
+                    StringComparison.OrdinalIgnoreCase);
+                string selectedSource = GitHubAccelerator.SelectedSourceId(_settings);
+                bool auto = String.Equals(
+                    selectedSource,
+                    GitHubAccelerator.AutoSource,
+                    StringComparison.OrdinalIgnoreCase);
+
+                UpdateSourceCustomItem.Visibility = auto
+                    ? Visibility.Collapsed
+                    : Visibility.Visible;
+                if (!official)
+                {
+                    SelectTaggedItem(
+                        UpdateSourceComboBox,
+                        auto ? "Accelerated" : "Custom");
+                }
+
+                SelectAcceleratorSource(selectedSource);
+
+                AcceleratorAdvancedToggle.Visibility = official
+                    ? Visibility.Collapsed
+                    : Visibility.Visible;
+                if (official && _acceleratorAdvancedOpen)
+                {
+                    _acceleratorAdvancedOpen = false;
+                    AcceleratorAdvancedPanel.Visibility = Visibility.Collapsed;
+                    AcceleratorAdvancedChevron.Glyph = "\uE70D";
+                }
+            }
+            finally
+            {
+                _acceleratorUiReady = true;
+            }
+
+            UpdateAcceleratorHint();
+        }
+
+        private void UpdateAcceleratorLatencySummary(AcceleratorLatencyReport report)
+        {
+            if (report == null || report.MeasuredUtc == default(DateTime))
+            {
+                AcceleratorLatencyText.Text = "还没测速。";
+                return;
+            }
+
+            string fastest = null;
+            int fastestMs = Int32.MaxValue;
+            for (int index = 0; index < GitHubAccelerator.Sources.Length; index++)
+            {
+                AcceleratorSource source = GitHubAccelerator.Sources[index];
+                int milliseconds = report.For(source.Id);
+                if (milliseconds > 0 && milliseconds < fastestMs)
+                {
+                    fastestMs = milliseconds;
+                    fastest = source.Name;
+                }
+            }
+
+            AcceleratorLatencyText.Text = "测于 "
+                + report.MeasuredUtc.ToLocalTime().ToString("HH:mm")
+                + " · "
+                + (fastest == null
+                    ? "所有源都没通"
+                    : "最快 " + fastest + " " + AcceleratorLatencyService.Describe(fastestMs));
+        }
+
+        private void UpdateAcceleratorHint()
+        {            if (AcceleratorAdvancedHint == null || _settings == null)
+            {
+                return;
+            }
+
+            bool official = String.Equals(
+                _settings.UpdateSource,
+                "Official",
+                StringComparison.OrdinalIgnoreCase);
+            if (official)
+            {
+                AcceleratorAdvancedHint.Text = "官方源不使用镜像，这里选什么都不生效。";
+                return;
+            }
+
+            bool auto = String.Equals(
+                GitHubAccelerator.SelectedSourceId(_settings),
+                GitHubAccelerator.AutoSource,
+                StringComparison.OrdinalIgnoreCase);
+            AcceleratorAdvancedHint.Text = auto
+                ? "自动：每次运行都测一遍延迟，挑最快的用。"
+                : "自选：" + GitHubAccelerator.Describe(_settings)
+                    + "，优先用它，连不上才回退到别的源。";
+        }
+
+        // ================================================================ 关于页：更新日志
+
+        private bool _changelogLoaded;
+
+        /// <summary>关于页的更新日志。先吃缓存，刷不动就报原因，不挡着页面显示。</summary>
+        private void LoadChangelog(bool forceRefresh)
+        {
+            if (!forceRefresh && _changelogLoaded)
+            {
+                return;
+            }
+
+            _changelogLoaded = true;
+            if (forceRefresh)
+            {
+                ChangelogVersionText.Text = "正在刷新…";
+            }
+
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                ChangelogResult result = ChangelogService.Load(
+                    _settings,
+                    forceRefresh,
+                    _host.Log);
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    ApplyChangelog(result);
+                });
+            });
+        }
+
+        private void ApplyChangelog(ChangelogResult result)
+        {
+            if (result == null)
+            {
+                ChangelogVersionText.Text = "拿不到更新日志";
+                ChangelogText.Text = "稍后再试。";
+                return;
+            }
+
+            string version = String.IsNullOrWhiteSpace(result.Version)
+                ? Constants.Version
+                : result.Version;
+            ChangelogVersionText.Text = "v" + version + " · " + ChangelogSourceLabel(result.Source);
+
+            if (String.IsNullOrWhiteSpace(result.Notes))
+            {
+                ChangelogText.Text = "拿不到 v" + version + " 的更新日志。"
+                    + (String.IsNullOrWhiteSpace(result.Error)
+                        ? "稍后再试。"
+                        : "稍后再试。（" + result.Error + "）");
+                return;
+            }
+
+            ChangelogText.Text = FormatChangelog(result.Notes);
+        }
+
+        private static string ChangelogSourceLabel(string source)
+        {
+            if (String.Equals(source, "release", StringComparison.OrdinalIgnoreCase))
+            {
+                return "来自 GitHub Release";
+            }
+
+            if (String.Equals(source, "changelog", StringComparison.OrdinalIgnoreCase))
+            {
+                return "来自 CHANGELOG.md";
+            }
+
+            return "本地缓存";
+        }
+
+        /// <summary>Markdown 只做最小处理：去掉加粗和反引号、把列表符号换成圆点。</summary>
+        private static string FormatChangelog(string notes)
+        {
+            string text = notes
+                .Replace("\r\n", "\n")
+                .Replace("\r", "\n");
+
+            List<string> lines = new List<string>();
+            string[] raw = text.Split('\n');
+            for (int index = 0; index < raw.Length; index++)
+            {
+                string line = raw[index];
+                string trimmed = line.TrimStart();
+                if (trimmed.StartsWith("#", StringComparison.Ordinal))
+                {
+                    trimmed = trimmed.TrimStart('#').Trim();
+                }
+
+                if (trimmed.StartsWith("- ", StringComparison.Ordinal)
+                    || trimmed.StartsWith("* ", StringComparison.Ordinal))
+                {
+                    trimmed = "· " + trimmed.Substring(2);
+                }
+
+                trimmed = trimmed
+                    .Replace("**", String.Empty)
+                    .Replace("`", String.Empty);
+                lines.Add(trimmed);
+            }
+
+            return String.Join(Environment.NewLine, lines.ToArray()).Trim();
+        }
+
+        // ================================================================ 主页
+        private List<AnnouncementItem> _homeAnnouncements = new List<AnnouncementItem>();
+        private bool _homeAnnouncementsLoaded;
+
+        /// <summary>主页先出状态，公告再慢慢刷 —— 网络那步绝不放在 UI 线程上。</summary>
+        private void LoadHomePage()
+        {
+            RefreshHomeSummary();
+
+            if (!_homeAnnouncementsLoaded)
+            {
+                _homeAnnouncementsLoaded = true;
+                LoadAnnouncements(false);
+                LoadAnnouncements(true);
+                return;
+            }
+
+            LoadAnnouncements(false);
+        }
+
+        private void RefreshHomeSummary()
+        {
+            if (_settings == null)
+            {
+                return;
+            }
+
+            string dshVersion = DshUpdateService.GetInstalledVersion(_settings.DshRoot);
+            HomeVersionText.Text = "启动器 " + Constants.Version
+                + " · DSH " + (String.IsNullOrWhiteSpace(dshVersion)
+                    ? "未安装"
+                    : "v" + dshVersion);
+
+            string service = _host.GetServiceStatus();
+            HomeServiceText.Text = String.IsNullOrWhiteSpace(service) ? "未知" : service;
+
+            HomeLauncherText.Text = DescribeHomeUpdate(
+                _host.GetLauncherUpdateState(),
+                "v" + Constants.Version);
+            HomeDshText.Text = DescribeHomeUpdate(
+                _host.GetDshUpdateState(),
+                String.IsNullOrWhiteSpace(dshVersion)
+                    ? "未检测到"
+                    : "v" + dshVersion);
+        }
+
+        /// <summary>状态卡里那行字。详细信息挂 ToolTip，卡片本身只放结论。</summary>
+        private static string DescribeHomeUpdate(UpdateUiSnapshot state, string idleText)
+        {
+            if (state == null)
+            {
+                return idleText;
+            }
+
+            string text;
+            switch (state.Activity)
+            {
+                case UpdateUiActivity.Checking:
+                    text = "检查中…";
+                    break;
+                case UpdateUiActivity.Installing:
+                    text = "更新中…";
+                    break;
+                case UpdateUiActivity.UpToDate:
+                    text = "已是最新";
+                    break;
+                case UpdateUiActivity.Available:
+                    text = "有新版本";
+                    break;
+                case UpdateUiActivity.Completed:
+                    text = "已更新";
+                    break;
+                case UpdateUiActivity.Failed:
+                    text = "检查失败";
+                    break;
+                default:
+                    text = idleText;
+                    break;
+            }
+
+            return text;
+        }
+
+        private void LoadAnnouncements(bool forceRefresh)
+        {
+            if (!forceRefresh)
+            {
+                // 缓存是同步读的，只在真有缓存时用，免得卡住 UI 线程。
+                List<AnnouncementItem> cached = AnnouncementService.ReadLocal();
+                if (cached.Count > 0)
+                {
+                    _homeAnnouncements = cached;
+                    RebuildHomeAnnouncements(true, null);
+                }
+
+                return;
+            }
+
+            // 网络那步可能要等几秒（远端文件不存在时要把候选逐个试完），
+            // 先把状态写出来，别让公告卡看着像空的。
+            HomeAnnouncementStateText.Text = "正在读取…";
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                AnnouncementResult result = AnnouncementService.Load(
+                    _settings,
+                    true,
+                    _host.Log);
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    _homeAnnouncements = result.Items;
+                    RebuildHomeAnnouncements(result.FromCache, result.Error);
+                });
+            });
+        }
+
+        private void RebuildHomeAnnouncements(bool fromCache, string error)
+        {
+            List<AnnouncementItem> sorted = AnnouncementService.Sort(_homeAnnouncements);
+            HomeAnnouncementRepeater.ItemsSource = sorted;
+            HomeAnnouncementEmptyText.Visibility = sorted.Count == 0
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+
+            string newest = AnnouncementService.NewestId(sorted);
+            bool unread = newest.Length > 0
+                && !String.Equals(
+                    newest,
+                    _settings == null ? String.Empty : _settings.LastSeenAnnouncementId,
+                    StringComparison.Ordinal);
+            HomeUnreadPill.Visibility = unread ? Visibility.Visible : Visibility.Collapsed;
+
+            List<string> notes = new List<string>();
+            notes.Add(sorted.Count == 0 ? "还没有公告" : "共 " + sorted.Count + " 条");
+            if (fromCache)
+            {
+                notes.Add("本地缓存");
+            }
+
+            if (!String.IsNullOrWhiteSpace(error))
+            {
+                notes.Add("远端没连上");
+            }
+
+            HomeAnnouncementStateText.Text = String.Join(" · ", notes.ToArray());
+        }
+
+        private void MarkAnnouncementsRead()
+        {
+            string newest = AnnouncementService.NewestId(_homeAnnouncements);
+            if (newest.Length == 0 || _settings == null)
+            {
+                return;
+            }
+
+            _settings.LastSeenAnnouncementId = newest;
+            LauncherSettingsStore.Save(_settings);
+            RebuildHomeAnnouncements(false, null);
+        }
+
+        // ================================================================ 开发者页
+
+        private List<PluginCatalogItem> _developerPlugins = new List<PluginCatalogItem>();
+        private List<FeaturedSkillItem> _developerSkills = new List<FeaturedSkillItem>();
+        private Dictionary<string, FrameworkElement> _developerPanels;
+        private bool _developerLoaded;
+        private List<AnnouncementItem> _developerAnnouncements =
+            new List<AnnouncementItem>();
+
+        /// <summary>
+        /// 模块表。加新板块就三步：XAML 左边加一条 ListViewItem（带新 Tag）、
+        /// 右边加一个同名面板、在这里登记一次。
+        /// </summary>
+        private Dictionary<string, FrameworkElement> DeveloperPanels()
+        {
+            if (_developerPanels == null)
+            {
+                _developerPanels = new Dictionary<string, FrameworkElement>(
+                    StringComparer.OrdinalIgnoreCase)
+                {
+                    { "Featured", DeveloperFeaturedPanel },
+                    { "Sources", DeveloperSourcesPanel },
+                    { "Announce", DeveloperAnnouncePanel },
+                    { "Roles", DeveloperRolesPanel }
+                };
+            }
+
+            return _developerPanels;
+        }
+
+        private void DeveloperModule_SelectionChanged(
+            object sender,
+            SelectionChangedEventArgs args)
+        {
+            if (DeveloperModuleList == null)
+            {
+                return;
+            }
+
+            ListViewItem selected = DeveloperModuleList.SelectedItem as ListViewItem;
+            string tag = selected == null
+                ? "Featured"
+                : (selected.Tag as string ?? "Featured");
+            foreach (KeyValuePair<string, FrameworkElement> pair in DeveloperPanels())
+            {
+                if (pair.Value == null)
+                {
+                    continue;
+                }
+
+                pair.Value.Visibility = String.Equals(
+                    pair.Key,
+                    tag,
+                    StringComparison.OrdinalIgnoreCase)
+                    ? Visibility.Visible
+                    : Visibility.Collapsed;
+            }
+        }
+
+        /// <summary>进入开发者页。第一次进入时从仓库把两份推荐列表读回来。</summary>
+        private void LoadDeveloperCenter()
+        {
+            if (DeveloperModuleList != null && DeveloperModuleList.SelectedItem == null)
+            {
+                DeveloperModuleList.SelectedIndex = 0;
+            }
+
+            if (_developerLoaded)
+            {
+                return;
+            }
+
+            _developerLoaded = true;
+            LoadDeveloperPluginsFromRepo();
+            LoadDeveloperSkillsFromRepo();
+            LoadDeveloperAnnouncementsFromRepo();
+        }
+
+        private void ReportDeveloper(bool ok, string title, string message)
+        {
+            DeveloperInfoBar.Severity = ok
+                ? InfoBarSeverity.Success
+                : InfoBarSeverity.Error;
+            DeveloperInfoBar.Title = title;
+            DeveloperInfoBar.Message = message ?? String.Empty;
+            DeveloperInfoBar.IsOpen = true;
+        }
+
+        private void ReportDeveloperWarning(string title, string message)
+        {
+            DeveloperInfoBar.Severity = InfoBarSeverity.Warning;
+            DeveloperInfoBar.Title = title;
+            DeveloperInfoBar.Message = message ?? String.Empty;
+            DeveloperInfoBar.IsOpen = true;
+        }
+
+        /// <summary>读回来后统一报一句：Token 被拒就提醒换 Token，否则报条数。</summary>
+        private void ReportDeveloperLoaded(
+            FeaturedAdminService.RemoteFile file,
+            string title,
+            int count)
+        {
+            if (file != null && file.TokenRejected)
+            {
+                ReportDeveloperWarning(
+                    "Token 已失效",
+                    "现在按匿名读取。发布前先去「API」页换一个。");
+                return;
+            }
+
+            ReportDeveloper(true, title, "仓库里有 " + count + " 条。");
+        }
+
+        private void SetDeveloperBusy(bool busy)
+        {
+            DeveloperPluginImportButton.IsEnabled = !busy;
+            DeveloperPluginLoadButton.IsEnabled = !busy;
+            DeveloperPluginPublishButton.IsEnabled = !busy;
+            DeveloperSkillImportButton.IsEnabled = !busy;
+            DeveloperSkillLoadButton.IsEnabled = !busy;
+            DeveloperSkillPublishButton.IsEnabled = !busy;
+            DeveloperAnnounceAddButton.IsEnabled = !busy;
+            DeveloperAnnounceLoadButton.IsEnabled = !busy;
+            DeveloperAnnouncePublishButton.IsEnabled = !busy;
+        }
+
+        // ---------------------------------------------------------------- 读回
+
+        private void LoadDeveloperPluginsFromRepo()
+        {
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                string error;
+                FeaturedAdminService.RemoteFile file =
+                    FeaturedAdminService.ReadFile(
+                        _settings,
+                        FeaturedAdminService.PluginsPath,
+                        out error);
+                List<PluginCatalogItem> items = new List<PluginCatalogItem>();
+                if (file != null && !String.IsNullOrWhiteSpace(file.Content))
+                {
+                    string parseError;
+                    items = FeaturedPluginService.ParseJson(file.Content, out parseError);
+                    if (items.Count == 0 && !String.IsNullOrWhiteSpace(parseError))
+                    {
+                        error = parseError;
+                    }
+                }
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    if (file == null)
+                    {
+                        ReportDeveloper(false, "读取插件推荐失败", error);
+                        return;
+                    }
+
+                    _developerPlugins = items;
+                    RebuildDeveloperPlugins();
+                    ReportDeveloperLoaded(file, "插件推荐", items.Count);
+                });
+            });
+        }
+
+        private void LoadDeveloperSkillsFromRepo()
+        {
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                string error;
+                FeaturedAdminService.RemoteFile file =
+                    FeaturedAdminService.ReadFile(
+                        _settings,
+                        FeaturedAdminService.SkillsPath,
+                        out error);
+                List<FeaturedSkillItem> items = new List<FeaturedSkillItem>();
+                if (file != null && !String.IsNullOrWhiteSpace(file.Content))
+                {
+                    string parseError;
+                    items = FeaturedSkillService.ParseJson(file.Content, out parseError);
+                    if (items.Count == 0 && !String.IsNullOrWhiteSpace(parseError))
+                    {
+                        error = parseError;
+                    }
+                }
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    if (file == null)
+                    {
+                        ReportDeveloper(false, "读取技能推荐失败", error);
+                        return;
+                    }
+
+                    _developerSkills = items;
+                    RebuildDeveloperSkills();
+                    ReportDeveloperLoaded(file, "技能推荐", items.Count);
+                });
+            });
+        }
+
+        // ---------------------------------------------------------------- 导入
+
+        private void DeveloperPluginImportButton_Click(
+            object sender,
+            RoutedEventArgs args)
+        {
+            string input = (DeveloperPluginInput.Text ?? String.Empty).Trim();
+            PluginSpec spec = PluginSpec.Parse(input);
+            if (!spec.IsGitHub)
+            {
+                ReportDeveloper(false, "地址不对", "填 owner/repo 或 GitHub 链接。");
+                return;
+            }
+
+            SetDeveloperBusy(true);
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                string error;
+                PluginCatalogItem item = FeaturedAdminService.ImportPlugin(
+                    _settings,
+                    spec,
+                    out error);
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    SetDeveloperBusy(false);
+                    if (item == null)
+                    {
+                        ReportDeveloper(false, "导入失败", error);
+                        return;
+                    }
+
+                    bool replaced = false;
+                    for (int index = 0; index < _developerPlugins.Count; index++)
+                    {
+                        if (SameRepository(_developerPlugins[index], item))
+                        {
+                            string keepNote = _developerPlugins[index].FeaturedNote;
+                            item.FeaturedNote = keepNote;
+                            item.FeaturedOrder = _developerPlugins[index].FeaturedOrder;
+                            _developerPlugins[index] = item;
+                            replaced = true;
+                            break;
+                        }
+                    }
+
+                    if (!replaced)
+                    {
+                        _developerPlugins.Add(item);
+                    }
+
+                    RenumberDeveloperPlugins();
+                    RebuildDeveloperPlugins();
+                    DeveloperPluginInput.Text = String.Empty;
+                    ReportDeveloper(
+                        true,
+                        replaced ? "已更新 " + item.Repository : "已加入 " + item.Repository,
+                        replaced
+                            ? "字段按仓库最新信息覆盖，顺序和备注保留。"
+                            : item.FullName + " · " + item.Category);
+                });
+            });
+        }
+
+        private void DeveloperSkillImportButton_Click(
+            object sender,
+            RoutedEventArgs args)
+        {
+            string input = (DeveloperSkillInput.Text ?? String.Empty).Trim();
+            PluginSpec spec = PluginSpec.Parse(input);
+            if (!spec.IsGitHub)
+            {
+                ReportDeveloper(false, "地址不对", "填 owner/repo 或 GitHub 链接。");
+                return;
+            }
+
+            SetDeveloperBusy(true);
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                List<SkillMarketService.SkillMarketItem> found =
+                    FeaturedAdminService.ImportSkills(_settings, spec, _host.Log);
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    SetDeveloperBusy(false);
+                    if (found == null || found.Count == 0)
+                    {
+                        ReportDeveloper(
+                            false,
+                            "没读到技能",
+                            "这个仓库里没有 SKILL.md。");
+                        return;
+                    }
+
+                    int added = 0;
+                    int replaced = 0;
+                    for (int index = 0; index < found.Count; index++)
+                    {
+                        SkillMarketService.SkillMarketItem source = found[index];
+                        FeaturedSkillItem item = new FeaturedSkillItem
+                        {
+                            Owner = source.Owner,
+                            Repository = source.Repository,
+                            RepositoryPath = source.RepositoryPath,
+                            Name = source.Name,
+                            Description = source.Description,
+                            Note = source.Description,
+                            Category = source.Category,
+                            DefaultBranch = String.IsNullOrWhiteSpace(source.DefaultBranch)
+                                ? "main"
+                                : source.DefaultBranch
+                        };
+
+                        bool exists = false;
+                        for (int inner = 0; inner < _developerSkills.Count; inner++)
+                        {
+                            if (SameSkill(_developerSkills[inner], item))
+                            {
+                                string keepNote = _developerSkills[inner].Note;
+                                int keepOrder = _developerSkills[inner].Order;
+                                item.Note = keepNote;
+                                item.Order = keepOrder;
+                                _developerSkills[inner] = item;
+                                exists = true;
+                                replaced++;
+                                break;
+                            }
+                        }
+
+                        if (!exists)
+                        {
+                            _developerSkills.Add(item);
+                            added++;
+                        }
+                    }
+
+                    RenumberDeveloperSkills();
+                    RebuildDeveloperSkills();
+                    DeveloperSkillInput.Text = String.Empty;
+                    ReportDeveloper(
+                        true,
+                        "已加入 " + added + " 个技能",
+                        replaced > 0
+                            ? "另有 " + replaced + " 个已存在，按最新信息覆盖。"
+                            : "不想要的用「移除」删掉。");
+                });
+            });
+        }
+
+        private static bool SameRepository(
+            PluginCatalogItem left,
+            PluginCatalogItem right)
+        {
+            return String.Equals(
+                    left.Owner,
+                    right.Owner,
+                    StringComparison.OrdinalIgnoreCase)
+                && String.Equals(
+                    left.Repository,
+                    right.Repository,
+                    StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool SameSkill(FeaturedSkillItem left, FeaturedSkillItem right)
+        {
+            return String.Equals(
+                    left.Owner,
+                    right.Owner,
+                    StringComparison.OrdinalIgnoreCase)
+                && String.Equals(
+                    left.Repository,
+                    right.Repository,
+                    StringComparison.OrdinalIgnoreCase)
+                && String.Equals(
+                    left.RepositoryPath,
+                    right.RepositoryPath,
+                    StringComparison.OrdinalIgnoreCase);
+        }
+
+        // ---------------------------------------------------------------- 发布
+
+        private void DeveloperPluginPublishButton_Click(
+            object sender,
+            RoutedEventArgs args)
+        {
+            RenumberDeveloperPlugins();
+            PublishDeveloperFile(
+                FeaturedAdminService.PluginsPath,
+                FeaturedPluginService.Serialize(_developerPlugins),
+                "content: update featured plugins",
+                "插件推荐");
+        }
+
+        private void DeveloperSkillPublishButton_Click(
+            object sender,
+            RoutedEventArgs args)
+        {
+            RenumberDeveloperSkills();
+            PublishDeveloperFile(
+                FeaturedAdminService.SkillsPath,
+                FeaturedSkillService.Serialize(_developerSkills),
+                "content: update featured skills",
+                "技能推荐");
+        }
+
+        private void PublishDeveloperFile(
+            string path,
+            string json,
+            string message,
+            string label)
+        {
+            SetDeveloperBusy(true);
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                string error;
+                string url = FeaturedAdminService.Publish(
+                    _settings,
+                    path,
+                    json,
+                    message,
+                    out error);
+
+                if (url == null)
+                {
+                    DispatcherQueue.TryEnqueue(delegate
+                    {
+                        SetDeveloperBusy(false);
+                        ReportDeveloper(false, label + "发布失败", error);
+                    });
+                    return;
+                }
+
+                // 顺手把本地缓存刷新掉，免得推荐页还显示旧内容。
+                FeaturedPluginService.Load(_settings, true, _host.Log);
+                FeaturedSkillService.Load(_settings, true, _host.Log);
+                if (String.Equals(
+                    path,
+                    FeaturedAdminService.AnnouncementsPath,
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    AnnouncementService.SaveLocal(_developerAnnouncements);
+                    _homeAnnouncements = AnnouncementService.Sort(_developerAnnouncements);
+                    _homeAnnouncementsLoaded = true;
+                }
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    SetDeveloperBusy(false);
+                    RefreshHomeAnnouncementsAfterPublish();
+                    ReportDeveloper(true, label + "已发布", url);
+                });
+            });
+        }
+
+        // ---------------------------------------------------------------- 列表操作
+
+        private void DeveloperMoveUp_Click(object sender, RoutedEventArgs args)
+        {
+            MoveDeveloperCard(DeveloperCardFrom(sender), -1);
+        }
+
+        private void DeveloperMoveDown_Click(object sender, RoutedEventArgs args)
+        {
+            MoveDeveloperCard(DeveloperCardFrom(sender), 1);
+        }
+
+        /// <summary>
+        /// 三个列表共用一套卡片模板，所以按卡片自己带的 Kind 分派 ——
+        /// 只看「当前哪个页签被选中」的话，在公告模块下点按钮会去动技能列表。
+        /// </summary>
+        private void MoveDeveloperCard(DeveloperEntryCard card, int delta)
+        {
+            if (card == null || delta == 0)
+            {
+                return;
+            }
+
+            if (String.Equals(card.Kind, "announce", StringComparison.OrdinalIgnoreCase))
+            {
+                int target = card.Index + delta;
+                if (card.Index < 0 || card.Index >= _developerAnnouncements.Count
+                    || target < 0 || target >= _developerAnnouncements.Count)
+                {
+                    return;
+                }
+
+                AnnouncementItem item = _developerAnnouncements[card.Index];
+                _developerAnnouncements.RemoveAt(card.Index);
+                _developerAnnouncements.Insert(target, item);
+                RenumberDeveloperAnnouncements();
+                RebuildDeveloperAnnouncements();
+                return;
+            }
+
+            if (String.Equals(card.Kind, "skill", StringComparison.OrdinalIgnoreCase))
+            {
+                int target = card.Index + delta;
+                if (card.Index < 0 || card.Index >= _developerSkills.Count
+                    || target < 0 || target >= _developerSkills.Count)
+                {
+                    return;
+                }
+
+                FeaturedSkillItem item = _developerSkills[card.Index];
+                _developerSkills.RemoveAt(card.Index);
+                _developerSkills.Insert(target, item);
+                RenumberDeveloperSkills();
+                RebuildDeveloperSkills();
+                return;
+            }
+
+            int pluginTarget = card.Index + delta;
+            if (card.Index < 0 || card.Index >= _developerPlugins.Count
+                || pluginTarget < 0 || pluginTarget >= _developerPlugins.Count)
+            {
+                return;
+            }
+
+            PluginCatalogItem plugin = _developerPlugins[card.Index];
+            _developerPlugins.RemoveAt(card.Index);
+            _developerPlugins.Insert(pluginTarget, plugin);
+            RenumberDeveloperPlugins();
+            RebuildDeveloperPlugins();
+        }
+
+        private void DeveloperRemove_Click(object sender, RoutedEventArgs args)
+        {
+            RemoveDeveloperCard(DeveloperCardFrom(sender));
+        }
+
+        private void RemoveDeveloperCard(DeveloperEntryCard card)
+        {
+            if (card == null)
+            {
+                return;
+            }
+
+            if (String.Equals(card.Kind, "announce", StringComparison.OrdinalIgnoreCase))
+            {
+                if (card.Index < 0 || card.Index >= _developerAnnouncements.Count)
+                {
+                    return;
+                }
+
+                string title = _developerAnnouncements[card.Index].Title;
+                _developerAnnouncements.RemoveAt(card.Index);
+                RenumberDeveloperAnnouncements();
+                RebuildDeveloperAnnouncements();
+                ReportDeveloper(
+                    true,
+                    "已移除 " + title,
+                    "点「发布到仓库」才会真正生效。");
+                return;
+            }
+
+            if (String.Equals(card.Kind, "skill", StringComparison.OrdinalIgnoreCase))
+            {
+                if (card.Index < 0 || card.Index >= _developerSkills.Count)
+                {
+                    return;
+                }
+
+                string name = _developerSkills[card.Index].Name;
+                _developerSkills.RemoveAt(card.Index);
+                RenumberDeveloperSkills();
+                RebuildDeveloperSkills();
+                ReportDeveloper(
+                    true,
+                    "已移除 " + name,
+                    "点「发布到仓库」才会真正生效。");
+                return;
+            }
+
+            if (card.Index < 0 || card.Index >= _developerPlugins.Count)
+            {
+                return;
+            }
+
+            string repository = _developerPlugins[card.Index].Repository;
+            _developerPlugins.RemoveAt(card.Index);
+            RenumberDeveloperPlugins();
+            RebuildDeveloperPlugins();
+            ReportDeveloper(
+                true,
+                "已移除 " + repository,
+                "点「发布到仓库」才会真正生效。");
+        }
+
+        private async void DeveloperEdit_Click(object sender, RoutedEventArgs args)
+        {
+            DeveloperEntryCard card = DeveloperCardFrom(sender);
+            if (card == null)
+            {
+                return;
+            }
+
+            if (String.Equals(card.Kind, "announce", StringComparison.OrdinalIgnoreCase))
+            {
+                if (card.Index < 0 || card.Index >= _developerAnnouncements.Count)
+                {
+                    return;
+                }
+
+                if (await ShowAnnouncementEditDialogAsync(
+                    _developerAnnouncements[card.Index],
+                    false))
+                {
+                    RebuildDeveloperAnnouncements();
+                }
+
+                return;
+            }
+
+            bool skills = String.Equals(
+                card.Kind,
+                "skill",
+                StringComparison.OrdinalIgnoreCase);
+            if (skills)
+            {
+                if (card.Index < 0 || card.Index >= _developerSkills.Count)
+                {
+                    return;
+                }
+
+                FeaturedSkillItem item = _developerSkills[card.Index];
+                string[] edited = await ShowDeveloperEditDialogAsync(
+                    item.Name,
+                    item.Description,
+                    item.Note,
+                    item.Category);
+                if (edited == null)
+                {
+                    return;
+                }
+
+                item.Name = edited[0];
+                item.Description = edited[1];
+                item.Note = edited[2];
+                item.Category = edited[3];
+                RebuildDeveloperSkills();
+            }
+            else
+            {
+                if (card.Index < 0 || card.Index >= _developerPlugins.Count)
+                {
+                    return;
+                }
+
+                PluginCatalogItem item = _developerPlugins[card.Index];
+                string[] edited = await ShowDeveloperEditDialogAsync(
+                    item.Repository,
+                    item.Description,
+                    item.FeaturedNote,
+                    item.Category);
+                if (edited == null)
+                {
+                    return;
+                }
+
+                item.Description = edited[1];
+                item.FeaturedNote = edited[2];
+                item.Category = edited[3];
+                RebuildDeveloperPlugins();
+            }
+        }
+
+        /// <summary>编辑弹窗：返回 [名称, 说明, 备注, 分类]；取消返回 null。</summary>
+        private async System.Threading.Tasks.Task<string[]> ShowDeveloperEditDialogAsync(
+            string name,
+            string description,
+            string note,
+            string category)
+        {
+            TextBox nameBox = new TextBox { Header = "名称", Text = name ?? String.Empty };
+            TextBox descriptionBox = new TextBox
+            {
+                Header = "说明",
+                Text = description ?? String.Empty,
+                AcceptsReturn = true,
+                TextWrapping = TextWrapping.Wrap,
+                Height = 96
+            };
+            TextBox noteBox = new TextBox
+            {
+                Header = "运营备注",
+                Text = note ?? String.Empty,
+                AcceptsReturn = true,
+                TextWrapping = TextWrapping.Wrap,
+                Height = 72
+            };
+            TextBox categoryBox = new TextBox
+            {
+                Header = "分类",
+                Text = category ?? String.Empty
+            };
+
+            StackPanel content = new StackPanel { Spacing = 12 };
+            content.Children.Add(nameBox);
+            content.Children.Add(descriptionBox);
+            content.Children.Add(noteBox);
+            content.Children.Add(categoryBox);
+
+            ContentDialog dialog = new ContentDialog
+            {
+                XamlRoot = SettingsRoot.XamlRoot,
+                Title = "编辑推荐",
+                Content = content,
+                PrimaryButtonText = "保存",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Primary
+            };
+
+            ContentDialogResult result = await dialog.ShowAsync();
+            if (result != ContentDialogResult.Primary)
+            {
+                return null;
+            }
+
+            return new string[]
+            {
+                nameBox.Text,
+                descriptionBox.Text,
+                noteBox.Text,
+                categoryBox.Text
+            };
+        }
+
+        private static DeveloperEntryCard DeveloperCardFrom(object sender)
+        {
+            FrameworkElement element = sender as FrameworkElement;
+            if (element == null)
+            {
+                return null;
+            }
+
+            DeveloperEntryCard card = element.Tag as DeveloperEntryCard;
+            return card ?? element.DataContext as DeveloperEntryCard;
+        }
+
+        /// <summary>发布完成后把主页公告栏同步一遍（走 UI 线程调用）。</summary>
+        private void RefreshHomeAnnouncementsAfterPublish()
+        {
+            if (!_homeAnnouncementsLoaded)
+            {
+                return;
+            }
+
+            RebuildHomeAnnouncements(false, null);
+        }
+
+        private void RenumberDeveloperPlugins()
+        {
+            for (int index = 0; index < _developerPlugins.Count; index++)
+            {
+                _developerPlugins[index].FeaturedOrder = index + 1;
+            }
+        }
+
+        private void RenumberDeveloperSkills()
+        {
+            for (int index = 0; index < _developerSkills.Count; index++)
+            {
+                _developerSkills[index].Order = index;
+            }
+        }
+
+        private void RenumberDeveloperAnnouncements()
+        {
+            for (int index = 0; index < _developerAnnouncements.Count; index++)
+            {
+                _developerAnnouncements[index].Order = index;
+            }
+        }
+
+        private void RebuildDeveloperPlugins()
+        {
+            List<DeveloperEntryCard> cards = new List<DeveloperEntryCard>();
+            for (int index = 0; index < _developerPlugins.Count; index++)
+            {
+                PluginCatalogItem item = _developerPlugins[index];
+                cards.Add(new DeveloperEntryCard
+                {
+                    Kind = "plugin",
+                    Index = index,
+                    Order = (index + 1).ToString(),
+                    Title = String.IsNullOrWhiteSpace(item.Repository)
+                        ? item.FullName
+                        : item.Repository,
+                    Subtitle = item.FullName
+                        + " · " + item.Category
+                        + (String.IsNullOrWhiteSpace(item.FeaturedNote)
+                            ? String.Empty
+                            : " · " + item.FeaturedNote)
+                });
+            }
+
+            DeveloperPluginRepeater.ItemsSource = cards;
+            DeveloperPluginCountText.Text = _developerPlugins.Count == 0
+                ? "还没有推荐条目。粘一个仓库地址点「导入」。"
+                : "共 " + _developerPlugins.Count + " 条 · 改完点「发布到仓库」";
+        }
+
+        private void RebuildDeveloperSkills()
+        {
+            List<DeveloperEntryCard> cards = new List<DeveloperEntryCard>();
+            for (int index = 0; index < _developerSkills.Count; index++)
+            {
+                FeaturedSkillItem item = _developerSkills[index];
+                cards.Add(new DeveloperEntryCard
+                {
+                    Kind = "skill",
+                    Index = index,
+                    Order = (index + 1).ToString(),
+                    Title = String.IsNullOrWhiteSpace(item.Name)
+                        ? item.Repository
+                        : item.Name,
+                    Subtitle = item.FullName
+                        + (String.IsNullOrWhiteSpace(item.RepositoryPath)
+                            ? String.Empty
+                            : "/" + item.RepositoryPath)
+                        + " · " + item.Category
+                });
+            }
+
+            DeveloperSkillRepeater.ItemsSource = cards;
+            DeveloperSkillCountText.Text = _developerSkills.Count == 0
+                ? "还没有推荐技能。粘一个仓库地址点「导入」。"
+                : "共 " + _developerSkills.Count + " 条 · 改完点「发布到仓库」";
+        }
+
+        // ---------------------------------------------------------------- 公告
+
+        private void RebuildDeveloperAnnouncements()
+        {
+            List<DeveloperEntryCard> cards = new List<DeveloperEntryCard>();
+            for (int index = 0; index < _developerAnnouncements.Count; index++)
+            {
+                AnnouncementItem item = _developerAnnouncements[index];
+                cards.Add(new DeveloperEntryCard
+                {
+                    Kind = "announce",
+                    Index = index,
+                    Order = (index + 1).ToString(),
+                    Title = item.Title,
+                    Subtitle = (item.Pinned ? "置顶 · " : String.Empty)
+                        + item.TagOrFallback
+                        + (String.IsNullOrWhiteSpace(item.Date)
+                            ? String.Empty
+                            : " · " + item.Date)
+                        + (item.Summary.Length == 0
+                            ? String.Empty
+                            : " · " + item.Summary)
+                });
+            }
+
+            DeveloperAnnounceRepeater.ItemsSource = cards;
+            DeveloperAnnounceCountText.Text = _developerAnnouncements.Count == 0
+                ? "还没有公告。点「新增」写一条。"
+                : "共 " + _developerAnnouncements.Count + " 条 · 改完点「发布到仓库」";
+        }
+
+        private void LoadDeveloperAnnouncementsFromRepo()
+        {
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                string error;
+                FeaturedAdminService.RemoteFile file =
+                    FeaturedAdminService.ReadFile(
+                        _settings,
+                        FeaturedAdminService.AnnouncementsPath,
+                        out error);
+                List<AnnouncementItem> items = new List<AnnouncementItem>();
+                if (file != null && !String.IsNullOrWhiteSpace(file.Content))
+                {
+                    string parseError;
+                    items = AnnouncementService.Parse(file.Content, out parseError);
+                    if (items.Count == 0 && !String.IsNullOrWhiteSpace(parseError))
+                    {
+                        error = parseError;
+                    }
+                }
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    if (file == null)
+                    {
+                        ReportDeveloper(false, "读取公告失败", error);
+                        return;
+                    }
+
+                    _developerAnnouncements = items;
+                    RenumberDeveloperAnnouncements();
+                    RebuildDeveloperAnnouncements();
+                    ReportDeveloperLoaded(file, "公告", items.Count);
+                });
+            });
+        }
+
+        private async void DeveloperAnnounceAddButton_Click(
+            object sender,
+            RoutedEventArgs args)
+        {
+            AnnouncementItem item = new AnnouncementItem
+            {
+                Date = DateTime.Now.ToString("yyyy-MM-dd"),
+                Tag = "更新"
+            };
+
+            if (!await ShowAnnouncementEditDialogAsync(item, true))
+            {
+                return;
+            }
+
+            // 新写的排最前（置顶的仍在它上面），作者想往后挪就按「下移」。
+            item.Id = AnnouncementService.MakeId(item.Title, item.Date);
+            _developerAnnouncements.Insert(0, item);
+            RenumberDeveloperAnnouncements();
+            RebuildDeveloperAnnouncements();
+            ReportDeveloper(
+                true,
+                "已新增公告",
+                "点「发布到仓库」才会发出去。");
+        }
+
+        private void DeveloperAnnouncePublishButton_Click(
+            object sender,
+            RoutedEventArgs args)
+        {
+            if (_developerAnnouncements.Count == 0)
+            {
+                ReportDeveloper(false, "没有可发布的公告", "先点「新增」写一条。");
+                return;
+            }
+
+            RenumberDeveloperAnnouncements();
+            PublishDeveloperFile(
+                FeaturedAdminService.AnnouncementsPath,
+                AnnouncementService.Serialize(_developerAnnouncements),
+                "content: update announcements",
+                "公告");
+        }
+
+        /// <summary>公告编辑弹窗。返回 true 表示用户保存了，内容已经写回 item。</summary>
+        private async System.Threading.Tasks.Task<bool> ShowAnnouncementEditDialogAsync(
+            AnnouncementItem item,
+            bool isNew)
+        {
+            AnnouncementTitleBox.Text = item.Title;
+            AnnouncementBodyBox.Text = item.Body;
+            AnnouncementDateBox.Text = String.IsNullOrWhiteSpace(item.Date)
+                ? DateTime.Now.ToString("yyyy-MM-dd")
+                : item.Date;
+            AnnouncementUrlBox.Text = item.Url;
+            AnnouncementPinnedBox.IsChecked = item.Pinned;
+            SelectAnnouncementTag(item.TagOrFallback);
+
+            AnnouncementEditDialog.XamlRoot = SettingsRoot.XamlRoot;
+            AnnouncementEditDialog.Title = isNew ? "新增公告" : "编辑公告";
+            ContentDialogResult result = await AnnouncementEditDialog.ShowAsync();
+            if (result != ContentDialogResult.Primary)
+            {
+                return false;
+            }
+
+            string title = (AnnouncementTitleBox.Text ?? String.Empty).Trim();
+            if (title.Length == 0)
+            {
+                ReportDeveloper(false, "标题是空的", "补一句标题再保存。");
+                return false;
+            }
+
+            item.Title = title;
+            item.Body = (AnnouncementBodyBox.Text ?? String.Empty).Trim();
+            item.Tag = CurrentAnnouncementTag();
+            item.Date = NormalizeAnnouncementDate(AnnouncementDateBox.Text);
+            item.Url = (AnnouncementUrlBox.Text ?? String.Empty).Trim();
+            item.Pinned = AnnouncementPinnedBox.IsChecked == true;
+            return true;
+        }
+
+        private void SelectAnnouncementTag(string tag)
+        {
+            string wanted = String.IsNullOrWhiteSpace(tag) ? "公告" : tag.Trim();
+            for (int index = 0; index < AnnouncementTagBox.Items.Count; index++)
+            {
+                ComboBoxItem entry = AnnouncementTagBox.Items[index] as ComboBoxItem;
+                if (entry != null
+                    && String.Equals(
+                        entry.Content as string,
+                        wanted,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    AnnouncementTagBox.SelectedIndex = index;
+                    return;
+                }
+            }
+
+            AnnouncementTagBox.SelectedIndex = 0;
+        }
+
+        private string CurrentAnnouncementTag()
+        {
+            ComboBoxItem entry = AnnouncementTagBox.SelectedItem as ComboBoxItem;
+            string tag = entry == null ? null : entry.Content as string;
+            return String.IsNullOrWhiteSpace(tag) ? "公告" : tag;
+        }
+
+        /// <summary>日期写成 yyyy-MM-dd；写得看不懂就用今天，不拦着作者保存。</summary>
+        private static string NormalizeAnnouncementDate(string text)
+        {
+            DateTime parsed;
+            if (!String.IsNullOrWhiteSpace(text)
+                && DateTime.TryParse(
+                    text.Trim(),
+                    out parsed))
+            {
+                return parsed.ToString("yyyy-MM-dd");
+            }
+
+            return DateTime.Now.ToString("yyyy-MM-dd");
+        }
+
     }
 }
+

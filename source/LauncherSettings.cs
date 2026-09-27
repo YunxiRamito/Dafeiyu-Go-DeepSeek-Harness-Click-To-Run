@@ -19,16 +19,31 @@ namespace DeepSeekHarnessLauncher
 
         public string UpdateSource { get; set; } = "Accelerated";
 
+        /// <summary>
+        /// 加速源选择：Auto = 每次运行按实测延迟自动挑最快的；
+        /// 也可以钉住 ghproxy / gh-proxy / ghfast / jsdelivr 其中之一。
+        /// </summary>
+        public string MirrorSource { get; set; } = "Auto";
+
         /// <summary>在线插件的来源：Market = DSH 插件市场（api.dshmk.com），GitHub = GitHub 搜索接口。</summary>
         public string PluginSource { get; set; } = "Market";
         public string LauncherUpdateMode { get; set; } = "Install";
         public string DshUpdateMode { get; set; } = "Check";
         public string PluginUpdateMode { get; set; } = "Check";
         public string UpdateInterval { get; set; } = "EveryStart";
+
+        /// <summary>启动器更新通道。Auto/Stable 都读 manifest.json，Preview 读 manifest-preview.json。</summary>
+        public string LauncherChannel { get; set; } = "Stable";
+
+        /// <summary>DSH 更新通道。Auto = 所有 npm tag 里取最高版本，也可以钉住 latest / next / alpha。</summary>
+        public string DshChannel { get; set; } = "latest";
         public DateTime? LastUpdateCheckUtc { get; set; }
         public string LastNotifiedLauncherVersion { get; set; } = String.Empty;
         public string LastNotifiedDshVersion { get; set; } = String.Empty;
         public string LastNotifiedPluginSignature { get; set; } = String.Empty;
+
+        /// <summary>主页公告里最后看过的那条 Id，用来判断有没有没看过的新公告。</summary>
+        public string LastSeenAnnouncementId { get; set; } = String.Empty;
 
         // ---- 代理设置。None = 直连,System = 跟随 Windows,Custom = 用下面三个字段。
         public string ProxyMode { get; set; } = "None";
@@ -64,5 +79,13 @@ namespace DeepSeekHarnessLauncher
 
         public string DshRoot { get; set; } = String.Empty;
         public string NodePath { get; set; } = String.Empty;
+
+        /// <summary>
+        /// 额外扫描的技能根。DSH 自己的根（&lt;dshRoot&gt;\.dsh\skills、~\.agents\skills）
+        /// 是内置的，这里只放用户自己加的目录。
+        /// </summary>
+        public System.Collections.Generic.List<string> SkillRoots { get; set; } =
+            new System.Collections.Generic.List<string>();
+
     }
 }
