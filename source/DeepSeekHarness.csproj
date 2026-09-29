@@ -22,9 +22,9 @@
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <DefineConstants>DISABLE_XAML_GENERATED_MAIN</DefineConstants>
-    <Version>1.5.1</Version>
-    <AssemblyVersion>1.5.1.0</AssemblyVersion>
-    <FileVersion>1.5.1.0</FileVersion>
+    <Version>1.5.2</Version>
+    <AssemblyVersion>1.5.2.0</AssemblyVersion>
+    <FileVersion>1.5.2.0</FileVersion>
     <Product>Dafeiyu-Go</Product>
     <Title>Dafeiyu-Go</Title>
     <AssemblyTitle>Dafeiyu-Go</AssemblyTitle>
@@ -51,6 +51,9 @@
     <Content Include="assets\plugin-placeholder.svg" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="assets\SettingsNavIconsWin10\*.svg" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="assets\SettingsNavIconsWin10Dark\*.svg" CopyToOutputDirectory="PreserveNewest" />
+
+    <!-- 自带的用量统计插件：随包发出去，一键安装就是把它复制到 <dshRoot>\plugins\ -->
+    <Content Include="assets\dsh-token-stats\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

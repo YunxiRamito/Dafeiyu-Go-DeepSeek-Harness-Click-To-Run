@@ -107,6 +107,8 @@
                 <Setter Property="MinWidth" Value="180" />
                 <Setter Property="HorizontalAlignment" Value="Right" />
                 <Setter Property="VerticalAlignment" Value="Center" />
+                <!-- 跟着窗框风格走：Win11 圆角 4，Win10 直角（见 CornerRadiusHelper） -->
+                <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}" />
             </Style>
 
             <Style x:Key="SettingsNumberBoxStyle" TargetType="NumberBox">
@@ -919,22 +921,41 @@
                             </StackPanel>
                         </Border>
 
-                        <!-- Token 用量与余额:用量读 dsh-token-usage 插件写的 usage.jsonl,余额走 BalanceSupport -->
+                        <!-- Token 用量与余额：用量读自带插件 dsh-token-stats 写的 usage.jsonl，
+                             余额走 BalanceSupport；卡片上只留「余额 + 今日」两行，其余看图。 -->
                         <Border Style="{StaticResource SettingsCardStyle}">
                             <StackPanel Spacing="10">
                                 <Grid ColumnSpacing="8">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <TextBlock
+                                        x:Name="HomeUsageTitleText"
                                         VerticalAlignment="Center"
                                         FontSize="16"
                                         FontWeight="SemiBold"
                                         Text="Token 用量与余额" />
+                                    <ComboBox
+                                        x:Name="HomeUsageRangeBox"
+                                        Grid.Column="1"
+                                        MinWidth="112"
+                                        SelectionChanged="HomeUsageRangeBox_SelectionChanged"
+                                        Style="{StaticResource SettingsComboBoxStyle}">
+                                        <ComboBoxItem
+                                            Content="近 7 天"
+                                            Tag="7" />
+                                        <ComboBoxItem
+                                            Content="近 15 天"
+                                            Tag="15" />
+                                        <ComboBoxItem
+                                            Content="近 30 天"
+                                            Tag="30" />
+                                    </ComboBox>
                                     <Button
                                         x:Name="HomeUsageRefreshButton"
-                                        Grid.Column="1"
+                                        Grid.Column="2"
                                         Content="刷新"
                                         Click="HomeUsageRefreshButton_Click"
                                         Style="{StaticResource SettingsCompactButtonStyle}" />
@@ -942,6 +963,37 @@
                                 <StackPanel
                                     x:Name="HomeUsageHost"
                                     Spacing="4" />
+
+                                <!-- 两张图都是 Canvas 自己画的：WinUI 3 没有自带图表控件
+                                     （Windows Community Toolkit 8.x 里也没有图，老的
+                                     DataVisualization 包已下架），自己画就不用为几张柱子
+                                     给 11MB 的包塞进 SkiaSharp。 -->
+                                <StackPanel
+                                    x:Name="HomeUsageChartPanel"
+                                    Spacing="6"
+                                    Visibility="Collapsed">
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock
+                                            Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                            Text="柱 = Token 用量 · 线 = 花费金额（估算）" />
+                                        <TextBlock
+                                            x:Name="HomeUsageChartPeakText"
+                                            Grid.Column="1"
+                                            Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                    </Grid>
+                                    <Canvas
+                                        x:Name="HomeUsageChart"
+                                        Height="104"
+                                        Background="Transparent"
+                                        PointerExited="HomeUsageChart_PointerExited"
+                                        PointerMoved="HomeUsageChart_PointerMoved"
+                                        SizeChanged="HomeUsageChart_SizeChanged" />
+                                </StackPanel>
+
                                 <TextBlock
                                     x:Name="HomeUsageHintText"
                                     Style="{StaticResource SettingsRowDescriptionTextStyle}"
@@ -3521,7 +3573,7 @@
                                     FontSize="14"
                                     FontWeight="SemiBold"
                                     Tapped="VersionText_Tapped"
-                                    Text="v1.5.1"
+                                    Text="v1.5.2"
                                     ToolTipService.ToolTip="连续点击五次可打开开发者管理中心" />
                             </Grid>
                         </Border>

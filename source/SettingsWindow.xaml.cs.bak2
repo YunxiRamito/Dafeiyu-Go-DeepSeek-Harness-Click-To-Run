@@ -6787,19 +6787,10 @@ namespace DeepSeekHarnessLauncher
             }
 
             double height = HomeUsageChart.Height;
-
-            // 平面直角坐标系：左边留 tokens 刻度、右边留花费刻度、底下留日期
-            double plotLeft = 46;
-            double plotRight = width - 58;
-            double plotTop = 10;
-            double plotBottom = height - 18;
-            if (plotRight - plotLeft < 40 || plotBottom - plotTop < 30)
-            {
-                return;
-            }
-
-            double plotWidth = plotRight - plotLeft;
-            double plotHeight = plotBottom - plotTop;
+            const double Gap = 2;
+            const double BaselineHeight = 1;
+            double bottom = height - BaselineHeight;
+            double plotHeight = bottom - 10;
 
             long maxTokens = 0;
             double maxCost = 0;
@@ -6827,110 +6818,18 @@ namespace DeepSeekHarnessLauncher
 
             Brush accent = ResolveChartBrush("AccentFillColorDefaultBrush", "AccentFillColorSecondaryBrush");
             Brush normal = ResolveChartBrush("AccentFillColorTertiaryBrush", "ControlFillColorSecondaryBrush");
-            // 跟柱子同一个主题色：整张图一个色调，靠"柱子是半透明面积、折线是实色细线"分层。
-            // 之前给折线单独上蓝色，跟卡片其它地方不是一个调子（被指出来了）。
-            Brush costBrush = accent;
-            Brush gridBrush = ResolveChartBrush("DividerStrokeColorDefaultBrush", "ControlStrokeColorDefaultBrush");
-            Brush textBrush = ResolveChartBrush("TextFillColorSecondaryBrush", "ControlStrokeColorDefaultBrush");
-            Brush axisBrush = ResolveChartBrush("TextFillColorTertiaryBrush", "ControlStrokeColorDefaultBrush");
+            Brush baselineBrush = ResolveChartBrush("DividerStrokeColorDefaultBrush", "ControlStrokeColorDefaultBrush");
+            Brush costBrush = ResolveChartBrush("SystemFillColorCautionBrush", "SystemFillColorAttentionBrush");
 
-            const int RowTicks = 3;
-
-            // 横向网格线 + 左轴（tokens）刻度
-            for (int tick = 0; tick <= RowTicks; tick++)
-            {
-                double y = plotTop + plotHeight * tick / RowTicks;
-
-                HomeUsageChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Line
-                {
-                    X1 = plotLeft,
-                    X2 = plotRight,
-                    Y1 = y,
-                    Y2 = y,
-                    Stroke = gridBrush,
-                    StrokeThickness = 1,
-                    Opacity = tick == RowTicks ? 0.9 : 0.3
-                });
-
-                // 不标 0：最底下那条跟 X 轴的日期在同一行，标了就挤在一起（被指出来了）
-                if (tick >= RowTicks)
-                {
-                    continue;
-                }
-
-                double value = (double)maxTokens * (RowTicks - tick) / RowTicks;
-                TextBlock tickLabel = new TextBlock
-                {
-                    Text = FormatTokens((long)Math.Round(value)),
-                    FontSize = 10.5,
-                    Foreground = textBrush
-                };
-                tickLabel.Measure(new Windows.Foundation.Size(
-                    Double.PositiveInfinity,
-                    Double.PositiveInfinity));
-                HomeUsageChart.Children.Add(tickLabel);
-                Canvas.SetLeft(tickLabel, Math.Max(0, plotLeft - 6 - tickLabel.DesiredSize.Width));
-                Canvas.SetTop(tickLabel, Math.Max(0, y - tickLabel.DesiredSize.Height / 2));
-            }
-
-            // 右轴（花费 ¥）刻度：只标顶和中，免得跟左轴的数字挤一起
-            // 只标顶部与中部：底部那条跟 X 轴的日期在同一行，标了就撞在一起
-            for (int tick = 0; tick <= 1; tick++)
-            {
-                double y = plotTop + plotHeight * tick / 2;
-                double value = maxCost * (2 - tick) / 2;
-
-                TextBlock tickLabel = new TextBlock
-                {
-                    Text = "¥" + value.ToString("0.##"),
-                    FontSize = 10.5,
-                    Foreground = costBrush,
-                    Opacity = 0.85
-                };
-                tickLabel.Measure(new Windows.Foundation.Size(
-                    Double.PositiveInfinity,
-                    Double.PositiveInfinity));
-                HomeUsageChart.Children.Add(tickLabel);
-                Canvas.SetLeft(
-                    tickLabel,
-                    Math.Min(width - tickLabel.DesiredSize.Width, plotRight + 6));
-                Canvas.SetTop(tickLabel, Math.Max(0, y - tickLabel.DesiredSize.Height / 2));
-            }
-
-            // 坐标轴：左竖线 + 底横线
-            HomeUsageChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Line
-            {
-                X1 = plotLeft,
-                X2 = plotLeft,
-                Y1 = plotTop,
-                Y2 = plotBottom,
-                Stroke = axisBrush,
-                StrokeThickness = 1,
-                Opacity = 0.7
-            });
-            HomeUsageChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Line
-            {
-                X1 = plotLeft,
-                X2 = plotRight,
-                Y1 = plotBottom,
-                Y2 = plotBottom,
-                Stroke = axisBrush,
-                StrokeThickness = 1,
-                Opacity = 0.7
-            });
-
-            // 柱子：token 用量 —— 故意压淡，当背景量，别跟折线抢眼睛
-            double slot = plotWidth / daily.Count;
-            double barWidth = Math.Max(1.5, slot * 0.56);
+            double barWidth = Math.Max(1, (width - Gap * (daily.Count - 1)) / daily.Count);
 
             for (int index = 0; index < daily.Count; index++)
             {
                 DailyTokens item = daily[index];
                 bool isToday = index == daily.Count - 1;
-                bool hot = _homeUsageHoverIndex == index;
 
                 double barHeight = maxTokens > 0
-                    ? plotHeight * item.Tokens / maxTokens
+                    ? plotHeight * item.Tokens / (double)maxTokens
                     : 0;
                 if (item.Tokens > 0 && barHeight < 2)
                 {
@@ -6943,27 +6842,28 @@ namespace DeepSeekHarnessLauncher
                     barHeight = 2;
                 }
 
+                bool hot = _homeUsageHoverIndex == index;
+
                 Microsoft.UI.Xaml.Shapes.Rectangle bar =
                     new Microsoft.UI.Xaml.Shapes.Rectangle
                     {
                         Width = barWidth,
                         Height = barHeight,
                         Fill = hot || isToday ? accent : normal,
-                        RadiusX = CornerRadiusHelper.UsesWindows11Style ? 1.5 : 0,
-                        RadiusY = CornerRadiusHelper.UsesWindows11Style ? 1.5 : 0,
+                        RadiusX = 1,
+                        RadiusY = 1,
                         Opacity = _homeUsageHoverIndex >= 0
-                            ? (hot ? 1 : 0.28)
-                            : (item.Tokens > 0 ? 0.8 : 0.25)
+                            ? (hot ? 1 : 0.3)
+                            : (item.Tokens > 0 || isToday ? 1 : 0.35)
                     };
 
-                Canvas.SetLeft(bar, plotLeft + slot * index + (slot - barWidth) / 2);
-                Canvas.SetTop(bar, plotBottom - barHeight);
+                Canvas.SetLeft(bar, index * (barWidth + Gap));
+                Canvas.SetTop(bar, bottom - barHeight);
 
                 ToolTipService.SetToolTip(
                     bar,
                     item.Day.ToString("MM-dd")
                         + " · " + FormatTokens(item.Tokens) + " tokens"
-                        + " · ¥" + item.Cost.ToString("0.00")
                         + (item.Requests > 0 ? " · " + item.Requests + " 次调用" : " · 没有调用"));
 
                 HomeUsageChart.Children.Add(bar);
@@ -6974,28 +6874,28 @@ namespace DeepSeekHarnessLauncher
                 }
             }
 
-            // 折线：花费金额（压在柱子上层，颜色跟柱子分开 ——
-            // 一眼能看出"花得多是因为用得多，还是那天单价高"）
+            // 折线：花费金额（按自己的峰值缩放，跟柱子共用一条 x 轴 ——
+            // 量和钱放一张图里，一眼就能看出"花得多是因为用得多，还是那天价高"）
             Microsoft.UI.Xaml.Media.PointCollection points =
                 new Microsoft.UI.Xaml.Media.PointCollection();
+            double step = daily.Count > 1 ? width / (daily.Count - 1) : 0;
 
             for (int index = 0; index < daily.Count; index++)
             {
-                // 折线点对齐到**柱心**：柱子按等分格排，折线也得按同一套坐标，
-                // 不然悬停参考线会落在两根柱子中间（看起来就是"歪的"）
-                double pointX = plotLeft + slot * index + slot / 2;
+                double pointX = daily.Count > 1 ? index * step : width / 2;
                 double pointY = maxCost > 0
-                    ? plotBottom - plotHeight * daily[index].Cost / maxCost
-                    : plotBottom;
+                    ? bottom - plotHeight * daily[index].Cost / maxCost
+                    : bottom;
                 points.Add(new Windows.Foundation.Point(pointX, pointY));
             }
+
             if (maxCost > 0)
             {
                 Microsoft.UI.Xaml.Shapes.Polyline costLine =
                     new Microsoft.UI.Xaml.Shapes.Polyline
                     {
                         Stroke = costBrush,
-                        StrokeThickness = 2.2,
+                        StrokeThickness = 2,
                         StrokeLineJoin = Microsoft.UI.Xaml.Media.PenLineJoin.Round
                     };
                 for (int index = 0; index < points.Count; index++)
@@ -7007,14 +6907,14 @@ namespace DeepSeekHarnessLauncher
 
                 if (animate)
                 {
-                    FadeInElement(costLine, 280, 120);
+                    FadeInElement(costLine, 260, 0);
                 }
             }
 
             for (int index = 0; index < daily.Count; index++)
             {
                 bool dotHot = _homeUsageHoverIndex == index;
-                double dotSize = dotHot ? 9 : 4;
+                double dotSize = dotHot ? 9 : 5;
 
                 Microsoft.UI.Xaml.Shapes.Ellipse dot =
                     new Microsoft.UI.Xaml.Shapes.Ellipse
@@ -7022,11 +6922,11 @@ namespace DeepSeekHarnessLauncher
                         Width = dotSize,
                         Height = dotSize,
                         Fill = costBrush,
-                        Stroke = dotHot ? accent : null,
+                        Stroke = dotHot ? baselineBrush : null,
                         StrokeThickness = dotHot ? 2 : 0,
                         Opacity = _homeUsageHoverIndex >= 0
                             ? (dotHot ? 1 : 0.4)
-                            : (daily[index].Cost > 0 ? 0.95 : 0.25)
+                            : (daily[index].Cost > 0 ? 1 : 0.3)
                     };
 
                 Canvas.SetLeft(dot, points[index].X - dotSize / 2);
@@ -7035,66 +6935,84 @@ namespace DeepSeekHarnessLauncher
 
                 if (animate)
                 {
-                    FadeInElement(dot, 260, 140 + index * 10);
+                    FadeInElement(dot, 240, index * 14);
                 }
             }
 
-            // X 轴日期刻度：最多 5 个，首尾贴边不越界
-            int labelCount = Math.Min(5, daily.Count);
-            for (int index = 0; index < labelCount; index++)
-            {
-                int dataIndex = labelCount > 1
-                    ? (int)Math.Round((double)index * (daily.Count - 1) / (labelCount - 1))
-                    : 0;
-                double labelX = plotLeft + slot * dataIndex + slot / 2;
-
-                TextBlock dateLabel = new TextBlock
+            Microsoft.UI.Xaml.Shapes.Rectangle baseline =
+                new Microsoft.UI.Xaml.Shapes.Rectangle
                 {
-                    Text = daily[dataIndex].Day.ToString("MM-dd"),
-                    FontSize = 10.5,
-                    Foreground = textBrush
+                    Width = width,
+                    Height = BaselineHeight,
+                    Fill = baselineBrush,
+                    Opacity = 0.6
                 };
-                dateLabel.Measure(new Windows.Foundation.Size(
-                    Double.PositiveInfinity,
-                    Double.PositiveInfinity));
-                HomeUsageChart.Children.Add(dateLabel);
+            Canvas.SetLeft(baseline, 0);
+            Canvas.SetTop(baseline, bottom);
+            HomeUsageChart.Children.Add(baseline);
 
-                double left = Math.Max(
-                    plotLeft,
-                    Math.Min(
-                        plotRight - dateLabel.DesiredSize.Width,
-                        labelX - dateLabel.DesiredSize.Width / 2));
-                Canvas.SetLeft(dateLabel, left);
-                Canvas.SetTop(dateLabel, plotBottom + 3);
-            }
-
-            // 悬停：竖参考线 + 柱顶/折线点两条横参考线 + 信息牌
+            // 悬停：十字参考线 + 数值 + 信息牌
             if (_homeUsageHoverIndex >= 0 && _homeUsageHoverIndex < daily.Count)
             {
                 DailyTokens hotItem = daily[_homeUsageHoverIndex];
                 double hotTokensHeight = maxTokens > 0
-                    ? plotHeight * hotItem.Tokens / maxTokens
+                    ? plotHeight * hotItem.Tokens / (double)maxTokens
                     : 0;
                 if (hotItem.Tokens > 0 && hotTokensHeight < 2)
                 {
                     hotTokensHeight = 2;
                 }
 
+                double hotX = points[_homeUsageHoverIndex].X;
+
                 AddUsageGuideLines(
                     HomeUsageChart,
-                    points[_homeUsageHoverIndex].X,
-                    plotBottom - hotTokensHeight,
-                    points[_homeUsageHoverIndex].Y,
-                    plotLeft,
-                    plotRight,
-                    plotTop,
-                    plotBottom,
+                    hotX,
+                    bottom - hotTokensHeight,
+                    width,
+                    bottom,
+                    FormatTokens(hotItem.Tokens),
                     new string[]
                     {
-                        hotItem.Day.ToString("MM-dd") + " · " + hotItem.Requests + " 次调用",
+                        hotItem.Day.ToString("MM-dd"),
                         FormatTokens(hotItem.Tokens) + " tokens",
-                        "¥" + hotItem.Cost.ToString("0.00")
+                        "¥" + hotItem.Cost.ToString("0.00"),
+                        hotItem.Requests + " 次调用"
                     });
+
+                // 折线点也拉一条水平参考线过去，并标出当天的花费
+                Microsoft.UI.Xaml.Shapes.Line costLead =
+                    new Microsoft.UI.Xaml.Shapes.Line
+                    {
+                        X1 = 0,
+                        X2 = hotX,
+                        Y1 = points[_homeUsageHoverIndex].Y,
+                        Y2 = points[_homeUsageHoverIndex].Y,
+                        Stroke = costBrush,
+                        StrokeThickness = 1,
+                        Opacity = 0.5,
+                        StrokeDashArray = new Microsoft.UI.Xaml.Media.DoubleCollection { 3, 3 }
+                    };
+                HomeUsageChart.Children.Add(costLead);
+
+                TextBlock costLabel = new TextBlock
+                {
+                    Text = "¥" + hotItem.Cost.ToString("0.00"),
+                    FontSize = 11.5,
+                    Foreground = costBrush
+                };
+                costLabel.Measure(new Windows.Foundation.Size(
+                    Double.PositiveInfinity,
+                    Double.PositiveInfinity));
+                HomeUsageChart.Children.Add(costLabel);
+                Canvas.SetLeft(
+                    costLabel,
+                    Math.Max(0, Math.Min(hotX + 6, width - costLabel.DesiredSize.Width)));
+                Canvas.SetTop(
+                    costLabel,
+                    Math.Min(
+                        bottom - costLabel.DesiredSize.Height,
+                        points[_homeUsageHoverIndex].Y + 3));
             }
         }
 
@@ -7114,37 +7032,24 @@ namespace DeepSeekHarnessLauncher
 
             try
             {
-                // 用 Storyboard + BackEase（XAML 动画），而不是 Composition 的 Translation：
-                // Translation 会被后续布局/重绘打断，动画停在半途时整排柱子看着就是错位的，
-                // 而"鼠标一悬停（重绘、不带动画）立刻正常"—— 正是这个症状。
-                // RenderTransform 归 XAML 管，谁也抢不走。
-                TranslateTransform transform = new TranslateTransform { Y = height };
-                element.RenderTransform = transform;
+                Microsoft.UI.Composition.Visual visual =
+                    Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(element);
+                Microsoft.UI.Composition.Compositor compositor = visual.Compositor;
 
-                DoubleAnimation rise = new DoubleAnimation
-                {
-                    From = height,
-                    To = 0,
-                    Duration = new Duration(TimeSpan.FromMilliseconds(520)),
-                    BeginTime = TimeSpan.FromMilliseconds(Math.Min(index * 16, 320)),
-                    EasingFunction = new BackEase
-                    {
-                        EasingMode = EasingMode.EaseOut,
-                        Amplitude = 0.55
-                    }
-                };
+                visual.Offset = new System.Numerics.Vector3(0, (float)height, 0);
 
-                Storyboard.SetTarget(rise, transform);
-                Storyboard.SetTargetProperty(rise, "Y");
+                Microsoft.UI.Composition.SpringVector3NaturalMotionAnimation spring =
+                    compositor.CreateSpringVector3Animation();
+                spring.FinalValue = System.Numerics.Vector3.Zero;
+                spring.DampingRatio = 0.45f;   // 越小越弹
+                spring.Period = TimeSpan.FromMilliseconds(55);
+                spring.DelayTime = TimeSpan.FromMilliseconds(Math.Min(index * 14, 280));
 
-                Storyboard storyboard = new Storyboard();
-                storyboard.Children.Add(rise);
-                storyboard.Begin();
+                visual.StartAnimation("Offset", spring);
             }
             catch
             {
-                // 动画起不来不影响图本身：柱子本来就画在正确位置，把 Transform 撤掉就行
-                element.RenderTransform = null;
+                // 动画起不来不影响图本身
             }
         }
 
@@ -7282,64 +7187,65 @@ namespace DeepSeekHarnessLauncher
         }
 
         /// <summary>
-        /// 悬停时的参考线 + 信息牌。
+        /// 悬停时的十字参考线 + 数值标注 + 信息牌。
         ///
-        /// 竖线回答"这是哪一天"，两条横线分别指向柱顶（tokens）和折线点（花费）；
-        /// 具体数字只在信息牌里给 —— 单独再标一个值标签的话，贴左轴会跟刻度叠在一起、
-        /// 贴图内又压柱子（都被指出来过）。信息牌固定贴在顶部、用不透明底色，
-        /// 跟着鼠标跑会跟折线糊在一起。
+        /// 垂直虚线回答"这是哪一天"，水平虚线回答"多少"，数字直接标在线上 ——
+        /// 只靠一个系统 tooltip 的话，鼠标一动就没了，读不出跟坐标的关系。
         /// </summary>
         private void AddUsageGuideLines(
             Canvas canvas,
             double x,
-            double barTop,
-            double costY,
-            double plotLeft,
-            double plotRight,
-            double plotTop,
-            double plotBottom,
+            double y,
+            double width,
+            double bottom,
+            string valueText,
             string[] lines)
         {
             Brush guide = ResolveChartBrush("TextFillColorSecondaryBrush", "ControlStrokeColorDefaultBrush");
             Brush accent = ResolveChartBrush("AccentFillColorDefaultBrush", "AccentFillColorSecondaryBrush");
-            Brush cardBrush = ResolveChartBrush("SolidBackgroundFillColorSecondaryBrush", "SolidBackgroundFillColorBaseBrush");
-            Brush cardBorder = ResolveChartBrush("CardStrokeColorDefaultBrush", "ControlStrokeColorDefaultBrush");
+            Brush cardBrush = ResolveChartBrush("CardBackgroundFillColorSecondaryBrush", "ControlFillColorDefaultBrush");
 
-            canvas.Children.Add(new Microsoft.UI.Xaml.Shapes.Line
+            Microsoft.UI.Xaml.Shapes.Line vertical = new Microsoft.UI.Xaml.Shapes.Line
             {
                 X1 = x,
                 X2 = x,
-                Y1 = plotTop,
-                Y2 = plotBottom,
+                Y1 = 0,
+                Y2 = bottom,
                 Stroke = guide,
-                StrokeThickness = 1,
-                Opacity = 0.6,
-                StrokeDashArray = new Microsoft.UI.Xaml.Media.DoubleCollection { 3, 3 }
-            });
-
-            canvas.Children.Add(new Microsoft.UI.Xaml.Shapes.Line
-            {
-                X1 = plotLeft,
-                X2 = x,
-                Y1 = barTop,
-                Y2 = barTop,
-                Stroke = accent,
                 StrokeThickness = 1,
                 Opacity = 0.7,
                 StrokeDashArray = new Microsoft.UI.Xaml.Media.DoubleCollection { 3, 3 }
-            });
+            };
+            canvas.Children.Add(vertical);
 
-            canvas.Children.Add(new Microsoft.UI.Xaml.Shapes.Line
+            Microsoft.UI.Xaml.Shapes.Line horizontal = new Microsoft.UI.Xaml.Shapes.Line
             {
-                X1 = plotLeft,
+                X1 = 0,
                 X2 = x,
-                Y1 = costY,
-                Y2 = costY,
+                Y1 = y,
+                Y2 = y,
                 Stroke = guide,
                 StrokeThickness = 1,
-                Opacity = 0.45,
-                StrokeDashArray = new Microsoft.UI.Xaml.Media.DoubleCollection { 2, 4 }
-            });
+                Opacity = 0.7,
+                StrokeDashArray = new Microsoft.UI.Xaml.Media.DoubleCollection { 3, 3 }
+            };
+            canvas.Children.Add(horizontal);
+
+            TextBlock value = new TextBlock
+            {
+                Text = valueText,
+                FontSize = 11.5,
+                Foreground = accent
+            };
+            value.Measure(new Windows.Foundation.Size(
+                Double.PositiveInfinity,
+                Double.PositiveInfinity));
+            canvas.Children.Add(value);
+            double valueLeft = Math.Min(
+                x + 6,
+                Math.Max(0, width - value.DesiredSize.Width));
+            Canvas.SetLeft(value, valueLeft);
+            Canvas.SetTop(value, Math.Max(0, y - value.DesiredSize.Height - 2));
 
             StackPanel panel = new StackPanel { Spacing = 1 };
             for (int index = 0; index < lines.Length; index++)
@@ -7354,27 +7260,31 @@ namespace DeepSeekHarnessLauncher
             Border card = new Border
             {
                 Background = cardBrush,
-                BorderBrush = cardBorder,
+                BorderBrush = guide,
                 BorderThickness = new Thickness(1),
+                // 跟窗框风格一致：Win11 圆角、Win10 直角
                 CornerRadius = CornerRadiusHelper.CardRadius,
                 Padding = new Thickness(8, 5, 8, 5),
                 Child = panel,
-                IsHitTestVisible = false
+                IsHitTestVisible = false,
+                Opacity = 0.97
             };
             card.Measure(new Windows.Foundation.Size(
                 Double.PositiveInfinity,
                 Double.PositiveInfinity));
             canvas.Children.Add(card);
 
-            double cardLeft = x + 12;
-            if (cardLeft + card.DesiredSize.Width > plotRight)
+            double cardLeft = x + 10;
+            if (cardLeft + card.DesiredSize.Width > width)
             {
-                cardLeft = x - card.DesiredSize.Width - 12;
+                cardLeft = x - card.DesiredSize.Width - 10;
             }
 
-            cardLeft = Math.Max(
-                plotLeft,
-                Math.Min(cardLeft, canvas.ActualWidth - card.DesiredSize.Width - 2));
+            if (cardLeft < 0)
+            {
+                cardLeft = 0;
+            }
+
             Canvas.SetLeft(card, cardLeft);
             Canvas.SetTop(card, 0);
         }

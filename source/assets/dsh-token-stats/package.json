@@ -1,0 +1,22 @@
+{
+  "name": "dsh-token-stats",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "把每次模型调用的 Token 用量记到本机，启动器主页的「Token 用量与余额」卡片读的就是它写下的记录。",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib/",
+    "cordis.patch.yml"
+  ],
+  "license": "MIT"
+}

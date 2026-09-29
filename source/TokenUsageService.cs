@@ -41,6 +41,21 @@ namespace DeepSeekHarnessLauncher
 
         public long TopModelTokens { get; set; }
 
+        /// <summary>今日估算花费（元）。</summary>
+        public double TodayCost { get; set; }
+
+        /// <summary>近 30 天估算花费（元）—— 按价格表算，认不出的模型不计入。</summary>
+        public double MonthCost { get; set; }
+
+        /// <summary>没算进花费的 token 数（模型不在价格表里），界面要提一句。</summary>
+        public long UnpricedTokens { get; set; }
+
+        /// <summary>
+        /// 近 30 天逐日用量（今天在最后一条，缺的那天补 0）——
+        /// 主页那张卡片的柱状图就是按它画的，所以要连续、不能跳天。
+        /// </summary>
+        public List<DailyTokens> Daily { get; set; } = new List<DailyTokens>();
+
         /// <summary>缓存命中率 = 缓存读 / (缓存读 + 输入)。</summary>
         public double CacheHitRate
         {
@@ -52,19 +67,38 @@ namespace DeepSeekHarnessLauncher
         }
     }
 
+    /// <summary>某一天的用量（柱状图 + 花费曲线上的一个点）。</summary>
+    internal sealed class DailyTokens
+    {
+        public DateTime Day { get; set; }
+
+        public long Tokens { get; set; }
+
+        public int Requests { get; set; }
+
+        /// <summary>当天估算花费（元）。</summary>
+        public double Cost { get; set; }
+    }
+
     /// <summary>
     /// 读 Token 用量。
     ///
-    /// 数据不是我们自己的:官方接口不公开逐日用量,这份数据来自社区插件
-    /// `@zerro223/dsh-token-usage` —— 它挂在 `llm/stream` 上,把每次模型调用的 usage
-    /// 逐行写进 `&lt;DSH&gt;\.dsh\storages\token-stats\usage.jsonl`(一行一条 JSON)。
-    /// 所以:
-    ///   · 装了那个插件 → 有数据,我们只读不写(不动人家的文件);
-    ///   · 没装          → HasData=false,界面提示去装,别显示一堆 0 骗人。
+    /// 官方接口不公开逐日用量，所以这份数据是本机自己记的：启动器自带的插件
+    /// `dsh-token-stats`（见 <see cref="TokenStatsPlugin"/>）挂在 DSH 的 `llm/stream`
+    /// waterfall 上，把每次模型调用的 usage 逐行写进
+    /// `&lt;DSH&gt;\.dsh\storages\token-stats\usage.jsonl`（一行一条 JSON）。
     ///
-    /// 字段名按插件的写入格式(ts/provider/model/inputTokens/outputTokens/
-    /// cacheReadTokens/cacheWriteTokens/reasoningTokens),读取时一律不区分大小写,
-    /// 免得插件哪天改个大小写就把这里读空。
+    /// 为什么不装社区那只 `@zerro223/dsh-token-usage`：它把
+    /// `@deepseek-ai/dsh-home-paths ^0.1.0-rc.6` 写进了 `peerDependencies`，
+    /// DSH 0.2.x 的兼容性校验会因此把它拦下（"装得上、一跑就报不兼容"）。
+    ///
+    /// 所以：
+    ///   · 装了插件 → 有数据，这里只读不写；
+    ///   · 没装     → HasData=false，界面按"没数据"说话，别拿一排 0 骗人。
+    ///
+    /// 字段名按插件写入的格式（ts/provider/model/inputTokens/outputTokens/
+    /// cacheReadTokens/cacheWriteTokens/reasoningTokens），读取时一律不区分大小写，
+    /// 免得哪天改个大小写就把这里读空。
     /// </summary>
     internal static class TokenUsageService
     {
@@ -166,6 +200,14 @@ namespace DeepSeekHarnessLauncher
 
             Dictionary<string, long> modelTokens = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
 
+            // 逐日用量（画柱子用）：按天聚合，最后再补成连续的 30 天
+            Dictionary<DateTime, long> perDayTokens = new Dictionary<DateTime, long>();
+            Dictionary<DateTime, int> perDayRequests = new Dictionary<DateTime, int>();
+            Dictionary<DateTime, double> perDayCosts = new Dictionary<DateTime, double>();
+
+            // 价格表：文件优先（用户可改），没有就用内置默认值
+            PriceTable prices = ModelPricing.Load(null);
+
             try
             {
                 using (StreamReader reader = new StreamReader(
@@ -243,12 +285,47 @@ namespace DeepSeekHarnessLauncher
                                     summary.MonthOutput += output;
                                     summary.MonthCacheRead += cacheRead;
 
-                                    string model = ReadString(root, "model");
-                                    if (!String.IsNullOrWhiteSpace(model))
+                                    string callModel = ReadString(root, "model");
+
+                                    // 花费按调用当时的单价算（错峰时段有折扣，所以要看 stamp 而不是现在）
+                                    double cost = ModelPricing.Estimate(
+                                        prices,
+                                        callModel,
+                                        stamp,
+                                        input,
+                                        cacheRead,
+                                        output);
+                                    if (cost < 0)
+                                    {
+                                        summary.UnpricedTokens += total;
+                                    }
+                                    else
+                                    {
+                                        summary.MonthCost += cost;
+                                        if (stamp >= todayStart)
+                                        {
+                                            summary.TodayCost += cost;
+                                        }
+                                    }
+
+                                    DateTime day = stamp.Date;
+                                    long dayTokens;
+                                    perDayTokens.TryGetValue(day, out dayTokens);
+                                    perDayTokens[day] = dayTokens + total;
+
+                                    double dayCost;
+                                    perDayCosts.TryGetValue(day, out dayCost);
+                                    perDayCosts[day] = dayCost + (cost < 0 ? 0 : cost);
+
+                                    int dayRequests;
+                                    perDayRequests.TryGetValue(day, out dayRequests);
+                                    perDayRequests[day] = dayRequests + 1;
+
+                                    if (!String.IsNullOrWhiteSpace(callModel))
                                     {
                                         long previous;
-                                        modelTokens.TryGetValue(model, out previous);
-                                        modelTokens[model] = previous + total;
+                                        modelTokens.TryGetValue(callModel, out previous);
+                                        modelTokens[callModel] = previous + total;
                                     }
                                 }
                             }
@@ -272,6 +349,25 @@ namespace DeepSeekHarnessLauncher
                     summary.TopModel = pair.Key;
                     summary.TopModelTokens = pair.Value;
                 }
+            }
+
+            // 补成连续 30 天（今天在最后）：柱状图按天排，中间空一天整张图就错位了
+            for (int index = 29; index >= 0; index--)
+            {
+                DateTime day = todayStart.AddDays(-index);
+                long dayTokens;
+                perDayTokens.TryGetValue(day, out dayTokens);
+                int dayRequests;
+                perDayRequests.TryGetValue(day, out dayRequests);
+                double dayCost;
+                perDayCosts.TryGetValue(day, out dayCost);
+                summary.Daily.Add(new DailyTokens
+                {
+                    Day = day,
+                    Tokens = dayTokens,
+                    Requests = dayRequests,
+                    Cost = dayCost
+                });
             }
 
             summary.HasData = summary.Records > 0;

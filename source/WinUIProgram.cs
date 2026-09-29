@@ -42,7 +42,7 @@ namespace DeepSeekHarnessLauncher
     {
         public const string Title = "Dafeiyu-Go";
         public const string EnglishTitle = "Dafeiyu-Go";
-        public const string Version = "1.5.1";
+        public const string Version = "1.5.2";
         public const string Repository = "YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run";
         public const string LegacyRepository = "YunxiRamito/DSH-Launcher";
         public const string UserAgent = "Dafeiyu-Go/" + Version;
@@ -3296,6 +3296,9 @@ namespace DeepSeekHarnessLauncher
                 if (result.Ok)
                 {
                     alertUpdate = _balanceAlertTracker.Observe(result);
+
+                    // 顺手记一笔余额日账本：主页卡片上那句「余额实扣」靠它对账
+                    BalanceLedger.Observe(result.Amount, result.Currency);
                 }
             }
             catch (Exception exception)

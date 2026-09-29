@@ -1,0 +1,7 @@
+# dsh-token-stats bundle patch：把 Host 半身插进 loader。
+#
+# name 必须是真实包名 —— cordis 按 name import 包，写成别的名字会
+# Cannot find package。这里只有一行 insert（id/name），可以热挂载。
+- insert:
+    - id: dsh-token-stats
+      name: 'dsh-token-stats'
