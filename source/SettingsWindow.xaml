@@ -1314,6 +1314,185 @@
                             </StackPanel>
                         </Border>
 
+                        <!-- 数据备份：导出/导入都挂在这一张卡上，点了才展开自己的面板，
+                             免得常规页为了一个偶尔用一次的功能再长出一截。 -->
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel Spacing="12">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel
+                                        VerticalAlignment="Center"
+                                        Spacing="3">
+                                        <TextBlock
+                                            Style="{StaticResource SettingsRowTitleTextStyle}"
+                                            Text="数据备份" />
+                                        <TextBlock
+                                            Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                            Text="把配置、技能、插件打包成一个 .dym 文件带走。换台机器或者重装之前先备一份。" />
+                                    </StackPanel>
+                                    <Button
+                                        x:Name="BackupExportButton"
+                                        Grid.Column="1"
+                                        Click="BackupExportButton_Click"
+                                        Content="导出数据"
+                                        Style="{StaticResource SettingsActionButtonStyle}" />
+                                    <Button
+                                        x:Name="BackupImportButton"
+                                        Grid.Column="2"
+                                        Click="BackupImportButton_Click"
+                                        Content="导入数据"
+                                        Style="{StaticResource SettingsActionButtonStyle}" />
+                                </Grid>
+
+                                <InfoBar
+                                    x:Name="BackupInfoBar"
+                                    IsClosable="True"
+                                    IsOpen="False" />
+
+                                <!-- 导出 -->
+                                <StackPanel
+                                    x:Name="BackupExportPanel"
+                                    Spacing="10"
+                                    Visibility="Collapsed">
+                                    <StackPanel Spacing="2">
+                                        <TextBlock
+                                            Style="{StaticResource SettingsRowTitleTextStyle}"
+                                            Text="要带走哪些" />
+                                        <StackPanel
+                                            x:Name="BackupExportGroupsHost"
+                                            Spacing="2" />
+                                    </StackPanel>
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox
+                                            x:Name="BackupExportTargetBox"
+                                            Style="{StaticResource SettingsPathBoxStyle}" />
+                                        <Button
+                                            x:Name="BackupExportFolderButton"
+                                            Grid.Column="1"
+                                            Click="BackupExportFolderButton_Click"
+                                            Content="选择文件夹"
+                                            Style="{StaticResource SettingsActionButtonStyle}" />
+                                    </Grid>
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button
+                                            x:Name="BackupExportStartButton"
+                                            Click="BackupExportStartButton_Click"
+                                            Content="开始导出"
+                                            Style="{StaticResource SettingsAccentActionButtonStyle}" />
+                                        <ProgressBar
+                                            x:Name="BackupExportProgress"
+                                            Grid.Column="1"
+                                            Maximum="100"
+                                            Minimum="0"
+                                            VerticalAlignment="Center"
+                                            Value="0" />
+                                        <Button
+                                            x:Name="BackupExportCancelButton"
+                                            Grid.Column="2"
+                                            Click="BackupCancel_Click"
+                                            Content="取消"
+                                            Style="{StaticResource SettingsCompactButtonStyle}"
+                                            Visibility="Collapsed" />
+                                    </Grid>
+                                    <TextBlock
+                                        x:Name="BackupExportDetail"
+                                        Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                </StackPanel>
+
+                                <!-- 导入 -->
+                                <StackPanel
+                                    x:Name="BackupImportPanel"
+                                    Spacing="10"
+                                    Visibility="Collapsed">
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox
+                                            x:Name="BackupImportFileBox"
+                                            PlaceholderText="还没选备份包"
+                                            Style="{StaticResource SettingsPathBoxStyle}" />
+                                        <Button
+                                            x:Name="BackupImportPickButton"
+                                            Grid.Column="1"
+                                            Click="BackupImportPickButton_Click"
+                                            Content="选择备份包"
+                                            Style="{StaticResource SettingsActionButtonStyle}" />
+                                    </Grid>
+                                    <StackPanel
+                                        x:Name="BackupImportGroupsPanel"
+                                        Spacing="8"
+                                        Visibility="Collapsed">
+                                        <StackPanel Spacing="2">
+                                            <TextBlock
+                                                Style="{StaticResource SettingsRowTitleTextStyle}"
+                                                Text="要恢复哪些" />
+                                            <StackPanel
+                                                x:Name="BackupImportGroupsHost"
+                                                Spacing="2" />
+                                        </StackPanel>
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock
+                                                VerticalAlignment="Center"
+                                                Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                                Text="碰到同名文件" />
+                                            <ComboBox
+                                                x:Name="BackupImportConflictBox"
+                                                Grid.Column="1"
+                                                Style="{StaticResource SettingsComboBoxStyle}" />
+                                        </Grid>
+                                    </StackPanel>
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button
+                                            x:Name="BackupImportStartButton"
+                                            Click="BackupImportStartButton_Click"
+                                            Content="开始导入"
+                                            Style="{StaticResource SettingsAccentActionButtonStyle}" />
+                                        <ProgressBar
+                                            x:Name="BackupImportProgress"
+                                            Grid.Column="1"
+                                            Maximum="100"
+                                            Minimum="0"
+                                            VerticalAlignment="Center"
+                                            Value="0" />
+                                        <Button
+                                            x:Name="BackupImportCancelButton"
+                                            Grid.Column="2"
+                                            Click="BackupCancel_Click"
+                                            Content="取消"
+                                            Style="{StaticResource SettingsCompactButtonStyle}"
+                                            Visibility="Collapsed" />
+                                    </Grid>
+                                    <TextBlock
+                                        x:Name="BackupImportDetail"
+                                        Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
                     </StackPanel>
 
                     <!-- 主题 -->

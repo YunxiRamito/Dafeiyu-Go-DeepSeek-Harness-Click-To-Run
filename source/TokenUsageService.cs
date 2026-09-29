@@ -83,6 +83,66 @@ namespace DeepSeekHarnessLauncher
                 "usage.jsonl");
         }
 
+        /// <summary>
+        /// 用量统计插件装没装。
+        ///
+        /// 为什么非要单独判一次:<c>usage.jsonl</c> 是**用模型时才会生成**的,
+        /// 所以"文件不在"有两种完全不同的原因 —— 插件没装(该劝用户装)、
+        /// 插件装好了但还没聊过天(不该再劝)。原来看不出这个差别,
+        /// 装了插件的人也会被一直劝去装,看起来就是"老是说未安装"。
+        /// </summary>
+        internal static bool IsPluginInstalled(
+            LauncherSettings settings,
+            string packageName)
+        {
+            if (settings == null
+                || String.IsNullOrWhiteSpace(settings.DshRoot)
+                || String.IsNullOrWhiteSpace(packageName))
+            {
+                return false;
+            }
+
+            string profile = DshProfileService.ResolveProfileDirectory(settings.DshRoot);
+            if (String.IsNullOrWhiteSpace(profile))
+            {
+                return false;
+            }
+
+            // 最实在的证据:node_modules 里真的有这个包
+            try
+            {
+                string module = Path.Combine(
+                    profile,
+                    "node_modules",
+                    packageName.Replace('/', Path.DirectorySeparatorChar));
+                if (Directory.Exists(module))
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+            }
+
+            // 兜底:profile 的 package.json 里记着也算(刚装完、还没重启 DSH 时就是这个状态)
+            try
+            {
+                string manifest = Path.Combine(profile, "package.json");
+                if (File.Exists(manifest)
+                    && File.ReadAllText(manifest).IndexOf(
+                        packageName,
+                        StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
+        }
+
         internal static TokenUsageSummary Load(LauncherSettings settings)
         {
             TokenUsageSummary summary = new TokenUsageSummary();

@@ -18,6 +18,7 @@ using Windows.Storage.Pickers;
 using Windows.Storage.Streams;
 using Windows.UI.ViewManagement;
 using WinRT.Interop;
+using DeepSeekHarnessLauncher.Backup;
 
 namespace DeepSeekHarnessLauncher
 {
@@ -40,6 +41,27 @@ namespace DeepSeekHarnessLauncher
         private bool _suppressNavigation;
         private int _versionTapCount;
         private DateTime _lastVersionTapUtc = DateTime.MinValue;
+
+        // 数据备份(常规页那张卡):两个面板各自的勾选状态和进度
+        private readonly List<BackupGroup> _backupExportGroups =
+            new List<BackupGroup>();
+
+        private readonly Dictionary<string, CheckBox> _backupExportBoxes =
+            new Dictionary<string, CheckBox>();
+
+        private readonly List<BackupGroup> _backupImportGroups =
+            new List<BackupGroup>();
+
+        private readonly Dictionary<string, CheckBox> _backupImportBoxes =
+            new Dictionary<string, CheckBox>();
+
+        private string _backupExportDirectory;
+
+        private string _backupImportArchive;
+
+        private bool _backupBusy;
+
+        private System.Threading.CancellationTokenSource _backupCancellation;
 
         public event Action Destroyed = delegate { };
 
@@ -3371,6 +3393,26 @@ namespace DeepSeekHarnessLauncher
                 RefreshComponents();
             }
 
+            // 预览用：--settings-preview=General:Backup / General:Restore 直接展开那一半，
+            // 好让 VM 里点验的人不用先找卡片再点按钮
+            if (target == "General" && !String.IsNullOrEmpty(pluginTab))
+            {
+                if (String.Equals(
+                        pluginTab,
+                        "Backup",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    BeginBackupExport();
+                }
+                else if (String.Equals(
+                        pluginTab,
+                        "Restore",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    BeginBackupImport();
+                }
+            }
+
             if (target == "Developer")
             {
                 LoadDeveloperCenter();
@@ -6592,6 +6634,21 @@ namespace DeepSeekHarnessLauncher
             if (usage == null || !usage.HasData)
             {
                 AddHomeUsageRow("Token 用量", "暂无数据");
+
+                // 插件装了但还没记录 ≠ 插件没装。原来看不出差别,装好的人也会被一直劝去装,
+                // 看起来就像"老是说未安装" —— 这里先分清楚再说话。
+                if (TokenUsageService.IsPluginInstalled(_settings, UsagePluginPackage))
+                {
+                    string path = usage == null ? null : usage.FilePath;
+                    HomeUsageHintText.Text = "用量统计插件已经装好了，只是还没有记录 —— "
+                        + "它记的是每次模型调用，在 DSH 里发一句话就会开始写。"
+                        + (String.IsNullOrWhiteSpace(path)
+                            ? String.Empty
+                            : "记录文件：" + path);
+                    HomeUsageInstallButton.Visibility = Visibility.Collapsed;
+                    return;
+                }
+
                 HomeUsageHintText.Text = "逐日 Token 用量要靠「用量统计插件」——它把每次模型调用的用量记在本机。"
                     + "装完重启 DSH 就有数据。";
                 HomeUsageInstallButton.Visibility = Visibility.Visible;
@@ -7865,6 +7922,515 @@ namespace DeepSeekHarnessLauncher
             }
 
             return DateTime.Now.ToString("yyyy-MM-dd");
+        }
+
+        // ============================================================ 数据备份
+        //
+        // 入口只有常规页那张「数据备份」卡上的两个按钮。点点开各自的面板 ——
+        // 内核在 Backup/ 下(DymArchive + UserDataBackup，谁也不动)，这里只接进度和文案：
+        //   导出：勾组 → 选目录(默认桌面) → 打包，文件名带时间戳
+        //   导入：选 .dym → 按包里内容列组 → 撞车策略 → 「正在恢复 技能 (2/12) · xxx」
+
+        private void BackupExportButton_Click(object sender, RoutedEventArgs args)
+        {
+            BeginBackupExport();
+        }
+
+        private void BackupImportButton_Click(object sender, RoutedEventArgs args)
+        {
+            BeginBackupImport();
+        }
+
+        /// <summary>展开导出面板。第一次点才去扫这台机器上有什么能带走的。</summary>
+        private void BeginBackupExport()
+        {
+            BackupImportPanel.Visibility = Visibility.Collapsed;
+            BackupExportPanel.Visibility = Visibility.Visible;
+            BackupInfoBar.IsOpen = false;
+
+            if (_backupExportGroups.Count == 0)
+            {
+                LoadBackupExportGroups();
+            }
+
+            if (String.IsNullOrWhiteSpace(_backupExportDirectory))
+            {
+                _backupExportDirectory = BackupFlow.DefaultExportDirectory();
+            }
+
+            BackupExportTargetBox.Text = _backupExportDirectory;
+        }
+
+        private void BeginBackupImport()
+        {
+            BackupExportPanel.Visibility = Visibility.Collapsed;
+            BackupImportPanel.Visibility = Visibility.Visible;
+            BuildBackupConflictChoices();
+
+            // 没选包之前「开始导入」按不动，省得用户点了才发现没东西可导
+            BackupImportStartButton.IsEnabled =
+                !String.IsNullOrWhiteSpace(_backupImportArchive)
+                && _backupImportGroups.Count > 0;
+
+            // 配置和插件正被 DSH 占着的时候覆盖会失败，先说一句，不拦着用户
+            if (IsServiceRunning())
+            {
+                ShowBackupInfo(
+                    InfoBarSeverity.Warning,
+                    "DSH 正在运行。恢复配置和插件之前先停掉服务，免得文件正被占着。");
+            }
+            else
+            {
+                BackupInfoBar.IsOpen = false;
+            }
+        }
+
+        private void LoadBackupExportGroups()
+        {
+            BackupExportGroupsHost.Children.Clear();
+            _backupExportBoxes.Clear();
+            _backupExportGroups.Clear();
+
+            List<BackupGroup> groups = BackupFlow.ListExportGroups(
+                _settings.DshRoot,
+                _host.Log);
+
+            for (int index = 0; index < groups.Count; index++)
+            {
+                BackupGroup group = groups[index];
+                _backupExportGroups.Add(group);
+
+                CheckBox box = new CheckBox();
+                box.Content = group.Display(true);
+                box.IsChecked = group.SelectedByDefault;
+                _backupExportBoxes[group.Id] = box;
+                BackupExportGroupsHost.Children.Add(box);
+            }
+
+            if (groups.Count == 0)
+            {
+                BackupExportStartButton.IsEnabled = false;
+                BackupExportDetail.Text =
+                    "没找到可导出的数据（配置 / 技能 / 插件都还不存在）。";
+                return;
+            }
+
+            BackupExportStartButton.IsEnabled = true;
+            BackupExportDetail.Text = "勾好要带走的内容，再点「开始导出」。";
+        }
+
+        private async void BackupExportFolderButton_Click(
+            object sender,
+            RoutedEventArgs args)
+        {
+            if (_backupBusy)
+            {
+                return;
+            }
+
+            try
+            {
+                FolderPicker picker = new FolderPicker();
+                picker.FileTypeFilter.Add("*");
+                InitializeWithWindow.Initialize(picker, _windowHandle);
+
+                Windows.Storage.StorageFolder folder =
+                    await picker.PickSingleFolderAsync();
+                if (folder == null)
+                {
+                    return;
+                }
+
+                _backupExportDirectory = folder.Path;
+                BackupExportTargetBox.Text = folder.Path;
+            }
+            catch (Exception exception)
+            {
+                await ShowMessageDialogAsync("无法选择目录", exception.Message);
+            }
+        }
+
+        private async void BackupExportStartButton_Click(
+            object sender,
+            RoutedEventArgs args)
+        {
+            if (_backupBusy)
+            {
+                return;
+            }
+
+            List<BackupGroup> chosen = CollectBackupGroups(
+                _backupExportGroups,
+                _backupExportBoxes);
+            if (chosen.Count == 0)
+            {
+                BackupExportDetail.Text = "一个都没勾，那就没什么可导出的。";
+                return;
+            }
+
+            if (String.IsNullOrWhiteSpace(_backupExportDirectory))
+            {
+                BackupExportDetail.Text = "还没选导出到哪个文件夹。";
+                return;
+            }
+
+            _backupBusy = true;
+            SetBackupBusy(true);
+            BackupInfoBar.IsOpen = false;
+            BackupExportProgress.Value = 0;
+            BackupExportDetail.Text = "准备中…";
+
+            string dshRoot = _settings.DshRoot;
+            string directory = _backupExportDirectory;
+            System.Threading.CancellationTokenSource cancellation =
+                new System.Threading.CancellationTokenSource();
+            _backupCancellation = cancellation;
+
+            // 7z 每打一个文件都会报一行，把它变成「正在打包 xxx」——
+            // 只有百分比的话，用户不知道它到底在动哪个文件。
+            Action<string> packingLog = delegate(string message)
+            {
+                _host.Log(message);
+                string file = BackupFlow.DescribeProgressLine(message);
+                if (String.IsNullOrWhiteSpace(file))
+                {
+                    return;
+                }
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    BackupExportDetail.Text = "正在打包 " + file;
+                });
+            };
+
+            BackupResult result = await System.Threading.Tasks.Task.Run(delegate
+            {
+                return BackupFlow.Export(
+                    dshRoot,
+                    chosen,
+                    directory,
+                    delegate(string text, double percent)
+                    {
+                        DispatcherQueue.TryEnqueue(delegate
+                        {
+                            BackupExportProgress.Value =
+                                Math.Max(0, Math.Min(100, percent));
+                        });
+                    },
+                    packingLog,
+                    cancellation.Token);
+            });
+
+            _backupBusy = false;
+            _backupCancellation = null;
+            SetBackupBusy(false);
+
+            if (result.Ok)
+            {
+                BackupExportProgress.Value = 100;
+                BackupExportDetail.Text = result.Summary;
+                ShowBackupInfo(InfoBarSeverity.Success, "导出好了。");
+                return;
+            }
+
+            if (result.Canceled)
+            {
+                BackupExportDetail.Text =
+                    "已取消。导出目录里可能留了半个包，可以自己删掉。";
+                return;
+            }
+
+            BackupExportDetail.Text = result.Error;
+            ShowBackupInfo(InfoBarSeverity.Error, "导出失败，原因看下面这行和日志。");
+        }
+
+        private async void BackupImportPickButton_Click(
+            object sender,
+            RoutedEventArgs args)
+        {
+            if (_backupBusy)
+            {
+                return;
+            }
+
+            try
+            {
+                FileOpenPicker picker = new FileOpenPicker();
+                picker.FileTypeFilter.Add(DymArchive.Extension);
+                InitializeWithWindow.Initialize(picker, _windowHandle);
+
+                Windows.Storage.StorageFile file =
+                    await picker.PickSingleFileAsync();
+                if (file == null)
+                {
+                    return;
+                }
+
+                string picked = file.Path;
+                if (!picked.EndsWith(
+                        DymArchive.Extension,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    // 过滤器个别系统上会被绕过，这里再挡一次
+                    await ShowMessageDialogAsync(
+                        "这不是备份包",
+                        "请选导出时生成的 .dym 文件。");
+                    return;
+                }
+
+                _backupImportArchive = picked;
+                BackupImportFileBox.Text = picked;
+                BackupImportGroupsPanel.Visibility = Visibility.Collapsed;
+                BackupImportDetail.Text = "正在读取备份内容…";
+                BackupImportPickButton.IsEnabled = false;
+
+                List<BackupGroup> groups = null;
+                string error = null;
+                await System.Threading.Tasks.Task.Run(delegate
+                {
+                    groups = BackupFlow.ListArchiveGroups(
+                        picked,
+                        _host.Log,
+                        out error);
+                });
+
+                BackupImportPickButton.IsEnabled = true;
+                FillBackupImportGroups(groups, error);
+            }
+            catch (Exception exception)
+            {
+                await ShowMessageDialogAsync("无法选择文件", exception.Message);
+            }
+        }
+
+        private void FillBackupImportGroups(List<BackupGroup> groups, string error)
+        {
+            BackupImportGroupsHost.Children.Clear();
+            _backupImportBoxes.Clear();
+            _backupImportGroups.Clear();
+
+            if (groups != null)
+            {
+                for (int index = 0; index < groups.Count; index++)
+                {
+                    BackupGroup group = groups[index];
+                    _backupImportGroups.Add(group);
+
+                    CheckBox box = new CheckBox();
+                    box.Content = group.Display(true);
+                    box.IsChecked = group.SelectedByDefault;
+                    _backupImportBoxes[group.Id] = box;
+                    BackupImportGroupsHost.Children.Add(box);
+                }
+            }
+
+            if (_backupImportGroups.Count == 0)
+            {
+                BackupImportGroupsPanel.Visibility = Visibility.Collapsed;
+                BackupImportStartButton.IsEnabled = false;
+                BackupImportDetail.Text = String.IsNullOrWhiteSpace(error)
+                    ? "这个包里没有能识别的数据。"
+                    : error;
+                return;
+            }
+
+            BackupImportGroupsPanel.Visibility = Visibility.Visible;
+            BackupImportStartButton.IsEnabled = true;
+            BackupImportDetail.Text = "勾好要恢复的内容，选好撞车策略，再点「开始导入」。";
+        }
+
+        private async void BackupImportStartButton_Click(
+            object sender,
+            RoutedEventArgs args)
+        {
+            if (_backupBusy)
+            {
+                return;
+            }
+
+            if (String.IsNullOrWhiteSpace(_backupImportArchive))
+            {
+                BackupImportDetail.Text = "先选一个 .dym 备份包。";
+                return;
+            }
+
+            List<BackupGroup> chosen = CollectBackupGroups(
+                _backupImportGroups,
+                _backupImportBoxes);
+            if (chosen.Count == 0)
+            {
+                BackupImportDetail.Text = "一个都没勾，那就没什么可恢复的。";
+                return;
+            }
+
+            ConflictPolicy policy = SelectedBackupConflict();
+
+            _backupBusy = true;
+            SetBackupBusy(true);
+            BackupInfoBar.IsOpen = false;
+            BackupImportProgress.Value = 0;
+            BackupImportDetail.Text = "准备中…";
+
+            string archive = _backupImportArchive;
+            string dshRoot = _settings.DshRoot;
+            System.Threading.CancellationTokenSource cancellation =
+                new System.Threading.CancellationTokenSource();
+            _backupCancellation = cancellation;
+
+            BackupResult result = await System.Threading.Tasks.Task.Run(delegate
+            {
+                return BackupFlow.Import(
+                    archive,
+                    dshRoot,
+                    chosen,
+                    policy,
+                    delegate(string text, double percent)
+                    {
+                        DispatcherQueue.TryEnqueue(delegate
+                        {
+                            if (!String.IsNullOrWhiteSpace(text))
+                            {
+                                // 内核给的就是「正在恢复 技能 (2/12) · xxx/SKILL.md」
+                                BackupImportDetail.Text = text;
+                            }
+
+                            BackupImportProgress.Value =
+                                Math.Max(0, Math.Min(100, percent));
+                        });
+                    },
+                    _host.Log,
+                    cancellation.Token);
+            });
+
+            _backupBusy = false;
+            _backupCancellation = null;
+            SetBackupBusy(false);
+
+            if (result.Ok)
+            {
+                BackupImportProgress.Value = 100;
+                BackupImportDetail.Text = result.Summary;
+                ShowBackupInfo(
+                    InfoBarSeverity.Success,
+                    "数据已经搬回来了。重启 DSH 后生效。");
+                return;
+            }
+
+            if (result.Canceled)
+            {
+                BackupImportDetail.Text = "已取消。已经恢复的文件不会自己退回去。";
+                return;
+            }
+
+            BackupImportDetail.Text = result.Error;
+            ShowBackupInfo(InfoBarSeverity.Error, "恢复失败，原因看下面这行和日志。");
+        }
+
+        private void BackupCancel_Click(object sender, RoutedEventArgs args)
+        {
+            System.Threading.CancellationTokenSource cancellation = _backupCancellation;
+            if (cancellation == null)
+            {
+                return;
+            }
+
+            try
+            {
+                cancellation.Cancel();
+            }
+            catch
+            {
+            }
+
+            if (BackupImportPanel.Visibility == Visibility.Visible)
+            {
+                BackupImportDetail.Text = "正在取消…";
+            }
+            else
+            {
+                BackupExportDetail.Text = "正在取消…";
+            }
+        }
+
+        private void BuildBackupConflictChoices()
+        {
+            if (BackupImportConflictBox.Items.Count > 0)
+            {
+                return;
+            }
+
+            AddBackupConflict("覆盖（推荐）", ConflictPolicy.Overwrite);
+            AddBackupConflict("跳过已有的，只补缺的", ConflictPolicy.Skip);
+            AddBackupConflict("两个都留（新的改名成 .imported）", ConflictPolicy.Ask);
+            BackupImportConflictBox.SelectedIndex = 0;
+        }
+
+        private void AddBackupConflict(string text, ConflictPolicy policy)
+        {
+            ComboBoxItem item = new ComboBoxItem();
+            item.Content = text;
+            item.Tag = policy;
+            BackupImportConflictBox.Items.Add(item);
+        }
+
+        private ConflictPolicy SelectedBackupConflict()
+        {
+            ComboBoxItem selected =
+                BackupImportConflictBox.SelectedItem as ComboBoxItem;
+            if (selected != null && selected.Tag is ConflictPolicy)
+            {
+                return (ConflictPolicy)selected.Tag;
+            }
+
+            return ConflictPolicy.Overwrite;
+        }
+
+        private static List<BackupGroup> CollectBackupGroups(
+            List<BackupGroup> groups,
+            Dictionary<string, CheckBox> boxes)
+        {
+            List<BackupGroup> chosen = new List<BackupGroup>();
+            for (int index = 0; index < groups.Count; index++)
+            {
+                BackupGroup group = groups[index];
+                CheckBox box;
+                if (boxes.TryGetValue(group.Id, out box) && box.IsChecked == true)
+                {
+                    chosen.Add(group);
+                }
+            }
+
+            return chosen;
+        }
+
+        /// <summary>搬运期间把两边的按钮都按住，免得同时跑两个 7z。</summary>
+        private void SetBackupBusy(bool busy)
+        {
+            BackupExportButton.IsEnabled = !busy;
+            BackupImportButton.IsEnabled = !busy;
+            BackupExportFolderButton.IsEnabled = !busy;
+            BackupImportPickButton.IsEnabled = !busy;
+            BackupExportCancelButton.Visibility =
+                busy ? Visibility.Visible : Visibility.Collapsed;
+            BackupImportCancelButton.Visibility =
+                busy ? Visibility.Visible : Visibility.Collapsed;
+
+            if (busy)
+            {
+                BackupExportStartButton.IsEnabled = false;
+                BackupImportStartButton.IsEnabled = false;
+                return;
+            }
+
+            BackupExportStartButton.IsEnabled = _backupExportGroups.Count > 0;
+            BackupImportStartButton.IsEnabled = _backupImportGroups.Count > 0;
+        }
+
+        private void ShowBackupInfo(InfoBarSeverity severity, string message)
+        {
+            BackupInfoBar.Severity = severity;
+            BackupInfoBar.Message = message;
+            BackupInfoBar.IsOpen = true;
         }
 
     }
