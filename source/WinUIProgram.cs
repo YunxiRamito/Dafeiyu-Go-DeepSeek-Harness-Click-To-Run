@@ -4331,15 +4331,19 @@ namespace DeepSeekHarnessLauncher
             };
             credentialLink.Click += delegate
             {
-                try
+                string openError;
+                if (!UrlLauncher.TryOpen(
+                    "https://platform.deepseek.com/api_keys",
+                    out openError))
                 {
-                    Process.Start(new ProcessStartInfo("https://platform.deepseek.com/api_keys")
-                    {
-                        UseShellExecute = true
-                    });
-                }
-                catch
-                {
+                    // 打不开就得说话,别让用户对着一个没反应的按钮发呆
+                    WinFormsMessageBox.Show(
+                        "没能打开浏览器。\r\n\r\n网址（可以手动复制）：\r\n"
+                        + "https://platform.deepseek.com/api_keys"
+                        + "\r\n\r\n原因：" + openError,
+                        Constants.Title,
+                        WinFormsMessageBoxButtons.OK,
+                        WinFormsMessageBoxIcon.Warning);
                 }
             };
             Grid.SetRow(credentialLink, 4);

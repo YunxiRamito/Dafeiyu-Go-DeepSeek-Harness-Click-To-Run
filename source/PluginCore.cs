@@ -457,6 +457,97 @@ namespace DeepSeekHarnessLauncher
         }
 
         /// <summary>
+        /// 读出 profile 里某个依赖当前写的值(没有就返回 false)。
+        ///
+        /// npm 来源的插件要靠它判断"依赖那行是谁写的":pnpm add 已经写好了正确的
+        /// 版本区间,我们就不能再动它。
+        /// </summary>
+        internal static bool TryReadDependency(
+            string dshRoot,
+            string key,
+            out string value)
+        {
+            value = null;
+
+            JsonObject root = ReadProfile(dshRoot);
+            if (root == null)
+            {
+                return false;
+            }
+
+            JsonObject dependencies = root["dependencies"] as JsonObject;
+            if (dependencies == null)
+            {
+                return false;
+            }
+
+            JsonNode node = dependencies[key];
+            if (node == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                value = node.GetValue<string>();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 只往 profile 的 bundles 里加一条,**不碰 dependencies**。
+        ///
+        /// npm 来源的插件必须走这条。依赖那一行是 pnpm add 自己写的(形如 "^0.1.6"),
+        /// 我们要是再写一遍,写下去的就成了"把包名当版本号"—— pnpm 下次会拿它当
+        /// dist-tag 去解析,报 ERR_PNPM_SPEC_NOT_SUPPORTED_BY_ANY_RESOLVER,
+        /// 然后**之后每一个插件都装不上**(实测踩过,查了两天)。
+        /// </summary>
+        internal static bool AddBundleEntry(
+            string dshRoot,
+            string key,
+            out string error)
+        {
+            JsonObject root = ReadProfile(dshRoot);
+            if (root == null)
+            {
+                error = "找不到 DSH profile 的 package.json。";
+                return false;
+            }
+
+            JsonObject dsh = root["dsh"] as JsonObject;
+            if (dsh == null)
+            {
+                dsh = new JsonObject();
+                root["dsh"] = dsh;
+            }
+
+            JsonObject profile = dsh["profile"] as JsonObject;
+            if (profile == null)
+            {
+                profile = new JsonObject();
+                dsh["profile"] = profile;
+            }
+
+            JsonArray bundles = profile["bundles"] as JsonArray;
+            if (bundles == null)
+            {
+                bundles = new JsonArray();
+                profile["bundles"] = bundles;
+            }
+
+            if (!ContainsBundle(bundles, key))
+            {
+                bundles.Add(key);
+            }
+
+            return WriteProfile(dshRoot, root, out error);
+        }
+
+        /// <summary>
         /// 从 profile 移除插件。只动依赖和 bundle 条目，目录删不删由调用方决定
         /// （手动链接进来的插件绝不删目录）。
         /// </summary>

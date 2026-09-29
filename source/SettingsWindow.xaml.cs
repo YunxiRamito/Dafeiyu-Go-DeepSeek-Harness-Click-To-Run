@@ -4217,18 +4217,39 @@ namespace DeepSeekHarnessLauncher
             OpenDirectory(path);
         }
 
-        private static void OpenUrl(string url)
+        /// <summary>
+        /// 打开网址:失败必须让用户知道。
+        ///
+        /// 以前这里是"只调用一次 + 吞掉所有异常",于是关联坏掉的机器上
+        /// 表现成"点了没反应",日志里也查不到任何东西。现在三级兜底,
+        /// 两条路都不行就把网址摆出来让用户自己复制。
+        /// </summary>
+        private void OpenUrl(string url)
         {
-            try
+            string error;
+            if (UrlLauncher.TryOpen(url, out error))
             {
-                Process.Start(new ProcessStartInfo(url)
-                {
-                    UseShellExecute = true
-                });
+                return;
             }
-            catch
+
+            _host.Log("打开链接失败:" + url + " —— " + error);
+            _ = ShowOpenUrlFailureAsync(url, error);
+        }
+
+        private async System.Threading.Tasks.Task ShowOpenUrlFailureAsync(
+            string url,
+            string reason)
+        {
+            ContentDialog dialog = new ContentDialog
             {
-            }
+                XamlRoot = SettingsRoot.XamlRoot,
+                Title = "没能打开浏览器",
+                Content = "系统里没有能打开网页的默认浏览器，或者关联坏了。\r\n\r\n"
+                    + "网址（可以手动复制）：\r\n" + url + "\r\n\r\n"
+                    + "原因：" + reason,
+                CloseButtonText = "知道了"
+            };
+            await dialog.ShowAsync();
         }
 
         private static void OpenDirectory(string path)
@@ -5871,13 +5892,8 @@ namespace DeepSeekHarnessLauncher
                     ? String.Empty
                     : "/tree/" + (String.IsNullOrWhiteSpace(branch) ? "main" : branch)
                         + "/" + repositoryPath);
-            try
-            {
-                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-            }
-            catch
-            {
-            }
+            string openError;
+            UrlLauncher.TryOpen(url, out openError);
         }
 
         private static string OwnerOf(string fullName)

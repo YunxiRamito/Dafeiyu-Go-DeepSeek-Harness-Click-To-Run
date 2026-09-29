@@ -357,13 +357,40 @@ namespace DeepSeekHarnessLauncher
                     ? packageName
                     : declaredName)
                 : expectedKey;
-            string profileError;
-            if (!DshProfileService.AddPlugin(
+            string profileError = null;
+
+            // 依赖那一行**必须留给 pnpm 自己写**。
+            //
+            // 以前这里无条件又写了一遍 spec.NpmPackage(裸包名),结果 profile 里成了
+            //   "@zerro223/dsh-token-usage": "@zerro223/dsh-token-usage"
+            // pnpm 会把裸包名当成 dist-tag 去解析:装的那一刻不报错(包已经装上了),
+            // 但下一次 pnpm install 直接 ERR_PNPM_SPEC_NOT_SUPPORTED_BY_ANY_RESOLVER,
+            // 而且从那以后**每个插件都装不上**。
+            // (实测:某台机器上 "minecraft-dev": "minecraft-dev" 就是这么来的,查了两天。)
+            string existingDependency;
+            bool dependencyWritten = DshProfileService.TryReadDependency(
                 settings.DshRoot,
                 key,
-                spec.NpmPackage,
-                declaresBundle,
-                out profileError))
+                out existingDependency);
+
+            bool profileOk;
+            if (dependencyWritten)
+            {
+                // pnpm 已经写好版本区间了,我们只补 bundle 条目
+                profileOk = !declaresBundle
+                    || DshProfileService.AddBundleEntry(settings.DshRoot, key, out profileError);
+            }
+            else
+            {
+                profileOk = DshProfileService.AddPlugin(
+                    settings.DshRoot,
+                    key,
+                    String.IsNullOrWhiteSpace(version) ? packageName : "^" + version,
+                    declaresBundle,
+                    out profileError);
+            }
+
+            if (!profileOk)
             {
                 result.Error = profileError;
                 return result;
