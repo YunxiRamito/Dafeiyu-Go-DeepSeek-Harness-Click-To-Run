@@ -240,13 +240,22 @@ jobs:
       #
       # 需要仓库 secret NPM_TOKEN(带 bypass 2FA 的 npm token)。
       # 只在打 tag 时发:手动试跑重复发同版本号会直接撞车。
+      #
+      # continue-on-error: npm 那边出任何岔子(版本已存在、token 过期、409)都**不能**
+      # 把后面的 Release 连累掉 —— 2026-09-29 的 v1.5.2 就吃过这个亏:
+      # 强推 tag 让工作流跑了第二遍,npm 报 "Cannot publish over previously staged version",
+      # 整个 job 变红、Release 那步被 skip(幸好第一遍已经建好了)。
+      # 启动器本体在 GitHub 上,Release 出不来才是真事故;npm 只是给国内加速的。
       - name: 发到 npm(npmmirror 会自动镜像)
         if: startsWith(github.ref, 'refs/tags/v') && steps.meta.outputs.npm-ok == 'true' && steps.npm_state.outputs.exists != 'true'
+        continue-on-error: true
         shell: pwsh
         run: |
           npm config set //registry.npmjs.org/:_authToken '${{ secrets.NPM_TOKEN }}'
           .\publish-npm.ps1 -Version '${{ steps.meta.outputs.version }}' -ZipPath '${{ steps.pack.outputs.zip }}' -NoWait
-          if ($LASTEXITCODE -ne 0) { throw 'npm 发布失败' }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "npm 发布失败(退出码 $LASTEXITCODE) —— 不影响 Release,国内加速这条路暂时走 GitHub。"
+          }
 
       - name: 发 Release
         if: startsWith(github.ref, 'refs/tags/v')

@@ -11,6 +11,32 @@
 
 ---
 
+## 1.5.2 已发布：Token 用量与余额重做（2026-09-29）
+
+### 做了什么
+
+| 项 | 说明 |
+|----|------|
+| 主页「Token 用量与余额」重做 | 柱状图 = 每天 token 用量，折线 = 当天花费，**共用一条 x 轴**；带真正的坐标系（左轴 tokens、右轴 ¥、底部日期、网格线）、近 7/15/30 天切换、悬停高亮 + 竖/横参考线 + 信息牌 |
+| 花费估算 | 照官方口径算：高峰 = 工作日 9:00–12:00、14:00–18:00，其余（含周末与法定节假日全天）按空闲价（半价）；内置 2026 年节假日；价格表在 `%LOCALAPPDATA%\DeepSeekHarness\model-prices.json`，调价改文件即可 |
+| 余额实扣对账 | 新增 `BalanceLedger`：启动器每次查余额记一笔日账本（跌 = 消费、涨 = 充值），卡片上跟估算曲线对照 |
+| 自带的用量统计插件 | 新增 `source/assets/dsh-token-stats`（零依赖、不声明 peerDependencies）+ `TokenStatsPlugin`：一键安装 = 复制到 `<dshRoot>\plugins\` 并写 profile，顺手摘掉不兼容的社区插件条目 |
+| 卡片瘦身 | 只留「余额 + 今日」两行，其余进悬停提示 |
+
+### 发布状态
+
+- 启动器 `v1.5.2`（commit `796e9e6`，清单提交 `7b1144e`）：Release 资产 `DeepSeekHarness-1.5.2.zip`（sha256 `d48956c5…`）、npm 与 npmmirror 均已同步、`manifest.json` 已更新。
+- 安装器仍是 `1.5.1`（这一版只动启动器，两仓版本号故意不同步）。
+
+### 本轮踩的坑（都写进代码注释了）
+
+- **"没有动画"其实是两条路都断了**：先试 Composition 的 `SpringVector3NaturalMotionAnimation` + `Offset`（Offset 会被布局在下次 Arrange 写回，动画被拍平）；再试 `Translation`（得先 `ElementCompositionPreview.SetIsTranslationEnabled`，而且同样怕布局打断 —— 表现是"柱子错位、鼠标一悬停就正常"）。最后换成 **Storyboard + BackEase**：RenderTransform 归 XAML 管，谁也抢不走。
+- **图表里两套 x 坐标必然对不上**：柱子按等分格排、折线按首尾均分，悬停参考线就落在两根柱子中间。统一到"柱心"才对。
+- **分层别靠色相**：柱子（主题色半透明面积）+ 折线（同色实线）比"一金一蓝"更像一套界面；数值也别在图上再标一遍 —— 信息牌里给就够（贴左轴压刻度、贴图内压柱子）。
+- **坐标轴刻度会撞**：最底下的左轴 `0` 与第一个日期同一行；右轴最低刻度与最后一个日期同一行。左轴不标 0、右轴只标顶/中。
+- **强推 tag 会让 CI 跑第二遍**：npm 报 `E409 Cannot publish over previously staged version`，job 变红、**Release 步骤被 skip**（这次幸好第一遍已经建好）。已给 npm 步骤加 `continue-on-error` —— 启动器本体在 GitHub 上，Release 出不来才是事故。
+- **临时文件别进仓库**：删大段代码前留的 `.bak2` 被 `git add -A` 一起提交了，只能再补一个提交 + 强推 tag。
+
 ## 1.5.1 本轮交接：插件装不上会说人话 + 通知不再被静默（2026-09-29）
 
 ### 交接状态（下一轮从这里接着走）
