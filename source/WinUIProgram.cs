@@ -2443,12 +2443,12 @@ namespace DeepSeekHarnessLauncher
                         downloadError);
                     UpdateWindow("更新失败", downloadError, 0);
                     WriteLog("DSH 更新包下载失败: " + downloadError);
-                    if (_settings.UpdateReminder)
-                    {
-                        ShowNotification(
-                            "DSH 更新失败: " + downloadError,
-                            true);
-                    }
+
+                    // 失败必弹,不看「更新提醒」开关 ——
+                    // 关掉提醒的人更需要知道这次更新没成(以前这里被开关一起静默了)。
+                    ShowNotification(
+                        "DSH 更新失败: " + downloadError,
+                        true);
 
                     return;
                 }
@@ -2511,10 +2511,8 @@ namespace DeepSeekHarnessLauncher
                                 : "DSH 回滚失败: " + rollbackError);
                     }
 
-                    if (_settings.UpdateReminder)
-                    {
-                        ShowNotification("DSH 更新失败: " + installError, true);
-                    }
+                    // 失败必弹,不看「更新提醒」开关(同上:关掉提醒的人更需要知道出了事)
+                    ShowNotification("DSH 更新失败: " + installError, true);
                 }
                 else
                 {
@@ -3673,8 +3671,12 @@ namespace DeepSeekHarnessLauncher
                 SetTrayState(true, Constants.Title + " 正在运行");
                 string pendingUpdate = _pendingUpdateNotification;
                 _pendingUpdateNotification = String.Empty;
-                if (!String.IsNullOrWhiteSpace(pendingUpdate)
-                    && _settings.UpdateReminder)
+                // 自动更新完成后那条"已更新到 vX"**必须弹**。
+                //
+                // 它是"我刚替你做了件事"的回执,不是"有新版本"的推销 ——
+                // 所以不受「更新提醒」开关影响:把这个开关关掉的人,
+                // 照样会在意自己机器上什么时候被换了版本。
+                if (!String.IsNullOrWhiteSpace(pendingUpdate))
                 {
                     ShowNotification(pendingUpdate, false);
                 }
