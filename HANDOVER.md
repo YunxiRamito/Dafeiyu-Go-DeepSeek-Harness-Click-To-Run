@@ -7,7 +7,55 @@
 > 当前启动器工作版本为 `1.4.9.1`。本文件只描述当前有效状态、操作流程、风险和下一步，
 > 不再保留 1.3.x 历史开发记录。
 
-最后更新：2026-09-24
+最后更新：2026-09-29
+
+---
+
+## 1.5.1 本轮交接：插件装不上会说人话 + 通知不再被静默（2026-09-29）
+
+代码已完成、本地构建通过（启动器与安装器都 0 错），**包已打但没发版** ——
+等用户确认是直接走 CI 发版，还是先推虚拟机点一遍。
+
+### 起因（一个真实的坑）
+
+用户报「插件装不上」。日志里只有一句 `pnpm install 退出码 = 1`，pnpm 自己的报错被吞了。
+真正的根子不在插件：profile 的 `package.json` 里有一条坏依赖
+`"minecraft-dev": "minecraft-dev"`（版本号位置写成了包名），pnpm 整树解析必失败 ——
+于是从 9/28 起**四个插件连着装不上**，每个都表现为「文件解压了、卡片显示已安装、
+重启 DSH 报无法解析 bundle」。
+
+复盘出的三条规矩（都已落进代码）：
+1. 包管理器失败时**必须把它的原话带出来**，只记退出码等于没记；
+2. 失败**必须回滚**刚写进 profile 的条目，否则坏条目会让后面每一个插件都装不上；
+3. 「说装完了」之前**必须验一遍**（node_modules 里真的有这个包、link 指向的目录真的在）。
+
+### 改了什么
+
+| 位置 | 改动 |
+|------|------|
+| `source/PluginStoreService.cs` | pnpm 失败改为回滚 profile 条目（依赖 + bundles）并 `Ok=false`；新增 `DescribePnpmFailure` / `PnpmOutputTail`（pnpm 原话）、`VerifyProfileLink`（装完自检）、`ProfileCheck` + `SelfCheckInstalled`、`RepairProfile`、`InstallNpmPackage` |
+| `source/SettingsWindow.xaml(.cs)` | 插件页加「插件自检」「一键修复」；主页公告下加「Token 用量与余额」卡片（没数据时给一键安装按钮） |
+| `source/TokenUsageService.cs` | 新文件：读 `.dsh\storages\token-stats\usage.jsonl`（社区插件 `@zerro223/dsh-token-usage` 写的，一行一条），聚合今日 / 近 7 天 / 近 30 天、输入输出、缓存命中率、最常用模型 |
+| `source/WinUIProgram.cs` | 更新失败、自动更新完成的通知不再被「更新提醒」开关静默；`UpdateInterval` 支持 `Off` |
+| `source/LauncherSettingsStore.cs` | `UpdateInterval` 允许 `Off`（周期可以整个关掉） |
+
+通知那条补充说明：自动安装模式下**检测阶段本来就不弹**（启动器和 DSH 都是这个结构），
+这次补的是「装完必弹、失败必弹」。
+
+### 验证到了哪一步
+
+- 编译：两仓 0 错（48 条既有警告不变）。
+- profile 修复：`pnpm install` 退出码 0，7 个包全挂上软链；`dsh plugin --profile web list` 已经认得 `dsh-our-free-model`。
+- **没验的**：界面全是点不了的（本机没有能点的测试环境）；Token 卡片本机没数据
+  （这台没装那个统计插件），只验证到编译与数据源格式。
+- 虚拟机：**没开机**（ping 不通、VMware 进程没跑），包已备好但没推上去。
+
+### 发版前要做的
+
+1. 先确认发版口径（直接打 tag 走 CI，还是先推虚拟机点一遍）。
+2. 打 tag 之前**别**让 `release.ps1` 更新 `manifest.json` —— 本次打包用的是 `-NoManifest`。
+   提前写 1.5.1 会把用户引到一个还不存在的下载地址。
+3. 父级 `release-all.ps1` 要求两仓版本相等，现在都是 1.5.1。
 
 ---
 
