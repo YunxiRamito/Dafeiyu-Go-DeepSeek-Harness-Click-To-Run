@@ -255,12 +255,11 @@ jobs:
           files: ${{ steps.pack.outputs.zip }}
           generate_release_notes: true
           body: |
-            大肥鱼Go启动器${{ env.SIGNING_ENABLED == 'true' && '已签名' || '未签名' }}自动构建产物 `${{ steps.meta.outputs.zip }}`
+            Dafeiyu-Go 启动器${{ env.SIGNING_ENABLED == 'true' && '已签名' || '未签名' }}自动构建产物 `${{ steps.meta.outputs.zip }}`
 
             SHA256: `${{ steps.pack.outputs.sha256 }}`
 
-            Free code signing provided by [SignPath.io](https://about.signpath.io),
-            certificate by [SignPath Foundation](https://signpath.org) —— ${{ env.SIGNING_ENABLED == 'true' && 'Windows 发布者: SignPath Foundation' || '本版尚未签名(等待 SignPath Foundation 审批),首次运行会有 SmartScreen 提示' }}
+            ${{ env.SIGNING_ENABLED == 'true' && '> 本包已带数字签名,Windows 发布者显示为 SignPath Foundation。' || '> **关于代码签名**:本项目目前没有代码签名 —— SignPath Foundation 的免费签名申请未通过,官方构建就是未签名的。首次运行 Windows 会弹 SmartScreen,这是未签名软件的预期行为,不代表文件有害:点「更多信息」→「仍要运行」即可。想核对再运行,就比对上面的 SHA256。' }}
 
             ${{ steps.meta.outputs.npm-ok == 'true' && format('同一份包也发到了 npm(`@yunxiramito/dsh-launcher@{0}`),安装器在加速线路下优先从 npmmirror 取 —— 国内大约 1.4 秒。', steps.meta.outputs.version) || '本版是四段式版本号,npm 拒收,没有发 npm/npmmirror;安装器会自动回退到 GitHub 下载,国内会慢一些。' }}
 

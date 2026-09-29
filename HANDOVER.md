@@ -163,8 +163,9 @@
 - 大陆 CDN 与官方源严格分流，共用统一的 GitHub 镜像池。
 - 取消信号会传递给 pnpm/git 子进程。
 
-发布状态：代码和本地启动器 ZIP 已生成，但 SignPath 变量和 secret 未配置，
-`v1.4.9.1` tag 发布会停在签名配置校验，尚未正式发布。
+发布状态（2026-09-27）：`v1.5.0` 已发布 —— GitHub Release、npm（`@yunxiramito/dsh-launcher@1.5.0`）、
+`manifest.json` 都更新到 1.5.0。**没有代码签名**：SignPath Foundation 的免费申请未通过，
+两个仓库都走未签名路径（见 SIGNING.md）。
 
 ---
 
