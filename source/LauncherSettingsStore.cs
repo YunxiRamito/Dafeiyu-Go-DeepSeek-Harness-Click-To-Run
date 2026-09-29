@@ -410,7 +410,8 @@ namespace DeepSeekHarnessLauncher
                 "EveryStart",
                 "ThreeDays",
                 "SevenDays",
-                "OneMonth");
+                "OneMonth",
+                "Off");
             settings.SpendCustomAmount = NormalizeMoney(
                 settings.SpendCustomAmount,
                 15.0m);

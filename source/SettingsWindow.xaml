@@ -1944,6 +1944,26 @@
                             Style="{StaticResource SettingsPageTitleTextStyle}"
                             Text="插件" />
 
+                        <!-- 自检 / 修复:profile 里记着的插件和 node_modules 里实际有的对不上时用 -->
+                        <StackPanel
+                            Orientation="Horizontal"
+                            Spacing="8">
+                            <Button
+                                x:Name="PluginSelfCheckButton"
+                                Click="PluginSelfCheck_Click"
+                                Content="插件自检" />
+                            <Button
+                                x:Name="PluginRepairButton"
+                                Click="PluginRepair_Click"
+                                Content="一键修复" />
+                            <TextBlock
+                                x:Name="PluginHealthText"
+                                VerticalAlignment="Center"
+                                FontSize="12"
+                                TextWrapping="Wrap"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+
                         <InfoBar
                             x:Name="PluginActionInfoBar"
                             IsClosable="False"
@@ -2984,7 +3004,7 @@
                                             Text="自动检查周期" />
                                         <TextBlock
                                             Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                            Text="从上次检查起算。" />
+                                            Text="从上次检查起算；选「关闭」就不自动检查（各通道也能单独关）。" />
                                     </StackPanel>
                                     <ComboBox
                                         x:Name="UpdateIntervalComboBox"
@@ -2995,6 +3015,7 @@
                                         <ComboBoxItem Content="三天" Tag="ThreeDays" />
                                         <ComboBoxItem Content="七天" Tag="SevenDays" />
                                         <ComboBoxItem Content="一个月" Tag="OneMonth" />
+                                        <ComboBoxItem Content="关闭" Tag="Off" />
                                     </ComboBox>
                                 </Grid>
 

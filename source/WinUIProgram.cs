@@ -1467,6 +1467,16 @@ namespace DeepSeekHarnessLauncher
                 return false;
             }
 
+            // 周期选"关闭"就彻底不自动检查。
+            // 手动点「立即检查」照样管用 —— 关的是"自己偷偷去查",不是这个按钮。
+            if (String.Equals(
+                _settings.UpdateInterval,
+                "Off",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
             if (!_settings.LastUpdateCheckUtc.HasValue)
             {
                 return true;

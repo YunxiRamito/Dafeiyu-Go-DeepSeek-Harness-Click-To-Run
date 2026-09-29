@@ -2375,6 +2375,103 @@ namespace DeepSeekHarnessLauncher
             });
         }
 
+        /// <summary>
+        /// 插件自检:profile 里记着的插件,node_modules 里是不是真的有。
+        ///
+        /// 存在的意义:坏掉的插件以前只能等 DSH 重启后自己报"无法解析 bundle",
+        /// 用户根本不知道该点哪儿。现在在插件页当场查、当场给结论。
+        /// </summary>
+        private void PluginSelfCheck_Click(object sender, RoutedEventArgs args)
+        {
+            PluginSelfCheckButton.IsEnabled = false;
+            PluginHealthText.Text = "正在自检…";
+
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                PluginStoreService.ProfileCheck check =
+                    PluginStoreService.SelfCheckInstalled(_settings);
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    PluginSelfCheckButton.IsEnabled = true;
+
+                    if (check.Checked.Count == 0)
+                    {
+                        PluginHealthText.Text = "没有需要检查的第三方插件。";
+                        return;
+                    }
+
+                    if (check.Ok)
+                    {
+                        PluginHealthText.Text = "自检通过:" + check.Checked.Count + " 个插件都装好了。";
+                        _host.Log("插件自检通过:" + check.Checked.Count + " 个");
+                        return;
+                    }
+
+                    string summary = check.Problems.Count + " 个插件有问题:"
+                        + String.Join(";", check.Problems.ToArray());
+                    PluginHealthText.Text = summary;
+                    _host.Log("插件自检发现问题:" + summary);
+                    PluginActionInfoBar.Severity = InfoBarSeverity.Error;
+                    PluginActionInfoBar.Title = "插件自检发现问题";
+                    PluginActionInfoBar.Message = summary + " 可以点「一键修复」试试。";
+                    PluginActionInfoBar.IsOpen = true;
+                });
+            });
+        }
+
+        /// <summary>
+        /// 一键修复:按 profile 重跑一次 pnpm install,再自检一遍。
+        /// 失败时把 pnpm 的原话摆在界面上 —— 不再只说一句"失败了"。
+        /// </summary>
+        private void PluginRepair_Click(object sender, RoutedEventArgs args)
+        {
+            PluginRepairButton.IsEnabled = false;
+            PluginSelfCheckButton.IsEnabled = false;
+            PluginHealthText.Text = "正在修复…";
+
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                string error = PluginStoreService.RepairProfile(
+                    _settings,
+                    _host.Log,
+                    delegate(string text, double fraction)
+                    {
+                        DispatcherQueue.TryEnqueue(delegate
+                        {
+                            PluginHealthText.Text = text;
+                        });
+                    });
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    PluginRepairButton.IsEnabled = true;
+                    PluginSelfCheckButton.IsEnabled = true;
+                    _profilePluginKeys = null;
+                    LoadLocalPlugins();
+
+                    if (String.IsNullOrEmpty(error))
+                    {
+                        PluginHealthText.Text = "修复完成，插件都装好了。";
+                        _host.Log("插件修复完成");
+                        PluginActionInfoBar.Severity = InfoBarSeverity.Success;
+                        PluginActionInfoBar.Title = "插件修复完成";
+                        PluginActionInfoBar.Message = "重启 DSH 后生效。";
+                    }
+                    else
+                    {
+                        PluginHealthText.Text = error;
+                        _host.Log("插件修复失败:" + error);
+                        PluginActionInfoBar.Severity = InfoBarSeverity.Error;
+                        PluginActionInfoBar.Title = "插件修复没成功";
+                        PluginActionInfoBar.Message = error;
+                    }
+
+                    PluginActionInfoBar.IsOpen = true;
+                });
+            });
+        }
+
         private static string PluginProgressAction(string text)
         {
             if (String.IsNullOrWhiteSpace(text))
