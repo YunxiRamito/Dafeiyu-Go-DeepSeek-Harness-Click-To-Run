@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
@@ -39,6 +39,9 @@
     <Compile Remove="Program.cs" />
     <Compile Remove="RuntimeBootstrap.cs" />
     <EmbeddedResource Include="DeepSeekHarness.ico" LogicalName="AppIcon.ico" />
+
+    <!-- .dym 备份包用的是真 7z 格式,所以带上一个 7zr(588 KB,单文件、公开领域) -->
+    <EmbeddedResource Include="Backup\7zr.exe" />
     <Content Include="DeepSeekHarness.ico" CopyToOutputDirectory="PreserveNewest" />
     <EmbeddedResource Include="assets\DeepSeek-icon.png" LogicalName="AppIcon.png" />
     <Content Include="assets\DeepSeek-icon.png" CopyToOutputDirectory="PreserveNewest" />
