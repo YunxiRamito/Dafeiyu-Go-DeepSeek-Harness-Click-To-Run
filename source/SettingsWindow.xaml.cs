@@ -6498,9 +6498,13 @@ namespace DeepSeekHarnessLauncher
         private bool _homeAnnouncementsLoaded;
 
         /// <summary>主页先出状态，公告再慢慢刷 —— 网络那步绝不放在 UI 线程上。</summary>
+        /// <summary>逐日 Token 用量的数据来源(社区插件,把每次调用记在本机)。</summary>
+        private const string UsagePluginPackage = "@zerro223/dsh-token-usage";
+
         private void LoadHomePage()
         {
             RefreshHomeSummary();
+            LoadHomeUsage();
 
             if (!_homeAnnouncementsLoaded)
             {
@@ -6511,6 +6515,180 @@ namespace DeepSeekHarnessLauncher
             }
 
             LoadAnnouncements(false);
+        }
+
+        /// <summary>
+        /// 主页的 Token 用量与余额。
+        ///
+        /// 用量不是我们自己的数据:官方接口不公开逐日用量,它来自社区插件
+        /// dsh-token-usage 写在 .dsh\storages\token-stats\usage.jsonl 里的记录。
+        /// 没装那个插件就只显示余额,并给一个一键安装的按钮 ——
+        /// 拿一排 0 当"用量"糊弄人比不显示更糟。
+        /// </summary>
+        private void LoadHomeUsage()
+        {
+            if (_settings == null)
+            {
+                return;
+            }
+
+            HomeUsageHost.Children.Clear();
+            HomeUsageHintText.Text = "正在读取…";
+            HomeUsageInstallButton.Visibility = Visibility.Collapsed;
+            HomeUsageRefreshButton.IsEnabled = false;
+
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                TokenUsageSummary usage = TokenUsageService.Load(_settings);
+
+                string balanceText = "未配置 API Key";
+                bool balanceOk = false;
+                try
+                {
+                    string apiKey = LauncherSettingsStore.ReadApiKey(_settings);
+                    if (!String.IsNullOrWhiteSpace(apiKey))
+                    {
+                        BalanceResult balance = DeepSeekBalanceClient.Fetch(apiKey);
+                        balanceOk = balance != null && balance.Ok;
+                        balanceText = balanceOk
+                            ? balance.Display
+                            : "查询失败:" + (balance == null ? "未知错误" : balance.Error);
+                    }
+                }
+                catch (Exception exception)
+                {
+                    balanceText = "查询失败:" + exception.Message;
+                }
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    HomeUsageRefreshButton.IsEnabled = true;
+                    FillHomeUsage(usage, balanceText, balanceOk);
+                });
+            });
+        }
+
+        private void FillHomeUsage(TokenUsageSummary usage, string balanceText, bool balanceOk)
+        {
+            HomeUsageHost.Children.Clear();
+            AddHomeUsageRow("账户余额", balanceText);
+
+            if (usage == null || !usage.HasData)
+            {
+                AddHomeUsageRow("Token 用量", "暂无数据");
+                HomeUsageHintText.Text = "逐日 Token 用量要靠「用量统计插件」——它把每次模型调用的用量记在本机。"
+                    + "装完重启 DSH 就有数据。";
+                HomeUsageInstallButton.Visibility = Visibility.Visible;
+                return;
+            }
+
+            AddHomeUsageRow("今日", FormatTokens(usage.TodayTokens) + " tokens · " + usage.TodayRequests + " 次调用");
+            AddHomeUsageRow("近 7 天", FormatTokens(usage.WeekTokens) + " tokens");
+            AddHomeUsageRow("近 30 天", FormatTokens(usage.MonthTokens) + " tokens · " + usage.MonthRequests + " 次调用");
+            AddHomeUsageRow("输入 / 输出", FormatTokens(usage.MonthInput) + " / " + FormatTokens(usage.MonthOutput));
+            AddHomeUsageRow("缓存命中率", (usage.CacheHitRate * 100).ToString("0.#") + "%");
+
+            if (!String.IsNullOrWhiteSpace(usage.TopModel))
+            {
+                AddHomeUsageRow("用得最多的模型", usage.TopModel + " · " + FormatTokens(usage.TopModelTokens));
+            }
+
+            if (usage.LastCallLocal.HasValue)
+            {
+                AddHomeUsageRow("最近一次调用", usage.LastCallLocal.Value.ToString("MM-dd HH:mm"));
+            }
+
+            HomeUsageHintText.Text = "输入 / 输出 / 命中率按近 30 天算;数据来自本机记录(共 "
+                + usage.Records.ToString("N0") + " 条)。";
+            HomeUsageInstallButton.Visibility = Visibility.Collapsed;
+        }
+
+        private void AddHomeUsageRow(string label, string value)
+        {
+            Grid row = new Grid { ColumnSpacing = 12 };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(132) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            TextBlock name = new TextBlock
+            {
+                Text = label,
+                FontSize = 12.5,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            TextBlock text = new TextBlock
+            {
+                Text = value ?? String.Empty,
+                FontSize = 12.5,
+                TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            Grid.SetColumn(text, 1);
+
+            row.Children.Add(name);
+            row.Children.Add(text);
+            HomeUsageHost.Children.Add(row);
+        }
+
+        /// <summary>Token 数按中文习惯收一下:超过万就写"1.2 万"。</summary>
+        private static string FormatTokens(long value)
+        {
+            if (value >= 100000000L)
+            {
+                return (value / 100000000.0).ToString("0.##") + " 亿";
+            }
+
+            if (value >= 10000L)
+            {
+                return (value / 10000.0).ToString("0.##") + " 万";
+            }
+
+            return value.ToString("N0");
+        }
+
+        private void HomeUsageRefreshButton_Click(object sender, RoutedEventArgs args)
+        {
+            LoadHomeUsage();
+        }
+
+        /// <summary>一键装上用量统计插件(走现成的 npm 安装路径,带失败回滚)。</summary>
+        private void HomeUsageInstallButton_Click(object sender, RoutedEventArgs args)
+        {
+            HomeUsageInstallButton.IsEnabled = false;
+            HomeUsageHintText.Text = "正在安装用量统计插件…";
+
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                PluginStoreService.InstallResult result = PluginStoreService.InstallNpmPackage(
+                    _settings,
+                    UsagePluginPackage,
+                    delegate(string text, double fraction)
+                    {
+                        DispatcherQueue.TryEnqueue(delegate
+                        {
+                            HomeUsageHintText.Text = text;
+                        });
+                    },
+                    _host.Log);
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    HomeUsageInstallButton.IsEnabled = true;
+
+                    if (result != null && result.Ok)
+                    {
+                        HomeUsageHintText.Text = "装好了。重启 DSH 之后这里就有用量数据。";
+                        HomeUsageInstallButton.Visibility = Visibility.Collapsed;
+                    }
+                    else
+                    {
+                        HomeUsageHintText.Text = "安装失败:"
+                            + (result == null || String.IsNullOrWhiteSpace(result.Error)
+                                ? "未知错误"
+                                : result.Error);
+                    }
+                });
+            });
         }
 
         private void RefreshHomeSummary()

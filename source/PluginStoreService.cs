@@ -265,6 +265,25 @@ namespace DeepSeekHarnessLauncher
             return result;
         }
 
+        /// <summary>
+        /// 按 npm 包名装一个插件 —— 给主页那个「安装用量统计插件」按钮用。
+        /// 直接复用 InstallNpm:它已经带上了失败回滚和装完自检。
+        /// </summary>
+        internal static InstallResult InstallNpmPackage(
+            LauncherSettings settings,
+            string packageName,
+            Action<string, double> progress,
+            Action<string> log)
+        {
+            PluginSpec spec = new PluginSpec
+            {
+                Raw = packageName,
+                NpmPackage = packageName
+            };
+
+            return InstallNpm(settings, spec, String.Empty, String.Empty, progress, log);
+        }
+
         private static InstallResult InstallNpm(
             LauncherSettings settings,
             PluginSpec spec,

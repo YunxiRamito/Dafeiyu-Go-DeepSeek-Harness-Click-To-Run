@@ -919,6 +919,42 @@
                             </StackPanel>
                         </Border>
 
+                        <!-- Token 用量与余额:用量读 dsh-token-usage 插件写的 usage.jsonl,余额走 BalanceSupport -->
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel Spacing="10">
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock
+                                        VerticalAlignment="Center"
+                                        FontSize="16"
+                                        FontWeight="SemiBold"
+                                        Text="Token 用量与余额" />
+                                    <Button
+                                        x:Name="HomeUsageRefreshButton"
+                                        Grid.Column="1"
+                                        Content="刷新"
+                                        Click="HomeUsageRefreshButton_Click"
+                                        Style="{StaticResource SettingsCompactButtonStyle}" />
+                                </Grid>
+                                <StackPanel
+                                    x:Name="HomeUsageHost"
+                                    Spacing="4" />
+                                <TextBlock
+                                    x:Name="HomeUsageHintText"
+                                    Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                    TextWrapping="Wrap" />
+                                <Button
+                                    x:Name="HomeUsageInstallButton"
+                                    Content="安装用量统计插件"
+                                    Click="HomeUsageInstallButton_Click"
+                                    Style="{StaticResource SettingsActionButtonStyle}"
+                                    Visibility="Collapsed" />
+                            </StackPanel>
+                        </Border>
+
                         <Border Style="{StaticResource SettingsCardStyle}">
                             <StackPanel Spacing="10">
                                 <TextBlock
