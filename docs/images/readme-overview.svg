@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="360" viewBox="0 0 1120 360" role="img" aria-labelledby="title desc">
+<title id="title">大肥鱼 Go 启动器工作流程</title>
+<desc id="desc">双击启动器后启动本地 DSH 服务，通过托盘打开浏览器、重启服务及查看余额。这是功能示意而非软件截图。</desc>
+<rect width="1120" height="360" rx="8" fill="#f5f7f8"/>
+<g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+<text x="40" y="49" font-size="24" font-weight="700" fill="#152b32">Dafeiyu-Go</text>
+<text x="40" y="80" font-size="15" fill="#51636b">启动一次 · 服务留在托盘 · 随时回到工作页面</text>
+<text x="1080" y="49" text-anchor="end" font-size="13" fill="#63747b">功能示意 / NOT A SCREENSHOT</text>
+<g fill="#fff" stroke="#d7e0e3"><rect x="40" y="116" width="224" height="130" rx="8"/><rect x="312" y="116" width="224" height="130" rx="8"/><rect x="584" y="116" width="224" height="130" rx="8"/><rect x="856" y="116" width="224" height="130" rx="8"/></g>
+<g fill="#087f72"><circle cx="70" cy="146" r="14"/><circle cx="342" cy="146" r="14"/><circle cx="614" cy="146" r="14"/><circle cx="886" cy="146" r="14"/></g>
+<g font-size="14" fill="#fff" text-anchor="middle"><text x="70" y="151">1</text><text x="342" y="151">2</text><text x="614" y="151">3</text><text x="886" y="151">4</text></g>
+<g font-size="20" font-weight="600" fill="#152b32"><text x="60" y="189">双击启动器</text><text x="332" y="189">启动本地服务</text><text x="604" y="189">托盘管理</text><text x="876" y="189">打开工作页面</text></g>
+<g font-size="14" fill="#51636b"><text x="60" y="218">定位 DSH 与 Node.js</text><text x="332" y="218">DeepSeek Harness</text><text x="604" y="218">余额 · 重启 · 开机自启</text><text x="876" y="218">浏览器访问本机 DSH</text></g>
+<g stroke="#69868d" stroke-width="2" fill="none"><path d="M274 181h28m-7-6 7 6-7 6"/><path d="M546 181h28m-7-6 7 6-7 6"/><path d="M818 181h28m-7-6 7 6-7 6"/></g>
+<path d="M40 276h1040" stroke="#d7e0e3"/>
+<text x="40" y="310" font-size="14" fill="#51636b">已有 DSH → 使用启动器　　还没有 DSH → 先用 Dafeiyu-Go Setup 安装</text>
+</g></svg>

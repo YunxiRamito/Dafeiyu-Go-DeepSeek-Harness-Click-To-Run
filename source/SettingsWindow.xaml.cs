@@ -56,6 +56,7 @@ namespace DeepSeekHarnessLauncher
             new Dictionary<string, CheckBox>();
 
         private string _backupExportDirectory;
+        private LauncherHealthReport _healthReport;
 
         private string _backupImportArchive;
 
@@ -4254,6 +4255,38 @@ namespace DeepSeekHarnessLauncher
             OpenDirectory(path);
         }
 
+        private void HealthCheck_Click(object sender, RoutedEventArgs args)
+        {
+            try
+            {
+                _healthReport = LauncherHealthReport.Collect(_settings.DshRoot, _settings.NodePath, _settings.PortMode, _settings.FixedPort);
+                HealthExportButton.IsEnabled = true;
+                HealthCheckText.Text = String.Join("\n", _healthReport.Checks.ConvertAll(c => c.Check + "：" + c.Detail + (String.IsNullOrWhiteSpace(c.Action) ? String.Empty : " · " + c.Action)).ToArray());
+            }
+            catch
+            {
+                _healthReport = null;
+                HealthExportButton.IsEnabled = false;
+                HealthCheckText.Text = "检查失败 · 请检查路径与权限后重试";
+            }
+        }
+
+        private async void HealthExport_Click(object sender, RoutedEventArgs args)
+        {
+            if (_healthReport == null) return;
+            try
+            {
+                FileSavePicker picker = new FileSavePicker();
+                picker.FileTypeChoices.Add("JSON", new List<string> { ".json" });
+                picker.SuggestedFileName = "dafeiyu-health-report.json";
+                InitializeWithWindow.Initialize(picker, _windowHandle);
+                Windows.Storage.StorageFile file = await picker.PickSaveFileAsync();
+                if (file == null) return;
+                await Windows.Storage.FileIO.WriteTextAsync(file, _healthReport.ToJson());
+                HealthCheckText.Text += "\n已导出结构化报告";
+            }
+            catch { HealthCheckText.Text += "\n导出失败 · 请重试"; }
+        }
         private void OpenLauncherLogs_Click(object sender, RoutedEventArgs args)
         {
             string path = Path.Combine(
@@ -6444,9 +6477,9 @@ namespace DeepSeekHarnessLauncher
                 GitHubAccelerator.AutoSource,
                 StringComparison.OrdinalIgnoreCase);
             AcceleratorAdvancedHint.Text = auto
-                ? "自动：每次运行都测一遍延迟，挑最快的用。"
+                ? "自动测速并选择最快源。"
                 : "自选：" + GitHubAccelerator.Describe(_settings)
-                    + "，优先用它，连不上才回退到别的源。";
+                    + "，优先使用此源，连接失败时自动回退。";
         }
 
         // ================================================================ 关于页：更新日志
@@ -8743,7 +8776,7 @@ namespace DeepSeekHarnessLauncher
             }
 
             BackupExportStartButton.IsEnabled = true;
-            BackupExportDetail.Text = "勾好要带走的内容，再点「开始导出」。";
+            BackupExportDetail.Text = "勾选内容后开始导出。";
         }
 
         private async void BackupExportFolderButton_Click(
@@ -8963,7 +8996,7 @@ namespace DeepSeekHarnessLauncher
 
             BackupImportGroupsPanel.Visibility = Visibility.Visible;
             BackupImportStartButton.IsEnabled = true;
-            BackupImportDetail.Text = "勾好要恢复的内容，选好撞车策略，再点「开始导入」。";
+            BackupImportDetail.Text = "勾选内容和同名文件处理方式后开始导入。";
         }
 
         private async void BackupImportStartButton_Click(

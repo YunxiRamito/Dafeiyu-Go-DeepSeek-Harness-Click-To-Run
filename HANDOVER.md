@@ -1,13 +1,41 @@
-# 交接：大肥鱼Go / Dafeiyu-Go Launcher 1.4.9
+# 交接：大肥鱼Go / Dafeiyu-Go Launcher
 
 > `1.4.9` 是品牌过渡版。可见品牌改为“大肥鱼Go / Dafeiyu-Go”，内部可执行文件名、
 > 数据目录、注册表键、计划任务、快捷方式和 npm 包名保持不变。迁移边界与发布顺序
 > 以 [`TRANSITION.md`](TRANSITION.md) 为准。
 
-> 当前启动器工作版本为 `1.4.9.1`。本文件只描述当前有效状态、操作流程、风险和下一步，
-> 不再保留 1.3.x 历史开发记录。
+> 当前启动器清单与源码版本为 `1.5.2`。以下保留各轮交接记录；旧章节的待办、
+> 版本号和验证结果属于当时状态，当前发布情况以顶部最新章节与 `manifest.json` 为准。
 
-最后更新：2026-09-29
+最后更新：2026-10-04
+
+## v1.5.3 staged release handover（2026-10-04，待发布）
+
+- 已补齐本地发布说明：关于页只读健康预览与 allowlist JSON（无原始日志、无完整自动修复）；安装计划只读 ACL/提权警告；tar.gz 安全解包；重叠布局卸载保留数据；修复范围/自定义目录与 CLI 提权；Node 前缀边界；安装器 SHA 缺失时 fail-closed；复制与文档说明同步。
+- 验证：启动器安全/诊断 61 项、安装器 SHA 11 项、安装器计划/路径/ACL 30 项通过；Release 构建通过。
+- GUI、UAC、完整安装/卸载 e2e 尚未测试；symlink 用例因 Windows 创建权限不足跳过。仅覆盖明确边界，不声称所有安全问题都已解决。
+- 本节为 staged pending release，尚未发布；父级流程负责设置版本 `1.5.3`。未提交或推送。
+
+
+- 中文首页改为产品标题、直接下载入口、四组功能、三步开始、运行要求与故障处理；CLI、构建与英文快览折叠，避免中英全文重复。
+- 首屏插图使用 `docs/images/readme-overview.svg`，明确标为「功能示意图（非界面截图）」。本轮发现 `source/ui-review/*.png` 与 `preview-artifacts/*.png`，但模型不支持图片查看，无法确认是否包含密钥、token、账户或本机信息，因此未使用这些截图。
+- 依据 `manifest.json`、`DeepSeekHarness.csproj`、`LauncherLocator.cs`、`WinUIProgram.cs`、引导清单与余额存储代码核对功能；修正旧 README 的 Run 键自启说法为最高权限计划任务，补充 x64、管理员继承、估算花费与 DPAPI 边界。
+- 文档规则：信息前置、一处说一次；首屏服务于下载与开始使用；开发细节收进折叠或专门文档。截图必须真实且先脱敏，示意图不能称为界面截图；版本、平台、权限、隐私和测试结论须有源码、清单或实际验证支持。
+- 验证范围：文档链接目标与差异检查；未运行应用、编译、GUI、虚拟机或历史交接中记录的测试。本轮不发布、不提交、不推送；保留已有 `source/InstallerUpdateService.cs` 改动，不纳入文档工作。
+
+## 代码审查与文案清理（2026-10-04）
+
+- 已确认高风险：`source/SkillInstallService.cs:303-331` 与 `source/PluginStoreService.cs:969-1009` 解压 tar.gz 时直接把归档路径拼进目标目录，未做规范化后的目录边界校验；恶意 `../` 条目可写到技能/插件目录外。应在解压前拒绝越界、绝对路径和链接类条目，并为两条链补回归测试。
+- 另见父级审查：`InstallerUpdateService.cs` 的无哈希兜底会允许缓存包跳过完整性校验；不要把该用户改动与本轮文案改动混在一起。卸载/保留数据路径另需核对是否存在“保留”选项仍删除用户数据的情形。
+- 本轮仅精简 UI 文案，保留原有 key、占位符和行为：开机自启、静默启动、加速源提示、备份导出/导入、自动更新周期、Python 提示。未修改 `InstallerUpdateService.cs`。
+- 验证：使用仓库工具目录的 .NET SDK 8.0.425 执行 Release/x64/win-x64 `--no-restore` 构建通过（0 错误、50 条 WebRequest/WebClient 弃用警告）；`git diff --check` 通过。未启动应用、安装器或执行破坏性测试。建议下一轮先做 tar traversal、卸载保留数据和更新包 hash 的离线测试，再跑 GUI 与本地化扫描。
+
+## 第一批安全与诊断交接（2026-10-04）
+
+- `source/SafeArchiveExtractor.cs` 统一 tar.gz 落地：先在唯一 GUID 暂存目录完整校验，再目录交换并失败恢复旧目录；拒绝绝对路径、`..`、Windows 保留名/非法字符、ADS、链接/特殊条目、reparse 目标与目录前缀逃逸。保留 GitHub 顶层目录剥离。
+- `SkillInstallService` 和 `PluginStoreService` 都改走共享实现；zip 入口未改。`tests/LauncherSafety.Regression` 生成隔离 tar fixtures，验证合法 root stripping、路径变体、链接类型、目标保留、allowlist 诊断 JSON，共 61 项通过；Windows 无创建符号链接权限时明确跳过该一项。
+- `source/LauncherHealthReport.cs` + 关于页「日志与诊断」区域的刷新/预览/SavePicker 导出：仅版本、架构、DSH/Node 可用性、被选端口监听状态与行动建议；不读出配置、路径、token、备份或原始日志。版本文本只输出数字版本前缀，不能把包元数据当作安全脱敏。检查只读，不启动、安装、杀进程或自动修复。
+- 使用 `G:\DeepSeek DSH\.tools\dotnet\dotnet.exe` 执行 Release/x64/win-x64 `--no-restore` 构建通过，0 错误、50 条既有 WebRequest/WebClient 弃用警告；未启动应用。父级另有 InstallerUpdateService SHA256 fail-closed 与回归测试，本轮未触碰该文件。
 
 ---
 

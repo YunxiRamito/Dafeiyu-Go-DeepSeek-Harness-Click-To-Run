@@ -285,59 +285,7 @@ namespace DeepSeekHarnessLauncher
         /// <summary>解压 tar.gz，剥掉 GitHub 自动加的那层 owner-repo-sha 目录。</summary>
         private static string ExtractTarGz(string archivePath, string targetDirectory)
         {
-            try
-            {
-                if (Directory.Exists(targetDirectory))
-                {
-                    Directory.Delete(targetDirectory, true);
-                }
-
-                Directory.CreateDirectory(targetDirectory);
-                using (FileStream file = File.OpenRead(archivePath))
-                using (GZipStream gzip = new GZipStream(file, CompressionMode.Decompress))
-                using (TarReader reader = new TarReader(gzip))
-                {
-                    TarEntry entry;
-                    while ((entry = reader.GetNextEntry()) != null)
-                    {
-                        string name = entry.Name ?? String.Empty;
-                        int slash = name.IndexOf('/');
-                        if (slash < 0)
-                        {
-                            continue;
-                        }
-
-                        string relative = name.Substring(slash + 1);
-                        if (relative.Length == 0)
-                        {
-                            continue;
-                        }
-
-                        string path = Path.Combine(
-                            targetDirectory,
-                            relative.Replace('/', Path.DirectorySeparatorChar));
-                        if (entry.EntryType == TarEntryType.Directory)
-                        {
-                            Directory.CreateDirectory(path);
-                            continue;
-                        }
-
-                        string parent = Path.GetDirectoryName(path);
-                        if (!String.IsNullOrEmpty(parent))
-                        {
-                            Directory.CreateDirectory(parent);
-                        }
-
-                        entry.ExtractToFile(path, true);
-                    }
-                }
-
-                return null;
-            }
-            catch (Exception exception)
-            {
-                return "解压失败：" + exception.Message;
-            }
+            return SafeArchiveExtractor.ExtractTarGz(archivePath, targetDirectory, 1);
         }
 
         // ---------------------------------------------------------------- 本地压缩包

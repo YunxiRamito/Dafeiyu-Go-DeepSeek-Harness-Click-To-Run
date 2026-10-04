@@ -39,3 +39,7 @@ PluginJsonTool/dist-*/
 PluginJsonTool.Tests/bin/
 PluginJsonTool.Tests/obj/
 preview-artifacts/
+
+# Regression test build outputs
+tests/**/bin/
+tests/**/obj/

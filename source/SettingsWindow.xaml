@@ -1141,7 +1141,7 @@
                                         Text="开机自启动" />
                                     <TextBlock
                                         Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                        Text="开机自动启动。" />
+                                        Text="登录 Windows 时启动。" />
                                 </StackPanel>
                                 <ToggleSwitch
                                     x:Name="StartWithWindowsToggle"
@@ -1166,7 +1166,7 @@
                                         Text="静默启动" />
                                     <TextBlock
                                         Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                        Text="启动 DSH 时是否自动打开网页。" />
+                                        Text="选择启动时是否打开网页。" />
                                 </StackPanel>
                                 <ComboBox
                                     x:Name="SilentStartComboBox"
@@ -1238,7 +1238,7 @@
                                     <TextBlock
                                         x:Name="AcceleratorAdvancedHint"
                                         Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                        Text="自动：每次运行都测一遍延迟，挑最快的用。" />
+                                        Text="自动测速并选择最快源。" />
                                     <RadioButtons
                                         x:Name="AcceleratorSourceSelector"
                                         SelectionChanged="AcceleratorSourceSelector_SelectionChanged">
@@ -1384,7 +1384,7 @@
                                             Text="数据备份" />
                                         <TextBlock
                                             Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                            Text="把配置、技能、插件打包成一个 .dym 文件带走。换台机器或者重装之前先备一份。" />
+                                            Text="将配置、技能和插件打包为 .dym 文件。换机或重装前请先备份。" />
                                     </StackPanel>
                                     <Button
                                         x:Name="BackupExportButton"
@@ -3224,7 +3224,7 @@
                                         Text="Python" />
                                     <TextBlock
                                         Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                        Text="部分插件脚本会用到，可不装。" />
+                                        Text="部分插件需要，可不安装。" />
                                 </StackPanel>
                                 <Border
                                     x:Name="PythonStatusPill"
@@ -3271,7 +3271,7 @@
                                             Text="自动检查周期" />
                                         <TextBlock
                                             Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                            Text="从上次检查起算；选「关闭」就不自动检查（各通道也能单独关）。" />
+                                            Text="按上次检查时间计算；可全局或按通道关闭。" />
                                     </StackPanel>
                                     <ComboBox
                                         x:Name="UpdateIntervalComboBox"
@@ -3573,7 +3573,7 @@
                                     FontSize="14"
                                     FontWeight="SemiBold"
                                     Tapped="VersionText_Tapped"
-                                    Text="v1.5.2"
+                                    Text="v1.5.3"
                                     ToolTipService.ToolTip="连续点击五次可打开开发者管理中心" />
                             </Grid>
                         </Border>
@@ -3627,26 +3627,28 @@
                         </Border>
 
                         <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel Spacing="10">
+                                <TextBlock Style="{StaticResource SettingsRowTitleTextStyle}" Text="环境健康检查" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button x:Name="HealthCheckButton" Content="检查 / 刷新" Click="HealthCheck_Click" Style="{StaticResource SettingsActionButtonStyle}" />
+                                    <Button x:Name="HealthExportButton" Content="导出诊断" IsEnabled="False" Click="HealthExport_Click" Style="{StaticResource SettingsActionButtonStyle}" />
+                                </StackPanel>
+                                <TextBlock x:Name="HealthCheckText" Text="尚未检查" TextWrapping="Wrap" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                <TextBlock Text="导出仅含版本、可用性与端口状态 · 不含配置、路径或日志" TextWrapping="Wrap" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource SettingsCardStyle}">
                             <Grid Style="{StaticResource SettingsRowGridStyle}">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <StackPanel
-                                    VerticalAlignment="Center"
-                                    Spacing="3">
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowTitleTextStyle}"
-                                        Text="日志与诊断" />
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                        Text="启动器日志目录。" />
+                                <StackPanel VerticalAlignment="Center" Spacing="3">
+                                    <TextBlock Style="{StaticResource SettingsRowTitleTextStyle}" Text="日志与诊断" />
+                                    <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="启动器日志目录。" />
                                 </StackPanel>
-                                <Button
-                                    Grid.Column="1"
-                                    Click="OpenLauncherLogs_Click"
-                                    Content="打开日志目录"
-                                    Style="{StaticResource SettingsActionButtonStyle}" />
+                                <Button Grid.Column="1" Click="OpenLauncherLogs_Click" Content="打开日志目录" Style="{StaticResource SettingsActionButtonStyle}" />
                             </Grid>
                         </Border>
 

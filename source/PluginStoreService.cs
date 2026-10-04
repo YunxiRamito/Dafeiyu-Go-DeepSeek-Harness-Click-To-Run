@@ -950,87 +950,8 @@ namespace DeepSeekHarnessLauncher
 
         private static string ExtractTarGz(string archivePath, string targetDirectory)
         {
-            List<string> skipped = new List<string>();
-            try
-            {
-                if (Directory.Exists(targetDirectory))
-                {
-                    Directory.Delete(targetDirectory, true);
-                }
-
-                Directory.CreateDirectory(targetDirectory);
-                using (FileStream file = File.OpenRead(archivePath))
-                using (GZipStream gzip = new GZipStream(file, CompressionMode.Decompress))
-                using (TarReader reader = new TarReader(gzip))
-                {
-                    TarEntry entry;
-                    while ((entry = reader.GetNextEntry()) != null)
-                    {
-                        string name = entry.Name ?? String.Empty;
-                        int slash = name.IndexOf('/');
-                        if (slash < 0)
-                        {
-                            continue;
-                        }
-
-                        string relative = name.Substring(slash + 1);
-                        if (relative.Length == 0)
-                        {
-                            continue;
-                        }
-
-                        string path = Path.Combine(
-                            targetDirectory,
-                            relative.Replace('/', Path.DirectorySeparatorChar));
-                        if (entry.EntryType == TarEntryType.Directory)
-                        {
-                            Directory.CreateDirectory(path);
-                            continue;
-                        }
-
-                        string parent = Path.GetDirectoryName(path);
-                        if (!String.IsNullOrEmpty(parent))
-                        {
-                            Directory.CreateDirectory(parent);
-                        }
-
-                        // 逐条容错：某一条进不去（路径太长 / 非法名字 / 特殊类型）不该
-                        // 让整包装不上。失败的名字记下来，最后一起报出去。
-                        try
-                        {
-                            if (entry.EntryType != System.Formats.Tar.TarEntryType.RegularFile
-                                && entry.EntryType != System.Formats.Tar.TarEntryType.V7RegularFile)
-                            {
-                                skipped.Add(entry.EntryType + " " + name);
-                                continue;
-                            }
-
-                            entry.ExtractToFile(path, true);
-                        }
-                        catch (Exception entryError)
-                        {
-                            skipped.Add(name + "（" + entryError.Message + "）");
-                        }
-                    }
-                }
-
-                return skipped.Count == 0
-                    ? null
-                    : "有 " + skipped.Count + " 个文件没解出来（已跳过）："
-                        + String.Join("；", skipped.GetRange(
-                            0,
-                            Math.Min(5, skipped.Count)).ToArray());
-            }
-            catch (Exception exception)
-            {
-                return "解压失败：" + exception.Message
-                    + (skipped.Count == 0
-                        ? String.Empty
-                        : "（已跳过 " + skipped.Count + " 个：" + skipped[0] + "）");
-            }
+            return SafeArchiveExtractor.ExtractTarGz(archivePath, targetDirectory, 1);
         }
-
-        // ---------------------------------------------------------------- 插件清单
 
         private static void ReadPluginManifest(
             string directory,

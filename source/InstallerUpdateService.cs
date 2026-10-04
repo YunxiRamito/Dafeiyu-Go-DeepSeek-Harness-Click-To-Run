@@ -35,6 +35,13 @@ namespace DeepSeekHarnessLauncher
         private const string InstallerExeName = "DSH-Installer.exe";
         private const string UninstallerExeName = "DSH-Uninstall.exe";
         private const int DownloadTimeoutMs = 300000;
+        private const string CacheFileName = "InstallerRelease.json";
+
+        /// <summary>
+        /// 缓存有效期。安装器不会几分钟就换一版，12 小时足够新鲜，
+        /// 又能把 api.github.com 的调用次数从"每次开设置页一次"压到一天两次。
+        /// </summary>
+        private static readonly TimeSpan CacheLifetime = TimeSpan.FromHours(12);
 
         internal static InstallerUpdatePackage FetchLatestPackage(
             LauncherSettings settings,
@@ -42,89 +49,407 @@ namespace DeepSeekHarnessLauncher
             out string error)
         {
             error = null;
-            string api = "https://api.github.com/repos/"
-                + Repository + "/releases/latest";
+
+            // 先吃本地缓存。api.github.com 对未登录请求只有 60 次/小时，而设置页每次打开、
+            // 每次点「立即检查」都会来一发 —— 撞上就是界面里那句英文的
+            // "(403) rate limit exceeded"，用户完全不知道该怎么办。
+            InstallerUpdatePackage fresh = ReadCache(requiredVersion, true);
+            if (fresh != null)
+            {
+                return fresh;
+            }
+
             try
             {
-                string json = DownloadText(settings, api);
-                using (JsonDocument document = JsonDocument.Parse(json))
+                InstallerUpdatePackage package = FetchFromApi(
+                    settings,
+                    requiredVersion,
+                    out error);
+                if (package != null && !String.IsNullOrWhiteSpace(package.Sha256))
                 {
-                    JsonElement root = document.RootElement;
-                    JsonElement tag;
-                    JsonElement assets;
-                    if (!root.TryGetProperty("tag_name", out tag)
-                        || tag.ValueKind != JsonValueKind.String
-                        || !root.TryGetProperty("assets", out assets)
-                        || assets.ValueKind != JsonValueKind.Array)
-                    {
-                        error = "安装器 Release 信息不完整。";
-                        return null;
-                    }
-
-                    string version = (tag.GetString() ?? String.Empty)
-                        .TrimStart('v', 'V');
-                    if (!String.Equals(
-                            version,
-                            requiredVersion,
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        error = "安装器 v" + version
-                            + " 与启动器目标版本 v" + requiredVersion
-                            + " 不一致，已停止启动器更新。";
-                        return null;
-                    }
-
-                    InstallerUpdatePackage package =
-                        new InstallerUpdatePackage
-                        {
-                            Version = version
-                        };
-                    foreach (JsonElement asset in assets.EnumerateArray())
-                    {
-                        JsonElement name;
-                        JsonElement url;
-                        if (!asset.TryGetProperty("name", out name)
-                            || name.ValueKind != JsonValueKind.String
-                            || !asset.TryGetProperty("browser_download_url", out url)
-                            || url.ValueKind != JsonValueKind.String
-                            || !String.Equals(
-                                name.GetString(),
-                                SetupAssetName,
-                                StringComparison.OrdinalIgnoreCase))
-                        {
-                            continue;
-                        }
-
-                        package.SetupUrl = url.GetString();
-                        JsonElement digest;
-                        if (asset.TryGetProperty("digest", out digest)
-                            && digest.ValueKind == JsonValueKind.String)
-                        {
-                            string value = digest.GetString() ?? String.Empty;
-                            int separator = value.IndexOf(':');
-                            package.Sha256 = separator >= 0
-                                ? value.Substring(separator + 1)
-                                : value;
-                        }
-
-                        break;
-                    }
-
-                    if (String.IsNullOrWhiteSpace(package.SetupUrl))
-                    {
-                        error = "安装器 Release 中没有 "
-                            + SetupAssetName + " 资产。";
-                        return null;
-                    }
-
-                    return package;
+                    WriteCache(package);
                 }
+
+                if (package == null || String.IsNullOrWhiteSpace(package.Sha256))
+                {
+                    if (String.IsNullOrWhiteSpace(error))
+                    {
+                        error = "安装器 Release 未提供 SHA-256 校验值，更新已停止。";
+                    }
+                    return null;
+                }
+
+                return package;
             }
             catch (Exception exception)
             {
-                error = "获取安装器更新信息失败：" + exception.Message;
+                // 限流或断网：过期的缓存也比"检查更新失败"强
+                InstallerUpdatePackage stale = ReadCache(requiredVersion, false);
+                if (stale != null)
+                {
+                    error = null;
+                    return stale;
+                }
+
+                // 连缓存都没有：绕开 API，直接问 GitHub 要最新 tag（走 302 跳转，不吃配额）
+                string version;
+                if (TryResolveVersionWithoutApi(settings, out version)
+                    && String.Equals(
+                        version,
+                        requiredVersion,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    error = "已找到安装器 v" + version
+                        + "，但无法取得 SHA-256 校验值。更新已停止，请稍后重试。";
+                    return null;
+                }
+
+                error = DescribeError(exception);
                 return null;
             }
+        }
+
+        private static InstallerUpdatePackage FetchFromApi(
+            LauncherSettings settings,
+            string requiredVersion,
+            out string error)
+        {
+            error = null;
+            string api = "https://api.github.com/repos/"
+                + Repository + "/releases/latest";
+            string json = DownloadText(settings, api);
+            using (JsonDocument document = JsonDocument.Parse(json))
+            {
+                JsonElement root = document.RootElement;
+                JsonElement tag;
+                JsonElement assets;
+                if (!root.TryGetProperty("tag_name", out tag)
+                    || tag.ValueKind != JsonValueKind.String
+                    || !root.TryGetProperty("assets", out assets)
+                    || assets.ValueKind != JsonValueKind.Array)
+                {
+                    error = "安装器 Release 信息不完整。";
+                    return null;
+                }
+
+                string version = (tag.GetString() ?? String.Empty)
+                    .TrimStart('v', 'V');
+                if (!String.Equals(
+                        version,
+                        requiredVersion,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    error = "安装器 v" + version
+                        + " 与启动器目标版本 v" + requiredVersion
+                        + " 不一致，已停止启动器更新。";
+                    return null;
+                }
+
+                InstallerUpdatePackage package =
+                    new InstallerUpdatePackage
+                    {
+                        Version = version
+                    };
+                foreach (JsonElement asset in assets.EnumerateArray())
+                {
+                    JsonElement name;
+                    JsonElement url;
+                    if (!asset.TryGetProperty("name", out name)
+                        || name.ValueKind != JsonValueKind.String
+                        || !asset.TryGetProperty("browser_download_url", out url)
+                        || url.ValueKind != JsonValueKind.String
+                        || !String.Equals(
+                            name.GetString(),
+                            SetupAssetName,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    package.SetupUrl = url.GetString();
+                    JsonElement digest;
+                    if (asset.TryGetProperty("digest", out digest)
+                        && digest.ValueKind == JsonValueKind.String)
+                    {
+                        string value = digest.GetString() ?? String.Empty;
+                        int separator = value.IndexOf(':');
+                        if (separator < 0 || String.Equals(value.Substring(0, separator),
+                            "sha256", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string hash = separator >= 0 ? value.Substring(separator + 1) : value;
+                            package.Sha256 = IsValidSha256(hash) ? hash : null;
+                        }
+                    }
+
+                    break;
+                }
+
+                if (String.IsNullOrWhiteSpace(package.SetupUrl))
+                {
+                    error = "安装器 Release 中没有 "
+                        + SetupAssetName + " 资产。";
+                    return null;
+                }
+
+                return package;
+            }
+        }
+
+        /// <summary>
+        /// 不吃 API 配额的兜底：GitHub 的 <c>/releases/latest</c> 会 302 跳到
+        /// <c>/releases/tag/vX.Y.Z</c>，版本号就在 Location 里。
+        /// 只能发现版本，不能取得可信 SHA-256；仅用于提示重试，不允许继续更新。
+        /// </summary>
+        private static bool TryResolveVersionWithoutApi(
+            LauncherSettings settings,
+            out string version)
+        {
+            version = null;
+            try
+            {
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(
+                    "https://github.com/" + Repository + "/releases/latest");
+                request.Method = "GET";
+                request.AllowAutoRedirect = false;
+                request.Timeout = 20000;
+                request.UserAgent = Constants.UserAgent;
+                ProxySupport.Apply(request);
+
+                using (HttpWebResponse response =
+                    (HttpWebResponse)request.GetResponse())
+                {
+                    string location = response.Headers["Location"];
+                    if (String.IsNullOrWhiteSpace(location))
+                    {
+                        return false;
+                    }
+
+                    int index = location.LastIndexOf(
+                        "/tag/",
+                        StringComparison.OrdinalIgnoreCase);
+                    if (index < 0)
+                    {
+                        return false;
+                    }
+
+                    string tag = location.Substring(index + 5).Trim('/');
+                    if (tag.Length == 0)
+                    {
+                        return false;
+                    }
+
+                    version = tag.TrimStart('v', 'V');
+                    return version.Length > 0;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>把底层异常翻译成用户能照做的话。</summary>
+        private static string DescribeError(Exception exception)
+        {
+            string message = exception == null
+                ? String.Empty
+                : exception.Message ?? String.Empty;
+            if (message.IndexOf("403", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf(
+                    "rate limit",
+                    StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return "GitHub 接口临时限流了（未登录请求每小时 60 次），"
+                    + "过一会儿再点「立即检查」。这只影响安装器更新，"
+                    + "启动器本身照常用。";
+            }
+
+            if (exception is WebException)
+            {
+                return "连不上 GitHub：" + message
+                    + "。看一下网络或代理设置。";
+            }
+
+            return "获取安装器更新信息失败：" + message;
+        }
+
+        private static string CachePath
+        {
+            get
+            {
+                return Path.Combine(
+                    LauncherSettingsStore.DirectoryPath,
+                    CacheFileName);
+            }
+        }
+
+        private static void WriteCache(InstallerUpdatePackage package)
+        {
+            try
+            {
+                StringBuilder text = new StringBuilder();
+                text.Append("{\"version\":").Append(JsonString(package.Version));
+                text.Append(",\"setupUrl\":").Append(JsonString(package.SetupUrl));
+                text.Append(",\"sha256\":").Append(JsonString(package.Sha256));
+                text.Append(",\"at\":").Append(JsonString(
+                    DateTime.UtcNow.ToString(
+                        "s",
+                        CultureInfo.InvariantCulture)));
+                text.Append('}');
+                File.WriteAllText(
+                    CachePath,
+                    text.ToString(),
+                    new UTF8Encoding(false));
+            }
+            catch
+            {
+                // 缓存写不进去不影响主流程
+            }
+        }
+
+        private static InstallerUpdatePackage ReadCache(
+            string requiredVersion,
+            bool requireFresh)
+        {
+            try
+            {
+                if (!File.Exists(CachePath))
+                {
+                    return null;
+                }
+
+                using (JsonDocument document = JsonDocument.Parse(
+                    File.ReadAllText(CachePath)))
+                {
+                    JsonElement root = document.RootElement;
+                    JsonElement version;
+                    if (!root.TryGetProperty("version", out version)
+                        || version.ValueKind != JsonValueKind.String)
+                    {
+                        return null;
+                    }
+
+                    string cachedVersion = version.GetString() ?? String.Empty;
+                    if (!String.Equals(
+                        cachedVersion,
+                        requiredVersion,
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        return null;
+                    }
+
+                    if (requireFresh)
+                    {
+                        JsonElement stampElement;
+                        DateTime stamp;
+                        if (!root.TryGetProperty("at", out stampElement)
+                            || stampElement.ValueKind != JsonValueKind.String
+                            || !DateTime.TryParse(
+                                stampElement.GetString(),
+                                CultureInfo.InvariantCulture,
+                                DateTimeStyles.AdjustToUniversal
+                                    | DateTimeStyles.AssumeUniversal,
+                                out stamp)
+                            || DateTime.UtcNow - stamp > CacheLifetime)
+                        {
+                            return null;
+                        }
+                    }
+
+                    JsonElement url;
+                    if (!root.TryGetProperty("setupUrl", out url)
+                        || url.ValueKind != JsonValueKind.String)
+                    {
+                        return null;
+                    }
+
+                    InstallerUpdatePackage package = new InstallerUpdatePackage
+                    {
+                        Version = cachedVersion,
+                        SetupUrl = url.GetString()
+                    };
+                    JsonElement hash;
+                    if (root.TryGetProperty("sha256", out hash)
+                        && hash.ValueKind == JsonValueKind.String)
+                    {
+                        package.Sha256 = hash.GetString();
+                    }
+
+                    return IsValidSha256(package.Sha256) ? package : null;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string JsonString(string value)
+        {
+            if (value == null)
+            {
+                return "null";
+            }
+
+            StringBuilder text = new StringBuilder("\"");
+            for (int index = 0; index < value.Length; index++)
+            {
+                char ch = value[index];
+                switch (ch)
+                {
+                    case '"':
+                        text.Append("\\\"");
+                        break;
+                    case '\\':
+                        text.Append("\\\\");
+                        break;
+                    case '\n':
+                        text.Append("\\n");
+                        break;
+                    case '\r':
+                        text.Append("\\r");
+                        break;
+                    case '\t':
+                        text.Append("\\t");
+                        break;
+                    default:
+                        if (ch < ' ')
+                        {
+                            text.Append("\\u").Append(
+                                ((int)ch).ToString(
+                                    "x4",
+                                    CultureInfo.InvariantCulture));
+                        }
+                        else
+                        {
+                            text.Append(ch);
+                        }
+
+                        break;
+                }
+            }
+
+            text.Append('"');
+            return text.ToString();
+        }
+
+        internal static bool IsValidSha256(string value)
+        {
+            if (value == null || value.Length != 64)
+            {
+                return false;
+            }
+
+            foreach (char ch in value)
+            {
+                if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')
+                    || (ch >= 'A' && ch <= 'F')))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         internal static bool PrepareAndApply(
@@ -134,10 +459,16 @@ namespace DeepSeekHarnessLauncher
             out string error)
         {
             error = null;
+            if (package == null || !IsValidSha256(package.Sha256))
+            {
+                error = "安装器缺少有效的 SHA-256 校验值，更新已停止。";
+                return false;
+            }
+
             string stagingRoot = Path.Combine(
                 Path.GetTempPath(),
                 "DeepSeekHarnessUpdate",
-                "installer");
+                "installer-" + Guid.NewGuid().ToString("N"));
             string setupPath = Path.Combine(
                 stagingRoot,
                 SetupAssetName);
@@ -156,8 +487,7 @@ namespace DeepSeekHarnessLauncher
                 DownloadFile(package.SetupUrl, setupPath, progress);
 
                 string actualHash = UpdateSupport.ComputeSha256(setupPath);
-                if (!String.IsNullOrWhiteSpace(package.Sha256)
-                    && !String.Equals(
+                if (!String.Equals(
                         actualHash,
                         package.Sha256,
                         StringComparison.OrdinalIgnoreCase))
