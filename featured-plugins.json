@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAtUtc": "2026-09-29T06:37:46.2805678Z",
+  "updatedAtUtc": "2026-10-04T05:40:22.3423014Z",
   "items": [
     {
       "owner": "MeteorNOX",
@@ -35,38 +35,6 @@
       "order": 1
     },
     {
-      "owner": "zouyuxuan122",
-      "repository": "dsh-our-free-model",
-      "description": "\u5728 dsh \u91CC\u88C5\u4E0A\u8FD9\u4E2A\u63D2\u4EF6\u5373\u53EF\uFF0C\u65E0\u9700\u767B\u5F55\u3001\u6CE8\u518C\u6216\u586B API Key\uFF0C\u5C31\u80FD\u4F7F\u7528\u5305\u62EC Muse Spark 1.3\u3001MiMo V2.6 \u5728\u5185\u7684\u524D\u6CBF\u6A21\u578B\u2014\u2014\u5B8C\u5168\u514D\u8D39\uFF0C\u4E0D\u9650\u91CF\u3002 All you do is install this plugin in dsh: no login, no sign-up, no API key \u2014 the frontier models are just there, Muse Spark 1.3 and MiMo V2.6 among them. Completely free, with no usage cap.",
-      "language": "JavaScript",
-      "license": "MIT",
-      "pushedAt": "2026-09-27T09:32:50Z",
-      "category": "\u6A21\u578B\u62D3\u5C55",
-      "version": "6b181e9",
-      "stars": 365,
-      "verified": false,
-      "verificationUrl": "",
-      "defaultBranch": "main",
-      "installSpecifier": "github:zouyuxuan122/dsh-our-free-model#6b181e9fdb902586c7d28aeba5fa90f84f7cfe7d",
-      "installSource": "github",
-      "installExecutable": true,
-      "installStatus": "recognized",
-      "installCandidates": [
-        {
-          "source": "github",
-          "target": "zouyuxuan122/dsh-our-free-model",
-          "action": "add",
-          "specifier": "github:zouyuxuan122/dsh-our-free-model",
-          "executable": true,
-          "evidenceSource": "launcher"
-        }
-      ],
-      "sourceSha": "6b181e9fdb902586c7d28aeba5fa90f84f7cfe7d",
-      "imageUrl": "https://avatars.githubusercontent.com/u/245557608?v=4",
-      "note": "\u514D\u8D39\u4F7F\u7528\u5176\u4ED6\u6A21\u578B\uFF0C\u4F1F\u5927\uFF01",
-      "order": 2
-    },
-    {
       "owner": "xmanrui",
       "repository": "dsh-im",
       "description": "\u901A\u8FC7\u626B\u7801\u6216\u673A\u5668\u4EBA\u51ED\u636E\u628A IM \u673A\u5668\u4EBA\u63A5\u5165 DeepSeek Harness\uFF0C\u652F\u6301\u98DE\u4E66\u3001\u5FAE\u4FE1\u3001\u9489\u9489\u3001\u4F01\u4E1A\u5FAE\u4FE1\u3001QQ\u3001Slack\u3001Telegram\u3001Discord \u548C WhatsApp\u3002",
@@ -96,7 +64,7 @@
       "sourceSha": "42776b5beb4b304afbca0c8703d647cb59614df0",
       "imageUrl": "https://avatars.githubusercontent.com/u/4094054?v=4",
       "note": "QQ/\u5FAE\u4FE1\u673A\u5668\u4EBA\u63A5\u5165\u63D2\u4EF6",
-      "order": 3
+      "order": 2
     },
     {
       "owner": "yyh-001",
@@ -128,7 +96,7 @@
       "sourceSha": "8ddc253c8165a123a632d7e7f73917705b7d306c",
       "imageUrl": "https://avatars.githubusercontent.com/u/52917381?v=4",
       "note": "\u8BA9\u4F60\u7684\u5927\u80A5\u9C7C\u80FD\u591F\u50CF\u7F51\u53CB\u4E5F\u4E00\u6837\u6597\u56FE",
-      "order": 4
+      "order": 3
     },
     {
       "owner": "wenbin-wb",
@@ -160,7 +128,7 @@
       "sourceSha": "c18bdd83fb494c64ea10ce3fca49f5fbf897c545",
       "imageUrl": "https://avatars.githubusercontent.com/u/57818063?v=4",
       "note": "DSH\u8FDC\u7A0B\u8BBF\u95EE\u63D2\u4EF6",
-      "order": 5
+      "order": 4
     }
   ]
 }
