@@ -117,6 +117,7 @@ namespace DeepSeekHarnessLauncher
             LoadPluginCardSamples();
             RefreshComponents();
             WireSettingsEvents();
+            InitializeDownloadCenter();
 
             SettingsRoot.SizeChanged += SettingsRoot_SizeChanged;
             SettingsRoot.ActualThemeChanged += SettingsRoot_ActualThemeChanged;
@@ -297,6 +298,8 @@ namespace DeepSeekHarnessLauncher
             SelectRadioByTag(ProxyProtocolSelector, _settings.ProxyProtocol, "Http");
             ProxyHostBox.Text = _settings.ProxyHost;
             ProxyPortBox.Value = _settings.ProxyPort;
+            ProxyForLauncherToggle.IsOn = _settings.ProxyForLauncher;
+            ProxyForDshToggle.IsOn = _settings.ProxyForDsh;
             UpdateProxyCustomPanel();
             _host.Log(
                 "Loaded proxy settings: "
@@ -357,6 +360,10 @@ namespace DeepSeekHarnessLauncher
             ProxyProtocolSelector.Tapped += ProxyControl_Tapped;
             ProxyHostBox.TextChanged += ProxyHostBox_TextChanged;
             ProxyPortBox.ValueChanged += ProxyPortBox_ValueChanged;
+            // 生效范围开关：Toggled 在初始化赋值时也会触发，所以和代理设置一样
+            // 交给 _proxyUiReady 把关，选稳之前不落盘。
+            ProxyForLauncherToggle.Toggled += ProxyScopeToggle_Toggled;
+            ProxyForDshToggle.Toggled += ProxyScopeToggle_Toggled;
             RecheckComponentsButton.Click += delegate
             {
                 RefreshComponents();
@@ -1212,6 +1219,19 @@ namespace DeepSeekHarnessLauncher
         /// 「重启后代理设置变回不使用代理」就是被这种早期变更覆盖出来的。
         /// </summary>
         private bool _proxyUiReady;
+        private bool _restoringProxyUi;
+
+        private bool RejectDshSocks(string mode, string protocol, bool enabled)
+        {
+            bool rejected = enabled
+                && String.Equals(mode, "Custom", StringComparison.OrdinalIgnoreCase)
+                && String.Equals(protocol, "Socks5", StringComparison.OrdinalIgnoreCase);
+            ProxyDshErrorText.Text = rejected
+                ? "DSH 不支持 SOCKS5，操作未保存。请关闭 DSH 范围或选择 HTTP/HTTPS；启动器仍支持 SOCKS5。"
+                : String.Empty;
+            ProxyDshErrorText.Visibility = rejected ? Visibility.Visible : Visibility.Collapsed;
+            return rejected;
+        }
 
         private void ProxyModeSelector_Loaded(object sender, RoutedEventArgs args)
         {
@@ -1233,7 +1253,7 @@ namespace DeepSeekHarnessLauncher
             _proxyUiReady = true;
         }
 
-        /// <summary>按配置里的值重设两个单选控件的选中项。</summary>
+        /// <summary>按配置里的值重设代理控件的状态。</summary>
         private void ApplyProxySelectionFromSettings()
         {
             if (_settings == null)
@@ -1241,9 +1261,36 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
-            SelectRadioByTag(ProxyModeSelector, _settings.ProxyMode, "None");
-            SelectRadioByTag(ProxyProtocolSelector, _settings.ProxyProtocol, "Http");
-            UpdateProxyCustomPanel();
+            _restoringProxyUi = true;
+            try
+            {
+                SelectRadioByTag(ProxyModeSelector, _settings.ProxyMode, "None");
+                SelectRadioByTag(ProxyProtocolSelector, _settings.ProxyProtocol, "Http");
+                ProxyForLauncherToggle.IsOn = _settings.ProxyForLauncher;
+                ProxyForDshToggle.IsOn = _settings.ProxyForDsh;
+                UpdateProxyCustomPanel();
+            }
+            finally { _restoringProxyUi = false; }
+        }
+
+        /// <summary>生效范围开关。两个开关走同一条保存路径。</summary>
+        private void ProxyScopeToggle_Toggled(object sender, RoutedEventArgs args)
+        {
+            if (_settings == null || _initializing || _restoringProxyUi) return;
+            // Scope controls can be visible before the offscreen RadioButtons load.
+            // Preserve the stored mode/protocol rather than reading unstable selections.
+            if (RejectDshSocks(_settings.ProxyMode, _settings.ProxyProtocol,
+                ProxyForDshToggle.IsOn))
+            {
+                _restoringProxyUi = true;
+                ProxyForDshToggle.IsOn = _settings.ProxyForDsh;
+                _restoringProxyUi = false;
+                return;
+            }
+            _settings.ProxyForLauncher = ProxyForLauncherToggle.IsOn;
+            _settings.ProxyForDsh = ProxyForDshToggle.IsOn;
+            SaveSettings();
+            AcceleratorLatencyWatcher.NetworkChanged("代理范围变化");
         }
 
         private void UpdateProxyCustomPanel()
@@ -1292,7 +1339,7 @@ namespace DeepSeekHarnessLauncher
 
         private void SaveProxySettings()
         {
-            if (_initializing || !_proxyUiReady || _settings == null)
+            if (_initializing || _restoringProxyUi || !_proxyUiReady || _settings == null)
             {
                 return;
             }
@@ -1310,6 +1357,12 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
+            if (RejectDshSocks(proxyMode, proxyProtocol ?? _settings.ProxyProtocol,
+                ProxyForDshToggle.IsOn))
+            {
+                ApplyProxySelectionFromSettings();
+                return;
+            }
             _settings.ProxyMode = proxyMode;
             if (!String.IsNullOrWhiteSpace(proxyProtocol))
             {
@@ -1320,6 +1373,8 @@ namespace DeepSeekHarnessLauncher
                 || ProxyPortBox.Value < 1
                     ? 7890
                     : (int)ProxyPortBox.Value;
+            _settings.ProxyForLauncher = ProxyForLauncherToggle.IsOn;
+            _settings.ProxyForDsh = ProxyForDshToggle.IsOn;
             SaveSettings();
             // 换了代理就是换了网络环境：自动模式下重新测一遍，挑最快的源。
             AcceleratorLatencyWatcher.NetworkChanged("代理设置变化");
@@ -1331,7 +1386,11 @@ namespace DeepSeekHarnessLauncher
                 + " / "
                 + _settings.ProxyHost
                 + ":"
-                + _settings.ProxyPort);
+                + _settings.ProxyPort
+                + " · 启动器="
+                + (_settings.ProxyForLauncher ? "开" : "关")
+                + " · DSH="
+                + (_settings.ProxyForDsh ? "开" : "关"));
         }
 
         private static void SelectRadioByTag(
@@ -3304,6 +3363,7 @@ namespace DeepSeekHarnessLauncher
             ComponentsPage.Visibility = target == "Components" ? Visibility.Visible : Visibility.Collapsed;
             UpdatesPage.Visibility = target == "Updates" ? Visibility.Visible : Visibility.Collapsed;
             AboutPage.Visibility = target == "About" ? Visibility.Visible : Visibility.Collapsed;
+            DownloadsPage.Visibility = target == "Downloads" ? Visibility.Visible : Visibility.Collapsed;
             DeveloperPage.Visibility = target == "Developer" ? Visibility.Visible : Visibility.Collapsed;
 
             FrameworkElement page = target switch
@@ -3317,6 +3377,7 @@ namespace DeepSeekHarnessLauncher
                 "Components" => ComponentsPage,
                 "Updates" => UpdatesPage,
                 "About" => AboutPage,
+                "Downloads" => DownloadsPage,
                 "Developer" => DeveloperPage,
                 _ => GeneralPage
             };
@@ -3333,6 +3394,7 @@ namespace DeepSeekHarnessLauncher
                 "Components" => ComponentsNavItem,
                 "Updates" => UpdatesNavItem,
                 "About" => AboutNavItem,
+                "Downloads" => DownloadsNavItem,
                 "Developer" => DeveloperNavItem,
                 _ => GeneralNavItem
             };
@@ -3355,6 +3417,7 @@ namespace DeepSeekHarnessLauncher
             }
 
             AnimatePage(page);
+            if (target == "Downloads") RefreshDownloadCenter();
             if (target == "Home")
             {
                 LoadHomePage();
@@ -4352,6 +4415,7 @@ namespace DeepSeekHarnessLauncher
 
         private void SettingsWindow_Closed(object sender, WindowEventArgs args)
         {
+            _downloadCenterTimer?.Stop();
             SettingsRoot.SizeChanged -= SettingsRoot_SizeChanged;
             SettingsRoot.RemoveHandler(
                 UIElement.PointerPressedEvent,
@@ -6606,6 +6670,12 @@ namespace DeepSeekHarnessLauncher
         /// </summary>
         private bool _homeUsageChartAnimate = true;
 
+        // 绘图和悬停命中共享边距，缩放或更改布局时保持一致。
+        private const double UsagePlotLeft = 46;
+        private const double UsagePlotRightMargin = 58;
+        private const double UsagePlotTop = 12;
+        private const double UsagePlotBottomMargin = 26;
+
         /// <summary>主页先出状态，公告再慢慢刷 —— 网络那步绝不放在 UI 线程上。</summary>
         /// <summary>
         /// 用量统计插件的包名 —— 用启动器自带的 dsh-token-stats。
@@ -6645,8 +6715,8 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
-            HomeUsageHost.Children.Clear();
-            HomeUsageHintText.Text = "正在读取…";
+            HomeUsageBalanceStateText.Text = "正在刷新…";
+            HomeUsageHintText.Text = "正在读取账户余额与本机用量…";
             HomeUsageInstallButton.Visibility = Visibility.Collapsed;
             HomeUsageRefreshButton.IsEnabled = false;
 
@@ -6654,6 +6724,7 @@ namespace DeepSeekHarnessLauncher
             {
                 TokenUsageSummary usage = TokenUsageService.Load(_settings);
 
+                BalanceResult homeBalance = null;
                 string balanceText = "未配置 API Key";
                 bool balanceOk = false;
                 try
@@ -6662,16 +6733,12 @@ namespace DeepSeekHarnessLauncher
                     if (!String.IsNullOrWhiteSpace(apiKey))
                     {
                         BalanceResult balance = DeepSeekBalanceClient.Fetch(apiKey);
+                        homeBalance = balance;
                         balanceOk = balance != null && balance.Ok;
                         balanceText = balanceOk
                             ? balance.Display
                             : "查询失败:" + (balance == null ? "未知错误" : balance.Error);
 
-                        if (balanceOk)
-                        {
-                            // 设置窗自己刷新时也记一笔（主进程那边每分钟已经记了）
-                            BalanceLedger.Observe(balance.Amount, balance.Currency);
-                        }
                     }
                 }
                 catch (Exception exception)
@@ -6682,22 +6749,46 @@ namespace DeepSeekHarnessLauncher
                 DispatcherQueue.TryEnqueue(delegate
                 {
                     HomeUsageRefreshButton.IsEnabled = true;
-                    FillHomeUsage(usage, balanceText, balanceOk);
+                    string currentAccount = BalanceLedger.AccountKey(LauncherSettingsStore.ReadApiKey(_settings));
+                    if (homeBalance != null && homeBalance.Ok && currentAccount != homeBalance.AccountHash)
+                    {
+                        LoadHomeUsage();
+                        return;
+                    }
+                    FillHomeUsage(usage, balanceText, balanceOk, homeBalance);
                 });
             });
         }
 
-        private void FillHomeUsage(TokenUsageSummary usage, string balanceText, bool balanceOk)
+        private void FillHomeUsage(TokenUsageSummary usage, string balanceText, bool balanceOk, BalanceResult balance)
         {
-            HomeUsageHost.Children.Clear();
-            AddHomeUsageRow("账户余额", balanceText);
+            _homeUsageHoverIndex = -1;
+            HomeUsageBalanceText.Text = balanceOk ? balanceText : "—";
+            HomeUsageBalanceText.FontSize = balanceOk ? 28 : 24;
+            HomeUsageBalanceStateText.Text = balanceOk
+                ? "DeepSeek 账户 · " + DateTime.Now.ToString("HH:mm") + " 更新"
+                : (balanceText == "未配置 API Key" ? "未配置 API Key" : "余额查询失败");
+            ToolTipService.SetToolTip(HomeUsageBalanceText, balanceText);
+            ToolTipService.SetToolTip(HomeUsageBalanceStateText, balanceText);
+            HomeUsageTodayLedgerText.Text = balanceOk && balance != null
+                && BalanceLedger.HasData(balance.AccountHash, balance.Currency)
+                ? "余额实扣 " + DeepSeekBalanceClient.FormatBalance(
+                    (decimal)BalanceLedger.CostOfDay(DateTime.Now, balance.AccountHash, balance.Currency), balance.Currency)
+                : "按模型单价计算";
+            ToolTipService.SetToolTip(HomeUsageTodayLedgerText,
+                "余额实扣来自本机记录的余额变动；今日花费来自 Token 与模型单价估算，两者口径不同。");
 
             if (usage == null || !usage.HasData)
             {
                 _homeUsageDaily = null;
                 HomeUsageChartPanel.Visibility = Visibility.Collapsed;
                 HomeUsageChart.Children.Clear();
-                AddHomeUsageRow("Token 用量", "暂无数据");
+                HomeUsageTodayTokensText.Text = "—";
+                HomeUsageTodayCostText.Text = "—";
+                HomeUsageTodayRequestsText.Text = "暂无用量记录";
+                ToolTipService.SetToolTip(HomeUsageTodayTokensText, null);
+                ToolTipService.SetToolTip(HomeUsageTitleText, null);
+                ToolTipService.SetToolTip(HomeUsageHintText, null);
 
                 string path = usage == null ? null : usage.FilePath;
 
@@ -6705,11 +6796,9 @@ namespace DeepSeekHarnessLauncher
                 // 看起来就像「老是说未安装」。
                 if (TokenUsageService.IsPluginInstalled(_settings, UsagePluginPackage))
                 {
-                    HomeUsageHintText.Text = "用量统计插件已经装好了，只是还没有记录 —— "
-                        + "它记的是每次模型调用，在 DSH 里发一句话就会开始写。"
-                        + (String.IsNullOrWhiteSpace(path)
-                            ? String.Empty
-                            : "记录文件：" + path);
+                    HomeUsageHintText.Text = "统计插件已安装。在 DSH 中完成一次模型调用后，这里会显示用量。";
+                    ToolTipService.SetToolTip(HomeUsageHintText,
+                        String.IsNullOrWhiteSpace(path) ? null : "记录文件：" + path);
                     HomeUsageInstallButton.Visibility = Visibility.Collapsed;
                     return;
                 }
@@ -6720,26 +6809,20 @@ namespace DeepSeekHarnessLauncher
                         _settings,
                         TokenStatsPlugin.LegacyPackageName))
                 {
-                    HomeUsageHintText.Text = "现在用的是社区那只用量插件，它跟 DSH 0.2.x 不兼容"
-                        + "（它写死的依赖版本对不上，DSH 会拦下不让跑）。"
-                        + "点下面的按钮换成启动器自带的那份，不用联网。";
+                    HomeUsageHintText.Text = "当前统计插件与 DSH 版本不兼容，请安装启动器内置的统计插件。";
                     HomeUsageInstallButton.Visibility = Visibility.Visible;
                     return;
                 }
 
-                HomeUsageHintText.Text = "逐日 Token 用量要靠「用量统计插件」——启动器自带一份，"
-                    + "点下面的按钮装到本机（不用联网）。装完重启 DSH 就会开始记。";
+                HomeUsageHintText.Text = "安装内置统计插件并重启 DSH，即可开始记录本机用量。";
                 HomeUsageInstallButton.Visibility = Visibility.Visible;
                 return;
             }
 
-            // 卡片上只留两行：余额 + 今日。其余全部收进标题的悬停提示 ——
-            // 一屏文字堆上去，图就不像图了。
-            AddHomeUsageRow(
-                "今日",
-                FormatTokens(usage.TodayTokens) + " tokens"
-                    + (usage.TodayCost > 0 ? " · ¥" + usage.TodayCost.ToString("0.00") : String.Empty)
-                    + " · " + usage.TodayRequests + " 次调用");
+            HomeUsageTodayTokensText.Text = FormatTokens(usage.TodayTokens);
+            HomeUsageTodayRequestsText.Text = usage.TodayRequests.ToString("N0") + " 次调用";
+            HomeUsageTodayCostText.Text = "¥" + usage.TodayCost.ToString("0.00");
+            ToolTipService.SetToolTip(HomeUsageTodayTokensText, usage.TodayTokens.ToString("N0") + " tokens");
 
             ToolTipService.SetToolTip(
                 HomeUsageTitleText,
@@ -6753,24 +6836,12 @@ namespace DeepSeekHarnessLauncher
                         ? "\n最近一次调用：" + usage.LastCallLocal.Value.ToString("MM-dd HH:mm")
                         : String.Empty));
 
-            int rangeDays = SelectedUsageDays();
-            string priceHint = usage.UnpricedTokens > 0
-                ? "花费按价格表估算（含峰谷折扣）；有 "
-                    + FormatTokens(usage.UnpricedTokens)
-                    + " tokens 的模型不在价格表里，没算进去。"
-                : "花费按价格表估算（含峰谷折扣），表在 " + ModelPricing.FileName + "。";
-
-            // 余额实扣：官方给的硬数据，跟估算曲线对账用（启动器每分钟记一笔）
-            if (BalanceLedger.HasData())
-            {
-                priceHint += "余额实扣：今日 ¥"
-                    + BalanceLedger.CostOfDay(DateTime.Now).ToString("0.00")
-                    + " · 近 " + rangeDays + " 天 ¥"
-                    + BalanceLedger.CostOfRange(rangeDays).ToString("0.00")
-                    + "。";
-            }
-
-            HomeUsageHintText.Text = priceHint;
+            HomeUsageHintText.Text = usage.UnpricedTokens > 0
+                ? "本机用量 · 花费为估算值，含峰谷折扣；" + FormatTokens(usage.UnpricedTokens) + " tokens 尚未计价。"
+                : "本机用量 · 花费按模型单价估算，含峰谷折扣。";
+            ToolTipService.SetToolTip(HomeUsageHintText,
+                "价格表：" + ModelPricing.FileName + "。未收录模型的 Token 不计入估算花费。"
+                + "余额实扣仅统计已观测到的余额变化。将鼠标移到图表上可查看逐日明细。");
             HomeUsageInstallButton.Visibility = Visibility.Collapsed;
 
             // 范围下拉：进来默认看 30 天（设选中项会触发一次 SelectionChanged，用 ready 挡住）
@@ -6822,10 +6893,10 @@ namespace DeepSeekHarnessLauncher
             double height = HomeUsageChart.Height;
 
             // 平面直角坐标系：左边留 tokens 刻度、右边留花费刻度、底下留日期
-            double plotLeft = 46;
-            double plotRight = width - 58;
-            double plotTop = 10;
-            double plotBottom = height - 18;
+            double plotLeft = UsagePlotLeft;
+            double plotRight = width - UsagePlotRightMargin;
+            double plotTop = UsagePlotTop;
+            double plotBottom = height - UsagePlotBottomMargin;
             if (plotRight - plotLeft < 40 || plotBottom - plotTop < 30)
             {
                 return;
@@ -6855,8 +6926,8 @@ namespace DeepSeekHarnessLauncher
 
             HomeUsageChartPeakText.Text = maxTokens <= 0
                 ? "还没有记录"
-                : "峰值 " + FormatTokens(maxTokens) + "（" + daily[peakIndex].Day.ToString("MM-dd") + "）"
-                    + " · 花费合计 ¥" + totalCost.ToString("0.00");
+                : "近 " + SelectedUsageDays() + " 天 · 估算花费 ¥" + totalCost.ToString("0.00")
+                    + " · 单日峰值 " + FormatTokens(maxTokens) + " tokens（" + daily[peakIndex].Day.ToString("MM-dd") + "）";
 
             Brush accent = ResolveChartBrush("AccentFillColorDefaultBrush", "AccentFillColorSecondaryBrush");
             Brush normal = ResolveChartBrush("AccentFillColorTertiaryBrush", "ControlFillColorSecondaryBrush");
@@ -6894,15 +6965,19 @@ namespace DeepSeekHarnessLauncher
                 double value = (double)maxTokens * (RowTicks - tick) / RowTicks;
                 TextBlock tickLabel = new TextBlock
                 {
-                    Text = FormatTokens((long)Math.Round(value)),
-                    FontSize = 10.5,
+                    Text = TokenUsageService.FormatAxisValue(value, false),
+                    FontSize = 10,
+                    Width = UsagePlotLeft - 6,
+                    TextAlignment = TextAlignment.Right,
+                    TextWrapping = TextWrapping.NoWrap,
                     Foreground = textBrush
                 };
                 tickLabel.Measure(new Windows.Foundation.Size(
                     Double.PositiveInfinity,
                     Double.PositiveInfinity));
                 HomeUsageChart.Children.Add(tickLabel);
-                Canvas.SetLeft(tickLabel, Math.Max(0, plotLeft - 6 - tickLabel.DesiredSize.Width));
+                ToolTipService.SetToolTip(tickLabel, value.ToString("0.################", System.Globalization.CultureInfo.InvariantCulture) + " tokens");
+                Canvas.SetLeft(tickLabel, 0);
                 Canvas.SetTop(tickLabel, Math.Max(0, y - tickLabel.DesiredSize.Height / 2));
             }
 
@@ -6915,8 +6990,10 @@ namespace DeepSeekHarnessLauncher
 
                 TextBlock tickLabel = new TextBlock
                 {
-                    Text = "¥" + value.ToString("0.##"),
-                    FontSize = 10.5,
+                    Text = TokenUsageService.FormatAxisValue(value, true),
+                    FontSize = 10,
+                    Width = UsagePlotRightMargin - 6,
+                    TextWrapping = TextWrapping.NoWrap,
                     Foreground = costBrush,
                     Opacity = 0.85
                 };
@@ -6924,9 +7001,8 @@ namespace DeepSeekHarnessLauncher
                     Double.PositiveInfinity,
                     Double.PositiveInfinity));
                 HomeUsageChart.Children.Add(tickLabel);
-                Canvas.SetLeft(
-                    tickLabel,
-                    Math.Min(width - tickLabel.DesiredSize.Width, plotRight + 6));
+                ToolTipService.SetToolTip(tickLabel, "¥" + value.ToString("G17", System.Globalization.CultureInfo.InvariantCulture));
+                Canvas.SetLeft(tickLabel, plotRight + 6);
                 Canvas.SetTop(tickLabel, Math.Max(0, y - tickLabel.DesiredSize.Height / 2));
             }
 
@@ -6954,12 +7030,12 @@ namespace DeepSeekHarnessLauncher
 
             // 柱子：token 用量 —— 故意压淡，当背景量，别跟折线抢眼睛
             double slot = plotWidth / daily.Count;
-            double barWidth = Math.Max(1.5, slot * 0.56);
+            double barWidth = Math.Max(1.5, Math.Min(22, slot * 0.56));
 
             for (int index = 0; index < daily.Count; index++)
             {
                 DailyTokens item = daily[index];
-                bool isToday = index == daily.Count - 1;
+                bool isToday = item.Day.Date == DateTime.Today;
                 bool hot = _homeUsageHoverIndex == index;
 
                 double barHeight = maxTokens > 0
@@ -7073,7 +7149,7 @@ namespace DeepSeekHarnessLauncher
             }
 
             // X 轴日期刻度：最多 5 个，首尾贴边不越界
-            int labelCount = Math.Min(5, daily.Count);
+            int labelCount = Math.Min(daily.Count, Math.Max(2, Math.Min(5, (int)(plotWidth / 64))));
             for (int index = 0; index < labelCount; index++)
             {
                 int dataIndex = labelCount > 1
@@ -7227,7 +7303,8 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
-            // 换范围 = 重新出一遍图，播一次升起动画
+            // 换范围后清除旧日期的悬停索引。
+            _homeUsageHoverIndex = -1;
             _homeUsageChartAnimate = true;
             DrawHomeUsageChart();
         }
@@ -7299,8 +7376,16 @@ namespace DeepSeekHarnessLauncher
                 return -1;
             }
 
-            double x = args.GetCurrentPoint(canvas).Position.X;
-            int index = (int)Math.Floor(x / (width / daily.Count));
+            double plotLeft = UsagePlotLeft;
+            double plotRight = width - UsagePlotRightMargin;
+            Windows.Foundation.Point position = args.GetCurrentPoint(canvas).Position;
+            if (plotRight <= plotLeft || position.X < plotLeft || position.X > plotRight
+                || position.Y < UsagePlotTop || position.Y > canvas.Height - UsagePlotBottomMargin)
+            {
+                return -1;
+            }
+
+            int index = (int)Math.Floor((position.X - plotLeft) / ((plotRight - plotLeft) / daily.Count));
             if (index < 0)
             {
                 index = 0;
@@ -7433,33 +7518,6 @@ namespace DeepSeekHarnessLauncher
             }
 
             return new SolidColorBrush(Windows.UI.Color.FromArgb(255, 128, 128, 128));
-        }
-
-        private void AddHomeUsageRow(string label, string value)
-        {
-            Grid row = new Grid { ColumnSpacing = 12 };
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(132) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-            TextBlock name = new TextBlock
-            {
-                Text = label,
-                FontSize = 12.5,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-
-            TextBlock text = new TextBlock
-            {
-                Text = value ?? String.Empty,
-                FontSize = 12.5,
-                TextWrapping = TextWrapping.Wrap,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            Grid.SetColumn(text, 1);
-
-            row.Children.Add(name);
-            row.Children.Add(text);
-            HomeUsageHost.Children.Add(row);
         }
 
         /// <summary>Token 数按中文习惯收一下:超过万就写"1.2 万"。</summary>

@@ -51,6 +51,18 @@ namespace DeepSeekHarnessLauncher
         public string ProxyHost { get; set; } = "127.0.0.1";
         public int ProxyPort { get; set; } = 7890;
 
+        /// <summary>
+        /// 这套代理设置是否作用于启动器自己发起的请求（更新检查、插件目录、下载等）。
+        /// 默认开启：填了代理就该生效。
+        /// </summary>
+        public bool ProxyForLauncher { get; set; } = true;
+
+        /// <summary>
+        /// 是否把这套代理写进 DSH 服务进程的环境变量。默认关闭 ——
+        /// 用户没要求时不接管 DSH 本体的出网方式。
+        /// </summary>
+        public bool ProxyForDsh { get; set; }
+
         public string ApiKeyProtected { get; set; } = String.Empty;
         public string GitHubTokenProtected { get; set; } = String.Empty;
         public bool DeveloperModeUnlocked { get; set; }

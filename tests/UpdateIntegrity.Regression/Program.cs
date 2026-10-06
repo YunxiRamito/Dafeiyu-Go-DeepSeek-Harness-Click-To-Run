@@ -37,4 +37,31 @@ namespace DeepSeekHarnessLauncher
     {
         internal static string DirectoryPath => System.IO.Path.GetTempPath();
     }
+
+    // The project compiles InstallerUpdateService only; the real transfer path is
+    // exercised by tests/DownloadTasks.Regression, so these stand-ins must never run.
+    internal sealed class DownloadProgressInfo
+    {
+        public long BytesReceived { get; set; }
+        public long TotalBytes { get; set; } = -1;
+        public double BytesPerSecond { get; set; }
+    }
+
+    internal static class DownloadSupport
+    {
+        internal const int DefaultThreads = 4;
+
+        internal static bool Download(
+            System.Collections.Generic.List<string> urls,
+            string targetPath,
+            LauncherSettings settings,
+            int threads,
+            Action<DownloadProgressInfo> progress,
+            Action<string> log,
+            out string usedUrl,
+            out string error)
+        {
+            throw new Exception("Unexpected network I/O");
+        }
+    }
 }

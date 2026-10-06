@@ -14,7 +14,10 @@ namespace DeepSeekHarnessLauncher
     ///   Custom —— 用设置里的协议 + 地址 + 端口。
     ///
     /// 本地回环一律绕开代理，否则探活自己的服务也会被丢进代理。
-    /// DSH 本体进程不走这里（用户明确要求不接管）。
+    ///
+    /// 生效范围分成两个开关：<see cref="LauncherSettings.ProxyForLauncher"/>
+    /// 管启动器自己（含它拉起的 pnpm / npm / git），默认开；
+    /// <see cref="LauncherSettings.ProxyForDsh"/> 管 DSH 服务进程，默认关。
     /// </summary>
     internal static class ProxySupport
     {
@@ -27,13 +30,21 @@ namespace DeepSeekHarnessLauncher
 
         internal static string Mode
         {
-            get
+            get { return EffectiveMode(Program.Settings); }
+        }
+
+        /// <summary>
+        /// 启动器实际使用的代理模式。把「对启动器生效」关掉时一律按直连处理，
+        /// 这样 System / Custom 都碰不到启动器自己的请求。
+        /// </summary>
+        internal static string EffectiveMode(LauncherSettings settings)
+        {
+            if (settings == null || !settings.ProxyForLauncher)
             {
-                LauncherSettings settings = Program.Settings;
-                return settings == null
-                    ? "None"
-                    : Normalize(settings.ProxyMode);
+                return "None";
             }
+
+            return Normalize(settings.ProxyMode);
         }
 
         internal static bool IsDirect
@@ -56,6 +67,23 @@ namespace DeepSeekHarnessLauncher
         }
 
         internal static bool TryBuildProxyUri(
+            LauncherSettings settings,
+            out Uri uri)
+        {
+            uri = null;
+            if (settings == null || !settings.ProxyForLauncher)
+            {
+                return false;
+            }
+
+            return TryBuildRawProxyUri(settings, out uri);
+        }
+
+        /// <summary>
+        /// 只看模式拼地址，不看「对启动器生效」开关 ——
+        /// DSH 服务进程有自己独立的开关，不能被启动器那个挡住。
+        /// </summary>
+        private static bool TryBuildRawProxyUri(
             LauncherSettings settings,
             out Uri uri)
         {
@@ -136,7 +164,7 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
-            switch (Normalize(settings.ProxyMode))
+            switch (EffectiveMode(settings))
             {
                 case "None":
                     request.Proxy = null;
@@ -146,7 +174,7 @@ namespace DeepSeekHarnessLauncher
                     break;
                 case "Custom":
                     Uri uri;
-                    request.Proxy = TryBuildProxyUri(settings, out uri)
+                    request.Proxy = TryBuildRawProxyUri(settings, out uri)
                         ? CreateProxy(uri)
                         : null;
                     break;
@@ -196,8 +224,8 @@ namespace DeepSeekHarnessLauncher
         }
 
         /// <summary>
-        /// 给子进程（pnpm / npm / git）准备代理环境变量。
-        /// DSH 本体进程不调用这个方法。
+        /// 给启动器拉起的子进程（pnpm / npm / git）准备代理环境变量。
+        /// 跟随「对启动器生效」开关。
         /// </summary>
         internal static void ApplyProcessEnvironment(ProcessStartInfo startInfo)
         {
@@ -206,6 +234,60 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
+            LauncherSettings settings = Program.Settings;
+            ApplyProxyEnvironment(startInfo, settings, EffectiveMode(settings));
+        }
+
+        /// <summary>
+        /// 给 DSH 服务进程准备代理环境变量。
+        ///
+        /// 只有显式打开「对 DSH 服务生效」才动它的环境：开关关着时连
+        /// 清空都不做，让 DSH 保持原本继承到的那套环境。
+        /// </summary>
+        internal static void ApplyDshProcessEnvironment(
+            ProcessStartInfo startInfo,
+            LauncherSettings settings,
+            Func<Uri> systemProxyResolver = null)
+        {
+            if (startInfo == null
+                || settings == null
+                || !settings.ProxyForDsh)
+            {
+                return;
+            }
+
+            string error = DshConfigurationError(settings);
+            if (error != null) throw new InvalidOperationException(error);
+            ApplyProxyEnvironment(startInfo, settings, Normalize(settings.ProxyMode), systemProxyResolver);
+            // The home .env can restore proxy URLs; inherited wildcard bypass wins.
+            if (Normalize(settings.ProxyMode) == "None")
+            {
+                SetVariable(startInfo, "NO_PROXY", "*");
+                SetVariable(startInfo, "no_proxy", "*");
+            }
+        }
+
+        internal static string DshConfigurationError(LauncherSettings settings)
+        {
+            if (settings == null || !settings.ProxyForDsh
+                || Normalize(settings.ProxyMode) != "Custom") return null;
+            Uri uri;
+            if (!TryBuildRawProxyUri(settings, out uri))
+                return "DSH 自定义代理地址或端口无效，已阻止服务启动。";
+            if (uri.Scheme != "http" && uri.Scheme != "https")
+                return "DSH 不支持 SOCKS5 代理。请关闭 DSH 代理范围或选择 HTTP/HTTPS；启动器仍支持 SOCKS5。";
+            return null;
+        }
+
+        /// <summary>
+        /// 代理环境变量的唯一落点：先清掉可能继承来的那几个，再按模式写。
+        /// </summary>
+        private static void ApplyProxyEnvironment(
+            ProcessStartInfo startInfo,
+            LauncherSettings settings,
+            string mode,
+            Func<Uri> systemProxyResolver = null)
+        {
             string[] names = { "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY" };
             for (int index = 0; index < names.Length; index++)
             {
@@ -214,23 +296,32 @@ namespace DeepSeekHarnessLauncher
             }
 
             string noProxy = "localhost,127.0.0.1,::1";
-            switch (Mode)
+            switch (mode)
             {
                 case "None":
-                    SetVariable(startInfo, "NO_PROXY", noProxy);
+                    SetVariable(startInfo, "NO_PROXY", "*");
+                    SetVariable(startInfo, "no_proxy", "*");
                     break;
                 case "System":
-                    Uri system = ResolveSystemProxy();
+                    Uri system = systemProxyResolver == null
+                        ? ResolveSystemProxy()
+                        : systemProxyResolver();
                     if (system != null)
                     {
                         SetVariable(startInfo, "HTTP_PROXY", system.AbsoluteUri);
                         SetVariable(startInfo, "HTTPS_PROXY", system.AbsoluteUri);
                         SetVariable(startInfo, "NO_PROXY", noProxy);
+                        SetVariable(startInfo, "no_proxy", noProxy);
+                    }
+                    else
+                    {
+                        SetVariable(startInfo, "NO_PROXY", "*");
+                        SetVariable(startInfo, "no_proxy", "*");
                     }
                     break;
                 case "Custom":
                     Uri custom;
-                    if (TryBuildProxyUri(out custom))
+                    if (TryBuildRawProxyUri(settings, out custom))
                     {
                         SetVariable(startInfo, "HTTP_PROXY", custom.AbsoluteUri);
                         SetVariable(startInfo, "HTTPS_PROXY", custom.AbsoluteUri);
@@ -248,6 +339,12 @@ namespace DeepSeekHarnessLauncher
 
         internal static string Describe(LauncherSettings settings)
         {
+            if (settings != null && !settings.ProxyForLauncher)
+            {
+                return "直连（启动器代理已关闭）"
+                    + (settings.ProxyForDsh ? " · DSH 服务仍按设置走代理" : String.Empty);
+            }
+
             string mode = settings == null
                 ? "None"
                 : Normalize(settings.ProxyMode);
@@ -287,6 +384,10 @@ namespace DeepSeekHarnessLauncher
                     return null;
                 }
 
+                if (resolved.Scheme != "http" && resolved.Scheme != "https")
+                {
+                    return null;
+                }
                 return resolved;
             }
             catch

@@ -2,36 +2,21 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace DeepSeekHarnessLauncher
 {
-    /// <summary>某一天的余额观测（元）。</summary>
     internal sealed class BalanceLedgerDay
     {
-        /// <summary>yyyy-MM-dd（北京时间）。</summary>
         public string Day { get; set; } = String.Empty;
-
-        /// <summary>当天第一次观测到的余额。</summary>
         public double Opening { get; set; }
-
-        /// <summary>当天最后一次观测到的余额。</summary>
         public double Last { get; set; }
-
-        /// <summary>当天余额累计下降（就是花掉的）。</summary>
         public double Debit { get; set; }
-
-        /// <summary>当天余额累计上升（充值/退款）。</summary>
         public double Credit { get; set; }
-
-        /// <summary>最后一次观测的时间（Unix 毫秒）。</summary>
         public long At { get; set; }
-
-        /// <summary>
-        /// 当天实扣 = 期初 - 期末 + 期间到账。
-        /// 充值会让余额上升，不加回来就会把消费算少（小鲸鱼记账也是这个口径）。
-        /// </summary>
         public double Cost
         {
             get
@@ -43,241 +28,237 @@ namespace DeepSeekHarnessLauncher
     }
 
     /// <summary>
-    /// 余额日账本 —— 「花费金额」的另一种口径：不看单价，只看钱实实在在少了多少。
-    ///
-    /// 为什么要有它：主页那张卡片的花费曲线是按价格表**估算**的（模型单价 × token），
-    /// 价格表万一过时、或者某个模型的缓存命中比例跟官方口径不同，估算就会偏。
-    /// 余额是官方给的硬数据，天天记一笔就能拿来对账 —— 小鲸鱼记账插件也是这么干的
-    /// （按北京时间的日期分本、跌了算消费涨了算充值、支持手工校正）。
-    ///
-    /// 我们只做最必要的部分：启动器本来每分钟就在查余额，顺手把当天记下来，
-    /// 落在 <c>%LOCALAPPDATA%\DeepSeekHarness\balance-ledger.json</c>，最多留 60 天。
-    /// 不碰别的插件的账本，也不做手工校正 —— 那是小鲸鱼记账的活儿。
+    /// Local-day balance observations partitioned by irreversible API-key hash and currency.
+    /// Legacy top-level days are retained but never assigned to a newly selected account.
     /// </summary>
     internal static class BalanceLedger
     {
         private const int KeepDays = 60;
+        private static readonly object Sync = new object();
+
+        private static string _pathOverride;
 
         internal static string ResolvePath()
         {
-            return Path.Combine(LauncherSettingsStore.DirectoryPath, "balance-ledger.json");
+            return _pathOverride ?? Path.Combine(LauncherSettingsStore.DirectoryPath, "balance-ledger.json");
         }
 
-        /// <summary>北京时间（UTC+8）的日期字符串 —— 跟官方的峰谷口径对齐，跟本机时区无关。</summary>
-        internal static string BeijingDay(DateTime utcNow)
+        internal static void SetPathForTests(string path) { _pathOverride = path; }
+        internal static void ClearPathForTests() { _pathOverride = null; }
+
+        internal static string AccountKey(string apiKey)
         {
-            return utcNow.AddHours(8).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            if (String.IsNullOrWhiteSpace(apiKey)) return String.Empty;
+            using (SHA256 sha = SHA256.Create())
+            {
+                byte[] bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(apiKey.Trim()));
+                StringBuilder result = new StringBuilder(bytes.Length * 2);
+                for (int i = 0; i < bytes.Length; i++) result.Append(bytes[i].ToString("x2", CultureInfo.InvariantCulture));
+                return result.ToString();
+            }
         }
 
-        /// <summary>
-        /// 记一次余额观测。余额没变就不写盘（启动器每分钟查一次，没必要一直落盘）。
-        /// </summary>
-        internal static void Observe(decimal amount, string currency)
+        internal static string LocalDay(DateTime localNow)
         {
+            return (localNow.Kind == DateTimeKind.Utc ? localNow.ToLocalTime() : localNow).Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        }
+
+        internal static void Observe(decimal amount, string currency, string apiKeyHash)
+        {
+            ObserveAt(amount, currency, apiKeyHash, DateTime.Now);
+        }
+
+        internal static void ObserveAt(decimal amount, string currency, string apiKeyHash, DateTime localNow)
+        {
+            if (String.IsNullOrWhiteSpace(apiKeyHash)) return;
             try
             {
+                lock (Sync)
+                {
+                string normalizedCurrency = NormalizeCurrency(currency);
+                LedgerDocument document = LoadDocument();
+                Dictionary<string, BalanceLedgerDay> days = GetDays(document, apiKeyHash, normalizedCurrency, true);
+                string day = LocalDay(localNow);
                 double balance = (double)amount;
-                string day = BeijingDay(DateTime.UtcNow);
-                Dictionary<string, BalanceLedgerDay> days = Load();
-
                 BalanceLedgerDay row;
                 if (!days.TryGetValue(day, out row) || row == null)
                 {
-                    row = new BalanceLedgerDay
-                    {
-                        Day = day,
-                        Opening = balance,
-                        Last = balance
-                    };
+                    row = new BalanceLedgerDay { Day = day, Opening = balance, Last = balance };
                     days[day] = row;
                 }
                 else
                 {
                     double delta = row.Last - balance;
-                    if (delta > 0)
-                    {
-                        row.Debit += delta;
-                    }
-                    else if (delta < 0)
-                    {
-                        row.Credit += -delta;
-                    }
-
+                    if (delta > 0) row.Debit += delta;
+                    else if (delta < 0) row.Credit += -delta;
                     row.Last = balance;
                 }
-
                 row.At = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                Save(days, currency);
-            }
-            catch
-            {
-                // 记账失败不能影响余额显示/告警
-            }
-        }
-
-        /// <summary>某一天的实扣（没有观测就返回 0）。</summary>
-        internal static double CostOfDay(DateTime localDay)
-        {
-            try
-            {
-                string day = localDay.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-                Dictionary<string, BalanceLedgerDay> days = Load();
-                BalanceLedgerDay row;
-                if (days.TryGetValue(day, out row) && row != null)
-                {
-                    return row.Cost;
+                SaveDocument(document);
                 }
             }
-            catch
-            {
-            }
-
-            return 0;
+            catch { if (_pathOverride != null) throw; }
         }
 
-        /// <summary>近 N 天的实扣合计（含今天）。</summary>
-        internal static double CostOfRange(int days)
+        internal static double CostOfDay(DateTime localDay, string apiKeyHash, string currency)
+        {
+            if (String.IsNullOrWhiteSpace(apiKeyHash)) return 0;
+            try
+            {
+                LedgerDocument document = LoadDocument();
+                Dictionary<string, BalanceLedgerDay> days = GetDays(document, apiKeyHash, NormalizeCurrency(currency), false);
+                BalanceLedgerDay row;
+                return days.TryGetValue(LocalDay(localDay), out row) && row != null
+                    ? row.Cost : 0;
+            }
+            catch { return 0; }
+        }
+
+        internal static double CostOfRange(int days, string apiKeyHash, string currency)
         {
             double total = 0;
             DateTime today = DateTime.Now.Date;
-            for (int index = 0; index < days; index++)
-            {
-                total += CostOfDay(today.AddDays(-index));
-            }
-
+            for (int index = 0; index < days; index++) total += CostOfDay(today.AddDays(-index), apiKeyHash, currency);
             return total;
         }
 
-        /// <summary>账本里有没有可用的观测（没有就别在界面上写"实扣"）。</summary>
-        internal static bool HasData()
+        internal static bool HasData(string apiKeyHash, string currency)
         {
-            return Load().Count > 0;
+            if (String.IsNullOrWhiteSpace(apiKeyHash)) return false;
+            try { return GetDays(LoadDocument(), apiKeyHash, NormalizeCurrency(currency), false).Count > 0; }
+            catch { return false; }
         }
 
-        private static Dictionary<string, BalanceLedgerDay> Load()
+        private sealed class LedgerDocument
         {
-            Dictionary<string, BalanceLedgerDay> days =
-                new Dictionary<string, BalanceLedgerDay>(StringComparer.Ordinal);
-            try
+            public Dictionary<string, Dictionary<string, Dictionary<string, BalanceLedgerDay>>> Accounts =
+                new Dictionary<string, Dictionary<string, Dictionary<string, BalanceLedgerDay>>>(StringComparer.Ordinal);
+        }
+
+        private static Dictionary<string, BalanceLedgerDay> GetDays(LedgerDocument document, string account, string currency, bool create)
+        {
+            Dictionary<string, Dictionary<string, BalanceLedgerDay>> currencies;
+            if (!document.Accounts.TryGetValue(account, out currencies))
             {
-                string path = ResolvePath();
-                if (!File.Exists(path))
-                {
-                    return days;
-                }
-
-                using (JsonDocument document = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8)))
-                {
-                    JsonElement root = document.RootElement;
-                    JsonElement rows;
-                    if (root.ValueKind != JsonValueKind.Object
-                        || !root.TryGetProperty("days", out rows)
-                        || rows.ValueKind != JsonValueKind.Object)
-                    {
-                        return days;
-                    }
-
-                    foreach (JsonProperty property in rows.EnumerateObject())
-                    {
-                        JsonElement value = property.Value;
-                        if (value.ValueKind != JsonValueKind.Object)
-                        {
-                            continue;
-                        }
-
-                        BalanceLedgerDay row = new BalanceLedgerDay { Day = property.Name };
-                        row.Opening = ReadDouble(value, "opening");
-                        row.Last = ReadDouble(value, "last");
-                        row.Debit = ReadDouble(value, "debit");
-                        row.Credit = ReadDouble(value, "credit");
-                        row.At = (long)ReadDouble(value, "at");
-                        days[property.Name] = row;
-                    }
-                }
+                if (!create) return new Dictionary<string, BalanceLedgerDay>(StringComparer.Ordinal);
+                currencies = new Dictionary<string, Dictionary<string, BalanceLedgerDay>>(StringComparer.OrdinalIgnoreCase);
+                document.Accounts[account] = currencies;
             }
-            catch
+            Dictionary<string, BalanceLedgerDay> days;
+            if (!currencies.TryGetValue(currency, out days))
             {
-                // 账本坏了就当空的：下一分钟会重新开始记
-                days.Clear();
+                if (!create) return new Dictionary<string, BalanceLedgerDay>(StringComparer.Ordinal);
+                days = new Dictionary<string, BalanceLedgerDay>(StringComparer.Ordinal);
+                currencies[currency] = days;
             }
-
             return days;
         }
 
-        private static void Save(Dictionary<string, BalanceLedgerDay> days, string currency)
+        private static string NormalizeCurrency(string currency)
         {
-            // 只留最近 KeepDays 天
-            string cutoff = BeijingDay(DateTime.UtcNow.AddDays(-KeepDays));
-            List<string> stale = new List<string>();
-            foreach (KeyValuePair<string, BalanceLedgerDay> pair in days)
+            return String.IsNullOrWhiteSpace(currency) ? "CNY" : currency.Trim().ToUpperInvariant();
+        }
+
+        private static LedgerDocument LoadDocument()
+        {
+            lock (Sync) return ReadDocument();
+        }
+
+        private static LedgerDocument ReadDocument()
+        {
+            LedgerDocument document = new LedgerDocument();
+            string path = ResolvePath();
+            if (!File.Exists(path)) return document;
+            try
             {
-                if (String.CompareOrdinal(pair.Key, cutoff) < 0)
+                using (JsonDocument json = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8)))
                 {
-                    stale.Add(pair.Key);
+                    JsonElement accounts;
+                    if (!json.RootElement.TryGetProperty("accounts", out accounts) || accounts.ValueKind != JsonValueKind.Object) return document;
+                    foreach (JsonProperty account in accounts.EnumerateObject())
+                    {
+                        Dictionary<string, Dictionary<string, BalanceLedgerDay>> currencies =
+                            new Dictionary<string, Dictionary<string, BalanceLedgerDay>>(StringComparer.OrdinalIgnoreCase);
+                        document.Accounts[account.Name] = currencies;
+                        foreach (JsonProperty currency in account.Value.EnumerateObject())
+                        {
+                            JsonElement daysElement;
+                            if (!currency.Value.TryGetProperty("days", out daysElement) || daysElement.ValueKind != JsonValueKind.Object) continue;
+                            Dictionary<string, BalanceLedgerDay> days = new Dictionary<string, BalanceLedgerDay>(StringComparer.Ordinal);
+                            foreach (JsonProperty day in daysElement.EnumerateObject())
+                            {
+                                if (day.Value.ValueKind != JsonValueKind.Object) continue;
+                                days[day.Name] = new BalanceLedgerDay
+                                {
+                                    Day = day.Name,
+                                    Opening = ReadDouble(day.Value, "opening"), Last = ReadDouble(day.Value, "last"),
+                                    Debit = ReadDouble(day.Value, "debit"), Credit = ReadDouble(day.Value, "credit"),
+                                    At = (long)ReadDouble(day.Value, "at")
+                                };
+                            }
+                            currencies[currency.Name] = days;
+                        }
+                    }
                 }
             }
+            catch { throw; } // Leave malformed existing data untouched instead of replacing it with an empty account set.
+            return document;
+        }
 
-            for (int index = 0; index < stale.Count; index++)
-            {
-                days.Remove(stale[index]);
-            }
-
-            List<string> dates = new List<string>(days.Keys);
-            dates.Sort(StringComparer.Ordinal);
-
-            StringBuilder builder = new StringBuilder();
-            builder.AppendLine("{");
-            builder.AppendLine("  \"version\": 1,");
-            builder.Append("  \"currency\": \"").Append(
-                String.IsNullOrWhiteSpace(currency) ? "CNY" : currency.ToUpperInvariant()).AppendLine("\",");
-            builder.AppendLine("  \"days\": {");
-
-            CultureInfo invariant = CultureInfo.InvariantCulture;
-            for (int index = 0; index < dates.Count; index++)
-            {
-                BalanceLedgerDay row = days[dates[index]];
-                builder.Append("    \"").Append(row.Day).Append("\": { \"opening\": ")
-                    .Append(row.Opening.ToString("0.########", invariant))
-                    .Append(", \"last\": ").Append(row.Last.ToString("0.########", invariant))
-                    .Append(", \"debit\": ").Append(row.Debit.ToString("0.########", invariant))
-                    .Append(", \"credit\": ").Append(row.Credit.ToString("0.########", invariant))
-                    .Append(", \"at\": ").Append(row.At.ToString(invariant))
-                    .Append(" }");
-                builder.AppendLine(index == dates.Count - 1 ? String.Empty : ",");
-            }
-
-            builder.AppendLine("  }");
-            builder.AppendLine("}");
-
+        private static void SaveDocument(LedgerDocument document)
+        {
             string path = ResolvePath();
             Directory.CreateDirectory(Path.GetDirectoryName(path));
-            File.WriteAllText(path, builder.ToString(), new UTF8Encoding(false));
+            JsonObject accounts = new JsonObject();
+            foreach (var account in document.Accounts)
+            {
+                JsonObject currencies = new JsonObject();
+                accounts[account.Key] = currencies;
+                foreach (var currency in account.Value)
+                {
+                    Prune(currency.Value);
+                    JsonObject days = new JsonObject();
+                    foreach (var day in currency.Value)
+                    {
+                        BalanceLedgerDay row = day.Value;
+                        days[day.Key] = new JsonObject
+                        {
+                            ["opening"] = row.Opening, ["last"] = row.Last,
+                            ["debit"] = row.Debit, ["credit"] = row.Credit, ["at"] = row.At
+                        };
+                    }
+                    currencies[currency.Key] = new JsonObject { ["days"] = days };
+                }
+            }
+            // Preserve unowned v1 history and unknown metadata; never reinterpret its day keys.
+            JsonObject root = File.Exists(path)
+                ? JsonNode.Parse(File.ReadAllText(path, Encoding.UTF8)) as JsonObject
+                : new JsonObject();
+            if (root == null) return;
+            root["version"] = 2;
+            root["dayBasis"] = "local";
+            root["accounts"] = accounts;
+            string temporary = path + ".tmp";
+            File.WriteAllText(temporary, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), new UTF8Encoding(false));
+            if (File.Exists(path)) File.Replace(temporary, path, null);
+            else File.Move(temporary, path);
+        }
+
+        private static void Prune(Dictionary<string, BalanceLedgerDay> days)
+        {
+            string cutoff = LocalDay(DateTime.Now.Date.AddDays(-KeepDays));
+            List<string> stale = new List<string>();
+            foreach (string key in days.Keys) if (String.CompareOrdinal(key, cutoff) < 0) stale.Add(key);
+            foreach (string key in stale) days.Remove(key);
         }
 
         private static double ReadDouble(JsonElement root, string name)
         {
             JsonElement value;
-            if (!root.TryGetProperty(name, out value))
-            {
-                return 0;
-            }
-
+            if (!root.TryGetProperty(name, out value)) return 0;
             double parsed;
-            if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out parsed))
-            {
-                return parsed;
-            }
-
-            if (value.ValueKind == JsonValueKind.String
-                && Double.TryParse(
-                    value.GetString(),
-                    NumberStyles.Float,
-                    CultureInfo.InvariantCulture,
-                    out parsed))
-            {
-                return parsed;
-            }
-
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out parsed)) return parsed;
+            if (value.ValueKind == JsonValueKind.String && Double.TryParse(value.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out parsed)) return parsed;
             return 0;
         }
     }

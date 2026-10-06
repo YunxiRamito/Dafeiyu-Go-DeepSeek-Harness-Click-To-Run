@@ -142,6 +142,7 @@ namespace DeepSeekHarnessLauncher
 
     internal sealed class BalanceResult
     {
+        public string AccountHash;
         public bool Ok;
         public decimal Amount;
         public string Currency;
@@ -184,7 +185,13 @@ namespace DeepSeekHarnessLauncher
                     using (Stream stream = response.GetResponseStream())
                     using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
                     {
-                        return ParseBalance(reader.ReadToEnd());
+                        BalanceResult result = ParseBalance(reader.ReadToEnd());
+                        if (result.Ok)
+                        {
+                            result.AccountHash = BalanceLedger.AccountKey(apiKey);
+                            BalanceLedger.Observe(result.Amount, result.Currency, result.AccountHash);
+                        }
+                        return result;
                     }
                 }
                 catch (WebException exception)
@@ -373,7 +380,7 @@ namespace DeepSeekHarnessLauncher
             return Decimal.MinValue;
         }
 
-        private static string FormatBalance(decimal amount, string currency)
+        internal static string FormatBalance(decimal amount, string currency)
         {
             string normalized = String.IsNullOrEmpty(currency)
                 ? "CNY"

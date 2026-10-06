@@ -42,7 +42,7 @@ namespace DeepSeekHarnessLauncher
     {
         public const string Title = "Dafeiyu-Go";
         public const string EnglishTitle = "Dafeiyu-Go";
-        public const string Version = "1.5.3";
+        public const string Version = "1.5.4";
         public const string Repository = "YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run";
         public const string LegacyRepository = "YunxiRamito/DSH-Launcher";
         public const string UserAgent = "Dafeiyu-Go/" + Version;
@@ -1671,7 +1671,8 @@ namespace DeepSeekHarnessLauncher
                             detail);
                         UpdateWindow(null, detail, percent);
                     },
-                    out stageError);
+                    out stageError,
+                    _settings);
 
                 if (staging == null)
                 {
@@ -1796,7 +1797,9 @@ namespace DeepSeekHarnessLauncher
                     {
                         try
                         {
-                            _updateWindow = new UpdateProgressWindow(_dispatcherQueue);
+                            _updateWindow = new UpdateProgressWindow(
+                                _dispatcherQueue,
+                                delegate { ShowSettings("Downloads"); });
                             _updateWindow.Show();
                             _updateWindow.Update("正在检查更新…", "正在读取版本清单", -1);
                         }
@@ -2078,7 +2081,8 @@ namespace DeepSeekHarnessLauncher
                             percent);
                     }
                 },
-                out error);
+                out error,
+                _settings);
 
             if (staging == null)
             {
@@ -2172,7 +2176,8 @@ namespace DeepSeekHarnessLauncher
                         detail);
                     UpdateWindow(null, detail, percent);
                 },
-                out error);
+                out error,
+                _settings);
             if (!applied)
             {
                 return false;
@@ -2431,7 +2436,8 @@ namespace DeepSeekHarnessLauncher
                         UpdateWindow(null, detail, percent);
                     },
                     out packagePath,
-                    out downloadError);
+                    out downloadError,
+                    _settings);
                 if (!downloaded)
                 {
                     UpdateDshUi(
@@ -3297,8 +3303,6 @@ namespace DeepSeekHarnessLauncher
                 {
                     alertUpdate = _balanceAlertTracker.Observe(result);
 
-                    // 顺手记一笔余额日账本：主页卡片上那句「余额实扣」靠它对账
-                    BalanceLedger.Observe(result.Amount, result.Currency);
                 }
             }
             catch (Exception exception)
@@ -3505,6 +3509,8 @@ namespace DeepSeekHarnessLauncher
 
         private bool StartService()
         {
+            string proxyError = ProxySupport.DshConfigurationError(_settings);
+            if (proxyError != null) throw new InvalidOperationException(proxyError);
             if (!File.Exists(_nodePath))
             {
                 throw new FileNotFoundException("找不到 Node.js：" + _nodePath);
@@ -3530,6 +3536,8 @@ namespace DeepSeekHarnessLauncher
             startInfo.StandardOutputEncoding = Encoding.UTF8;
             startInfo.StandardErrorEncoding = Encoding.UTF8;
             startInfo.EnvironmentVariables["DSH_HOME"] = Path.Combine(_root, ".dsh");
+            // 只有用户打开「对 DSH 服务生效」时才写代理环境变量，默认不接管。
+            ProxySupport.ApplyDshProcessEnvironment(startInfo, _settings);
 
             Process process = new Process();
             process.StartInfo = startInfo;

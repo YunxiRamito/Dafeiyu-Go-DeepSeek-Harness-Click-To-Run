@@ -36,7 +36,6 @@ namespace DeepSeekHarnessLauncher
         private const string PreviewManifestFile = "manifest-preview.json";
 
         private const int FetchTimeoutMs = 20000;
-        private const int DownloadTimeoutMs = 180000;
 
         // ---------------------------------------------------------------- 清单
 
@@ -770,11 +769,14 @@ namespace DeepSeekHarnessLauncher
         // ---------------------------------------------------------------- 下载 + 落地
 
         /// <summary>更新包下载到暂存区并解压。返回解压出来的目录(里面就是启动器的文件)。</summary>
-        public static string PrepareStaging(UpdateManifest manifest, string installDirectory, Action<long, long> progress, out string error)
+        public static string PrepareStaging(UpdateManifest manifest, string installDirectory, Action<long, long> progress, out string error, LauncherSettings settings = null)
         {
             error = null;
 
-            string stagingRoot = Path.Combine(Path.GetTempPath(), "DeepSeekHarnessUpdate");
+            // A paused DSH/installer download may still own a sibling directory.
+            // Each launcher attempt owns only its GUID staging directory.
+            string stagingRoot = Path.Combine(Path.GetTempPath(), "DeepSeekHarnessUpdate", "launcher-" + Guid.NewGuid().ToString("N"));
+            bool prepared = false;
 
             // 扩展名故意不写死:候选里既有 npm 的 .tgz(里面才是 zip)也有 GitHub 的 .zip,
             // 引擎轮换到哪条都可能,所以下完按**内容**判断(见 MaterializeZip)。
@@ -783,14 +785,28 @@ namespace DeepSeekHarnessLauncher
 
             try
             {
-                if (Directory.Exists(stagingRoot))
-                {
-                    safeDeleteDirectory(stagingRoot);
-                }
-
                 Directory.CreateDirectory(stagingRoot);
 
-                string usedUrl = DownloadWithFallback(manifest.Urls, downloadPath, progress);
+                string usedUrl;
+                if (!DownloadSupport.Download(
+                    manifest.Urls,
+                    downloadPath,
+                    settings,
+                    DownloadSupport.DefaultThreads,
+                    delegate(DownloadProgressInfo info)
+                    {
+                        if (progress != null)
+                        {
+                            progress(info.BytesReceived, info.TotalBytes);
+                        }
+                    },
+                    InstallLoggerLight,
+                    out usedUrl,
+                    out error))
+                {
+                    return null;
+                }
+
                 InstallLoggerLight("更新包已下载: " + usedUrl);
 
                 string materializeError;
@@ -827,12 +843,17 @@ namespace DeepSeekHarnessLauncher
                     return null;
                 }
 
+                prepared = true;
                 return effective;
             }
             catch (Exception exception)
             {
                 error = exception.Message;
                 return null;
+            }
+            finally
+            {
+                if (!prepared) safeDeleteDirectory(stagingRoot);
             }
         }
 
@@ -977,40 +998,6 @@ namespace DeepSeekHarnessLauncher
                 ProxySupport.Apply(client);
                 return client.DownloadString(url);
             }
-        }
-
-        private static string DownloadWithFallback(List<string> urls, string targetPath, Action<long, long> progress)
-        {
-            List<string> failures = new List<string>();
-            for (int index = 0; index < urls.Count; index++)
-            {
-                try
-                {
-                    using (TimeoutWebClient client = new TimeoutWebClient(DownloadTimeoutMs))
-                    {
-                        client.Headers[HttpRequestHeader.UserAgent] = Constants.UserAgent;
-                        ProxySupport.Apply(client);
-                        if (progress != null)
-                        {
-                            client.DownloadProgressChanged += delegate(object sender, DownloadProgressChangedEventArgs args)
-                            {
-                                progress(args.BytesReceived, args.TotalBytesToReceive);
-                            };
-                        }
-
-                        client.DownloadFile(urls[index], targetPath);
-                    }
-
-                    return urls[index];
-                }
-                catch (Exception exception)
-                {
-                    failures.Add(urls[index] + " -> " + exception.Message);
-                    InstallLoggerLight("下载源失败: " + urls[index] + " : " + exception.Message);
-                }
-            }
-
-            throw new InvalidOperationException("所有下载源都失败:\r\n" + string.Join("\r\n", failures.ToArray()));
         }
 
         public static string ComputeSha256(string path)

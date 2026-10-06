@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><EnableDefaultCompileItems>false</EnableDefaultCompileItems><ImplicitUsings>enable</ImplicitUsings><Nullable>disable</Nullable><NoWarn>SYSLIB0014</NoWarn></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../source/BalanceLedger.cs" Link="BalanceLedger.cs" />
+    <Compile Include="../../source/TokenUsageService.cs" Link="TokenUsageService.cs" />
+    <Compile Include="../../source/BalanceSupport.cs" Link="BalanceSupport.cs" />
+    <Compile Include="../../source/LauncherSettings.cs" Link="LauncherSettings.cs" />
+    <Compile Include="../../source/ModelPricing.cs" Link="ModelPricing.cs" />
+    <Compile Include="../../source/ProxySupport.cs" Link="ProxySupport.cs" />
+    <Compile Include="Program.cs" />
+    <Compile Include="Stubs.cs" />
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
+  </ItemGroup>
+</Project>

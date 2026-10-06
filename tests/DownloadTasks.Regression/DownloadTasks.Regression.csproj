@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <NoWarn>SYSLIB0014</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../source/DownloadSupport.cs" Link="DownloadSupport.cs" />
+    <Compile Include="../../source/DownloadTaskCenter.cs" Link="DownloadTaskCenter.cs" />
+    <Compile Include="../../source/UpdateSupport.cs" Link="UpdateSupport.cs" />
+    <Compile Include="../../source/DshUpdateService.cs" Link="DshUpdateService.cs" />
+    <Compile Include="../../source/InstallerUpdateService.cs" Link="InstallerUpdateService.cs" />
+  </ItemGroup>
+</Project>

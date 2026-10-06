@@ -20,7 +20,7 @@ namespace DeepSeekHarnessLauncher
     internal sealed class UpdateProgressWindow
     {
         private const int WindowWidth = 380;
-        private const int WindowHeight = 150;
+        private const int WindowHeight = 188;
         private const int Margin = 16;
 
         private readonly WinUIWindow _window;
@@ -30,7 +30,7 @@ namespace DeepSeekHarnessLauncher
         private readonly DispatcherQueue _dispatcher;
         private bool _closed;
 
-        public UpdateProgressWindow(DispatcherQueue dispatcher)
+        public UpdateProgressWindow(DispatcherQueue dispatcher, Action openDownloads = null)
         {
             _dispatcher = dispatcher;
 
@@ -79,6 +79,17 @@ namespace DeepSeekHarnessLauncher
                 TextWrapping = TextWrapping.Wrap
             };
             panel.Children.Add(_detail);
+            if (openDownloads != null)
+            {
+                var downloadsButton = new Button
+                {
+                    Content = "下载任务中心",
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    Padding = new Thickness(10, 4, 10, 4)
+                };
+                downloadsButton.Click += delegate { openDownloads(); };
+                panel.Children.Add(downloadsButton);
+            }
 
             Border surface = new Border
             {

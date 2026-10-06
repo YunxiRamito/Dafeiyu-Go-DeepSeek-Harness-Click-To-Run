@@ -24,6 +24,7 @@ Windows 10 / 11 · x64 · WinUI 3
 | **余额与用量** | 查询账户余额、设置告警；安装内置统计插件后查看近 7 / 15 / 30 天用量与花费估算 |
 | **插件与技能** | 浏览推荐与在线目录，管理本地项目；插件支持自检与修复 |
 | **更新与备份** | 管理启动器与 DSH 更新通道，导出 / 导入 `.dym` 配置、技能与插件备份 |
+| **下载任务** | 侧栏左下角入口，实时进度与速度，可暂停 / 继续 / 重试 / 取消，历史记录保存在本机 |
 | **健康检查** | 在「关于」页检查 DSH、Node 与端口状态，预览并导出不含原始日志或配置的诊断报告 |
 
 启动器管理的是本机 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 服务；首次部署推荐使用安装器，已有 DSH 可以直接用 ZIP。
@@ -71,7 +72,7 @@ DSH 根目录依次从 `DSH_ROOT`、程序同目录的 `launcher.json`、已记�
 
 登录自启通过最高权限计划任务 `DeepSeekHarnessAutostart` 实现，使用 `--no-browser`，只驻留托盘。
 
-**密钥与网络**：启动器保存的余额查询 API Key 使用当前 Windows 用户的 DPAPI 加密；这不代表 DSH 的其他凭据文件也已加密。余额查询连接 DeepSeek API，更新、在线目录及下载会连接相应服务；选择加速源时部分下载会经过第三方镜像。不要公开 API Key、带 token 的网页地址或未经脱敏的日志与备份。
+**密钥与网络**：启动器保存的余额查询 API Key 使用当前 Windows 用户的 DPAPI 加密；这不代表 DSH 的其他凭据文件也已加密。余额查询连接 DeepSeek API，更新、在线目录及下载会连接相应服务；选择加速源时部分下载会经过第三方镜像。代理设置可分别控制是否作用于启动器（默认开启）与 DSH 服务（默认关闭）；改完 DSH 那一项要重启服务才生效。不要公开 API Key、带 token 的网页地址或未经脱敏的日志与备份。
 
 ## 遇到问题
 
@@ -118,7 +119,7 @@ DSH 根目录依次从 `DSH_ROOT`、程序同目录的 `launcher.json`、已记�
 <details>
 <summary>English quick start</summary>
 
-**Dafeiyu-Go is a Windows tray launcher and manager for DeepSeek Harness.** It handles service startup, balance and usage views, plugins, skills, updates and `.dym` backups. The illustration above is a functional diagram, not a screenshot.
+**Dafeiyu-Go is a Windows tray launcher and manager for DeepSeek Harness.** It handles service startup, balance and usage views, plugins, skills, updates and `.dym` backups. The image above is arranged from historical screenshots; it does not show the current release interface.
 
 1. Download the [Setup release](https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Setup/releases/latest) for a fresh installation, or the [launcher ZIP](https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/latest) for an existing DSH installation.
 2. Extract the entire ZIP into `<DSH root>\DeepSeek Harness\`.

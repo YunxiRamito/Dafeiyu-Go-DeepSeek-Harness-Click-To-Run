@@ -165,6 +165,7 @@ namespace DeepSeekHarnessLauncher
                     installed = InstallNode(
                         componentsRoot,
                         china,
+                        settings,
                         progress,
                         log,
                         out error);
@@ -173,6 +174,7 @@ namespace DeepSeekHarnessLauncher
                     installed = InstallGit(
                         componentsRoot,
                         china,
+                        settings,
                         progress,
                         log,
                         out error);
@@ -181,6 +183,7 @@ namespace DeepSeekHarnessLauncher
                     installed = InstallPnpm(
                         componentsRoot,
                         china,
+                        settings,
                         progress,
                         log,
                         out error);
@@ -189,6 +192,7 @@ namespace DeepSeekHarnessLauncher
                     installed = InstallPython(
                         componentsRoot,
                         china,
+                        settings,
                         progress,
                         log,
                         out error);
@@ -199,6 +203,7 @@ namespace DeepSeekHarnessLauncher
                         Path.Combine(componentsRoot, "windowsdesktop-runtime-win-x64.exe"),
                         "/install /quiet /norestart",
                         ".NET 8 桌面运行时",
+                        settings,
                         progress,
                         log,
                         out error);
@@ -209,6 +214,7 @@ namespace DeepSeekHarnessLauncher
                         Path.Combine(componentsRoot, "windowsappruntimeinstall-x64.exe"),
                         "--quiet",
                         "Windows App Runtime 1.8",
+                        settings,
                         progress,
                         log,
                         out error);
@@ -334,6 +340,7 @@ namespace DeepSeekHarnessLauncher
         private static bool InstallNode(
             string componentsRoot,
             bool china,
+            LauncherSettings settings,
             Action<string, double> progress,
             Action<string> log,
             out string error)
@@ -348,7 +355,7 @@ namespace DeepSeekHarnessLauncher
 
             urls.Add("https://nodejs.org/dist/" + NodeVersion + "/" + fileName);
             string archive = Path.Combine(Path.GetTempPath(), "DSHComponents", fileName);
-            if (!Download(urls, archive, progress, 5, 75, log, out error))
+            if (!Download(urls, archive, settings, progress, 5, 75, log, out error))
             {
                 return false;
             }
@@ -360,6 +367,7 @@ namespace DeepSeekHarnessLauncher
         private static bool InstallGit(
             string componentsRoot,
             bool china,
+            LauncherSettings settings,
             Action<string, double> progress,
             Action<string> log,
             out string error)
@@ -376,7 +384,7 @@ namespace DeepSeekHarnessLauncher
             urls.Add("https://github.com/git-for-windows/git/releases/download/"
                 + folder + "/" + fileName);
             string archive = Path.Combine(Path.GetTempPath(), "DSHComponents", fileName);
-            if (!Download(urls, archive, progress, 5, 75, log, out error))
+            if (!Download(urls, archive, settings, progress, 5, 75, log, out error))
             {
                 return false;
             }
@@ -393,6 +401,7 @@ namespace DeepSeekHarnessLauncher
         private static bool InstallPnpm(
             string componentsRoot,
             bool china,
+            LauncherSettings settings,
             Action<string, double> progress,
             Action<string> log,
             out string error)
@@ -415,7 +424,7 @@ namespace DeepSeekHarnessLauncher
                 + PnpmVersion + "/pnpm-win-x64.exe");
 
             string archive = Path.Combine(staging, "pnpm-win-x64-" + PnpmVersion + ".tgz");
-            if (!Download(urls, archive, progress, 5, 75, log, out error))
+            if (!Download(urls, archive, settings, progress, 5, 75, log, out error))
             {
                 return false;
             }
@@ -472,6 +481,7 @@ namespace DeepSeekHarnessLauncher
         private static bool InstallPython(
             string componentsRoot,
             bool china,
+            LauncherSettings settings,
             Action<string, double> progress,
             Action<string> log,
             out string error)
@@ -486,7 +496,7 @@ namespace DeepSeekHarnessLauncher
 
             urls.Add("https://www.python.org/ftp/python/" + PythonVersion + "/" + fileName);
             string archive = Path.Combine(Path.GetTempPath(), "DSHComponents", fileName);
-            if (!Download(urls, archive, progress, 5, 75, log, out error))
+            if (!Download(urls, archive, settings, progress, 5, 75, log, out error))
             {
                 return false;
             }
@@ -505,11 +515,12 @@ namespace DeepSeekHarnessLauncher
             string archive,
             string arguments,
             string displayName,
+            LauncherSettings settings,
             Action<string, double> progress,
             Action<string> log,
             out string error)
         {
-            if (!Download(urls, archive, progress, 5, 70, log, out error))
+            if (!Download(urls, archive, settings, progress, 5, 70, log, out error))
             {
                 return false;
             }
@@ -555,62 +566,44 @@ namespace DeepSeekHarnessLauncher
         private static bool Download(
             List<string> urls,
             string targetPath,
+            LauncherSettings settings,
             Action<string, double> progress,
             double from,
             double to,
             Action<string> log,
             out string error)
         {
-            error = null;
             Directory.CreateDirectory(Path.GetDirectoryName(targetPath));
-            List<string> failures = new List<string>();
-            for (int index = 0; index < urls.Count; index++)
+            Report(progress, "下载中 · " + Path.GetFileName(targetPath), from);
+            string usedUrl;
+            if (!DownloadSupport.Download(
+                urls,
+                targetPath,
+                settings,
+                DownloadSupport.DefaultThreads,
+                delegate(DownloadProgressInfo info)
+                {
+                    double fraction = info.TotalBytes > 0
+                        ? Math.Max(0.0, Math.Min(1.0,
+                            (double)info.BytesReceived / info.TotalBytes))
+                        : 0.0;
+                    Report(progress, "下载中 · " + info.Describe(),
+                        from + fraction * (to - from));
+                },
+                log,
+                out usedUrl,
+                out error))
             {
-                try
-                {
-                    Report(progress, "下载中 · " + Path.GetFileName(targetPath), from);
-                    using (ComponentWebClient client = new ComponentWebClient())
-                    {
-                        client.Headers[HttpRequestHeader.UserAgent] =
-                            Constants.UserAgent;
-                        ProxySupport.Apply(client);
-                        if (progress != null)
-                        {
-                            client.DownloadProgressChanged +=
-                                delegate(object sender, DownloadProgressChangedEventArgs args)
-                                {
-                                    double fraction = args.TotalBytesToReceive > 0
-                                        ? (double)args.BytesReceived
-                                            / args.TotalBytesToReceive
-                                        : 0.0;
-                                    Report(
-                                        progress,
-                                        "下载中 · "
-                                            + PluginStoreService.FormatBytes(args.BytesReceived)
-                                            + " / "
-                                            + PluginStoreService.FormatBytes(args.TotalBytesToReceive),
-                                        from + fraction * (to - from));
-                                };
-                        }
-
-                        client.DownloadFile(urls[index], targetPath);
-                    }
-
-                    if (log != null)
-                    {
-                        log("组件下载成功：" + urls[index]);
-                    }
-
-                    return true;
-                }
-                catch (Exception exception)
-                {
-                    failures.Add(urls[index] + " -> " + exception.Message);
-                }
+                return false;
             }
 
-            error = "所有下载源都失败：\r\n" + String.Join("\r\n", failures.ToArray());
-            return false;
+            Report(progress, "下载完成 · " + Path.GetFileName(targetPath), to);
+            if (log != null)
+            {
+                log("组件下载成功：" + usedUrl);
+            }
+
+            return true;
         }
 
         private static bool ExtractZipWithStrip(
@@ -957,23 +950,5 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        private sealed class ComponentWebClient : WebClient
-        {
-            protected override WebRequest GetWebRequest(Uri address)
-            {
-                WebRequest request = base.GetWebRequest(address);
-                if (request != null)
-                {
-                    request.Timeout = 15000;
-                    HttpWebRequest http = request as HttpWebRequest;
-                    if (http != null)
-                    {
-                        http.ReadWriteTimeout = 300000;
-                    }
-                }
-
-                return request;
-            }
-        }
     }
 }

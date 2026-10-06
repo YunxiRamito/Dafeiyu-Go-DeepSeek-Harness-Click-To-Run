@@ -24,6 +24,10 @@ namespace DeepSeekHarnessLauncher
         {
             get
             {
+                string overridePath = Environment.GetEnvironmentVariable(
+                    "DAFEIYU_LAUNCHER_SETTINGS_DIRECTORY");
+                if (!String.IsNullOrWhiteSpace(overridePath))
+                    return Path.GetFullPath(overridePath);
                 return Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "DeepSeekHarness");

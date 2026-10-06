@@ -1,7 +1,7 @@
 # 启动器发布与接入指南
 
 > 这份文档讲两件事:**这个仓库怎么发版**,以及 **DSH Installer 怎么拿到它**。
-> 最后更新:2026-10-04
+> 最后更新:2026-10-06（1.5.4 验收准备中，未发布）
 
 ## 当前发布规则与必做清单
 
@@ -28,21 +28,17 @@
 | 启动器仓库 | `https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run` |
 | 默认分支 | `main` |
 | 本地已初始化 git,remote `origin` 已配好 | `G:\DeepSeek DSH\DSH Works\Project\Dafeiyu-Go\Dafeiyu-Go-DeepSeek-Harness-Click-To-Run` |
-| 当前产物 | `DeepSeekHarness-1.4.9.zip`（约 11 MB） |
+| 当前待发布版本 | `1.5.4`（公开 manifest 仍为已发布的 1.5.3） |
 | 安装器读取的清单 | 仓库根目录 `manifest.json` |
 
-**当前版本构建：**
+**当前版本本地验证：**
 
 ```powershell
-cd 'G:\DeepSeek DSH\DSH Works\Project\Dafeiyu-Go\Dafeiyu-Go-DeepSeek-Harness-Click-To-Run'
-git add -A
-git commit -m "release: 大肥鱼Go启动器 1.4.9"
-git tag v1.4.9
-git push origin main --tags
-# 然后把 DeepSeekHarness-1.4.9.zip 传到 v1.4.9 的 Release 资产里
+.\release.ps1 -NoManifest
+.\verify.ps1 -Dist .\source\dist-1.5.4 -Version 1.5.4
 ```
 
-正常发布统一使用父级 `release-all.ps1`，它会按正确顺序处理两个仓库。
+正式产物由新 tag CI 构建，不手动上传本地验证 ZIP。提交两个仓库的版本与文档后，先推安装器 `v1.5.4` 并确认 CI 成功，再推启动器 `v1.5.4`；只推本次新 tag，不强推或批量推历史 tag。父级 `release-all.ps1` 仅使用 `-BuildOnly`。
 
 ---
 
@@ -63,7 +59,7 @@ dsh-installer                      另一个仓库 = 安装程序
 **为什么要分开**
 
 启动器一两周就可能改一次(托盘菜单、图标、动画),安装器可能几个月才动一次。
-拆开之后:启动器发新版,**安装器一个字都不用重发**,装机的人照样拿到最新启动器。
+拆开之后两边独立维护源码，但当前更新协议要求安装器与启动器同版本同步发布；安装器即使没有功能改动也需同步版本与 tag CI。
 
 ---
 
@@ -82,44 +78,35 @@ dsh-installer                      另一个仓库 = 安装程序
        └─ sha256 → 下完校验,对不上就重下
 ```
 
-拉不到清单怎么办:**回落到安装器自带的 `payload\launcher.zip`**(离线兜底)。
-所以安装器构建时仍然建议打一份 payload,但那份可以是很久以前的版本。
+当前安装器没有 `payload\launcher.zip` 离线回退。清单 / API 和可用下载源均失败时停止并提示错误；不能宣称离线安装可用。
 
 ---
 
 ## 三、发版流程
 
-### 省事版:一条命令
+### 本地构建验证
 
 ```powershell
-cd 'G:\DeepSeek DSH\DSH Works\Project\Dafeiyu-Go\Dafeiyu-Go-DeepSeek-Harness-Click-To-Run'
-.\release.ps1
+.\release.ps1 -NoManifest
+.\verify.ps1
 ```
 
-它会:读版本号 → 编译主程序 + 引导程序 → 检查产物 → 清 `.old` 残留 →
-打包 zip → 算 SHA256 → 写好 `manifest.json` → 打印后面的 git 命令。
+本地脚本编译、检查和打包，供验收使用。禁止用本地验证包哈希更新正式清单，也不手动把该包当作正式 CI 资产上传。
 
-然后:
+### 正式发布
 
-```powershell
-git add manifest.json
-git commit -m "release: v1.3.9"
-git tag v1.3.9
-git push origin main --tags
-```
-
-最后把 `DeepSeekHarness-1.3.9.zip` 传到 `v1.3.9` Release 的资产里(网页点一下,
-或 `gh release upload v1.3.9 .\DeepSeekHarness-1.3.9.zip`)。
+使用顶部当前发布清单：两仓提交并推送 `main` → 安装器本次新 tag CI 成功 → 启动器同版本新 tag CI 成功 → 核验 Release 与 npm / npmmirror 实际包 → 更新 manifest 并读回 → 更新两个 Release 产品正文并读回。
 
 ### CI 版:打 tag 自动出包
 
 `.github\workflows\release.yml` 会在推 tag 时自动编译 + 打包 + 建 Release,
 并且**校验 tag 和 csproj 版本一致**,不一致直接失败,防止发错版本。
 
-CI 出包后,`manifest.json` 里的 sha256 仍需本地跑一次 `release.ps1` 更新再提交
-(runner 上的哈希没法自动推回来)。
+CI 出包后下载实际 Release ZIP 计算 SHA-256，核验 npm / npmmirror 内含 ZIP 后再更新 `manifest.json`。不要重跑本地构建替代 CI 哈希；本地和 CI ZIP 即使来自相同源码也不保证字节一致。
 
-### 手动版:一步步来
+### 历史手动流程（不用于当前正式发布）
+
+以下 1.3.9 命令仅保留历史构建格式；当前版本同步使用父级 `set-version.ps1`，本地验证加 `-NoManifest`，正式发布仅走顶部 tag CI。
 
 #### 1. 改版本号(四个地方必须一起改)
 
@@ -208,7 +195,7 @@ Compress-Archive -Path '.\dist-1.3.9\*' -DestinationPath '.\DeepSeekHarness-1.3.
 | `version` | 是 | 语义化版本,安装器用它跟本机比对 |
 | `assets.github` | 是* | Release 资产地址。安装器会自动配镜像前缀 |
 | `assets.mirrors` | 否 | 额外备用地址,顺序越前越优先(国内源模式下) |
-| `sha256` | 推荐 | zip 校验和;留空则跳过校验 |
+| `sha256` | 正式发布必需 | 实际 CI Release ZIP 的 SHA-256；不得留空或填写本地验证包哈希 |
 | `subDirectory` | 否 | zip 里启动器在子目录时填,正常留空 |
 | `notes` | 否 | 一句话更新说明,显示在安装器的版本行上 |
 

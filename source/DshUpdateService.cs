@@ -27,8 +27,6 @@ namespace DeepSeekHarnessLauncher
     internal static class DshUpdateService
     {
         private const string PackageName = "@deepseek-ai/dsh";
-        private const int DownloadTimeoutMs = 600000;
-        private const int DownloadBufferSize = 81920;
         private const string AcceleratedRegistry =
             "https://registry.npmmirror.com/@deepseek-ai/dsh";
         private const string OfficialRegistry =
@@ -352,7 +350,8 @@ namespace DeepSeekHarnessLauncher
             DshUpdatePackage package,
             Action<long, long> progress,
             out string packagePath,
-            out string error)
+            out string error,
+            LauncherSettings settings = null)
         {
             packagePath = null;
             error = null;
@@ -367,7 +366,8 @@ namespace DeepSeekHarnessLauncher
             string stagingDirectory = Path.Combine(
                 Path.GetTempPath(),
                 "DeepSeekHarnessUpdate",
-                "dsh");
+                "dsh-" + Guid.NewGuid().ToString("N"));
+            bool downloaded = false;
             string targetPath = Path.Combine(
                 stagingDirectory,
                 "dsh-" + SanitizeFileName(package.Version) + ".tgz");
@@ -382,60 +382,39 @@ namespace DeepSeekHarnessLauncher
 
                 ServicePointManager.SecurityProtocol =
                     SecurityProtocolType.Tls12;
-                long total = GetRemoteContentLength(package.TarballUrl);
-                using (TimeoutWebClient client =
-                    new TimeoutWebClient(DownloadTimeoutMs))
+                if (progress != null)
                 {
-                    client.Headers[HttpRequestHeader.UserAgent] =
-                        Constants.UserAgent;
-                    ProxySupport.Apply(client);
-                    using (Stream source = client.OpenRead(package.TarballUrl))
-                    using (FileStream target = new FileStream(
-                        targetPath,
-                        FileMode.Create,
-                        FileAccess.Write,
-                        FileShare.None))
-                    {
-                        if (total <= 0)
-                        {
-                            string contentLength =
-                                client.ResponseHeaders[
-                                    HttpRequestHeader.ContentLength.ToString()];
-                            if (!String.IsNullOrWhiteSpace(contentLength))
-                            {
-                                Int64.TryParse(contentLength, out total);
-                            }
-                        }
+                    progress(0, -1);
+                }
 
+                string usedUrl;
+                if (!DownloadSupport.Download(
+                    new List<string> { package.TarballUrl },
+                    targetPath,
+                    settings,
+                    DownloadSupport.DefaultThreads,
+                    delegate(DownloadProgressInfo info)
+                    {
                         if (progress != null)
                         {
-                            progress(0, total);
+                            progress(info.BytesReceived, info.TotalBytes);
                         }
+                    },
+                    null,
+                    out usedUrl,
+                    out error))
+                {
+                    return false;
+                }
 
-                        byte[] buffer = new byte[DownloadBufferSize];
-                        long received = 0;
-                        int read;
-                        while ((read = source.Read(
-                                buffer,
-                                0,
-                                buffer.Length)) > 0)
-                        {
-                            target.Write(buffer, 0, read);
-                            received += read;
-                            if (progress != null)
-                            {
-                                progress(received, total);
-                            }
-                        }
-
-                        if (progress != null && total <= 0)
-                        {
-                            progress(received, received);
-                        }
-                    }
+                if (progress != null)
+                {
+                    long received = new FileInfo(targetPath).Length;
+                    progress(received, received);
                 }
 
                 packagePath = targetPath;
+                downloaded = true;
                 return true;
             }
             catch (Exception exception)
@@ -444,28 +423,9 @@ namespace DeepSeekHarnessLauncher
                 error = "DSH 更新包下载失败：" + exception.Message;
                 return false;
             }
-        }
-
-        private static long GetRemoteContentLength(string url)
-        {
-            try
+            finally
             {
-                HttpWebRequest request =
-                    (HttpWebRequest)WebRequest.Create(url);
-                request.Method = "HEAD";
-                request.UserAgent = Constants.UserAgent;
-                ProxySupport.Apply(request);
-                request.Timeout = 20000;
-                request.ReadWriteTimeout = 20000;
-                request.AllowAutoRedirect = true;
-                using (WebResponse response = request.GetResponse())
-                {
-                    return response.ContentLength;
-                }
-            }
-            catch
-            {
-                return 0;
+                if (!downloaded) { try { Directory.Delete(stagingDirectory, true); } catch { } }
             }
         }
 
@@ -1130,31 +1090,5 @@ namespace DeepSeekHarnessLauncher
             return "\"" + (value ?? String.Empty).Replace("\"", "\\\"") + "\"";
         }
 
-        private sealed class TimeoutWebClient : WebClient
-        {
-            private readonly int _timeoutMs;
-
-            public TimeoutWebClient(int timeoutMs)
-            {
-                _timeoutMs = timeoutMs;
-            }
-
-            protected override WebRequest GetWebRequest(Uri address)
-            {
-                WebRequest request = base.GetWebRequest(address);
-                if (request != null)
-                {
-                    request.Timeout = _timeoutMs;
-                    HttpWebRequest http = request as HttpWebRequest;
-                    if (http != null)
-                    {
-                        http.ReadWriteTimeout = _timeoutMs;
-                        http.AllowAutoRedirect = true;
-                    }
-                }
-
-                return request;
-            }
-        }
     }
 }

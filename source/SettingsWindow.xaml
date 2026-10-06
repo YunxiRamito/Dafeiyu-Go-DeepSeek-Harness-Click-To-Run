@@ -757,6 +757,14 @@
 
             <NavigationView.FooterMenuItems>
                 <NavigationViewItem
+                    x:Name="DownloadsNavItem"
+                    Content="下载任务"
+                    Tag="Downloads">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE896;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem
                     x:Name="DeveloperNavItem"
                     Content="开发者"
                     Tag="Developer"
@@ -921,10 +929,9 @@
                             </StackPanel>
                         </Border>
 
-                        <!-- Token 用量与余额：用量读自带插件 dsh-token-stats 写的 usage.jsonl，
-                             余额走 BalanceSupport；卡片上只留「余额 + 今日」两行，其余看图。 -->
-                        <Border Style="{StaticResource SettingsCardStyle}">
-                            <StackPanel Spacing="10">
+                        <!-- 账户摘要与用量趋势。金额口径在指标旁明确标注。 -->
+                        <Border Style="{StaticResource SettingsCardStyle}" Padding="20,18">
+                            <StackPanel Spacing="18">
                                 <Grid ColumnSpacing="8">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
@@ -960,39 +967,68 @@
                                         Click="HomeUsageRefreshButton_Click"
                                         Style="{StaticResource SettingsCompactButtonStyle}" />
                                 </Grid>
-                                <StackPanel
-                                    x:Name="HomeUsageHost"
-                                    Spacing="4" />
+                                <Grid ColumnSpacing="18">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="1.2*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="6">
+                                        <TextBlock Text="账户余额" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                        <TextBlock x:Name="HomeUsageBalanceText" Text="—" FontSize="28" FontWeight="SemiBold"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock x:Name="HomeUsageBalanceStateText" Text="正在读取…"
+                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                    </StackPanel>
+                                    <Border Grid.Column="1" Width="1" Margin="0,4"
+                                            Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                                    <StackPanel Grid.Column="2" Spacing="6">
+                                        <TextBlock Text="今日 Token" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                        <TextBlock x:Name="HomeUsageTodayTokensText" Text="—" FontSize="24" FontWeight="SemiBold" />
+                                        <TextBlock x:Name="HomeUsageTodayRequestsText" Text="等待统计"
+                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="3" Spacing="6">
+                                        <TextBlock Text="今日花费 · 估算" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                        <TextBlock x:Name="HomeUsageTodayCostText" Text="—" FontSize="24" FontWeight="SemiBold" />
+                                        <TextBlock x:Name="HomeUsageTodayLedgerText" Text="按模型单价计算"
+                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                    </StackPanel>
+                                </Grid>
 
-                                <!-- 两张图都是 Canvas 自己画的：WinUI 3 没有自带图表控件
-                                     （Windows Community Toolkit 8.x 里也没有图，老的
-                                     DataVisualization 包已下架），自己画就不用为几张柱子
-                                     给 11MB 的包塞进 SkiaSharp。 -->
-                                <StackPanel
-                                    x:Name="HomeUsageChartPanel"
-                                    Spacing="6"
-                                    Visibility="Collapsed">
-                                    <Grid ColumnSpacing="8">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="Auto" />
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock
-                                            Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                            Text="柱 = Token 用量 · 线 = 花费金额（估算）" />
-                                        <TextBlock
-                                            x:Name="HomeUsageChartPeakText"
-                                            Grid.Column="1"
-                                            Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                    </Grid>
-                                    <Canvas
-                                        x:Name="HomeUsageChart"
-                                        Height="104"
-                                        Background="Transparent"
-                                        PointerExited="HomeUsageChart_PointerExited"
-                                        PointerMoved="HomeUsageChart_PointerMoved"
-                                        SizeChanged="HomeUsageChart_SizeChanged" />
-                                </StackPanel>
+                                <Border x:Name="HomeUsageChartPanel"
+                                        Padding="14,12" CornerRadius="{ThemeResource ControlCornerRadius}"
+                                        Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                        Visibility="Collapsed">
+                                    <StackPanel Spacing="10">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="用量趋势" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="14">
+                                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                                    <Border Width="8" Height="10" VerticalAlignment="Center"
+                                                            Background="{ThemeResource AccentFillColorTertiaryBrush}" />
+                                                    <TextBlock Text="Token" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                                    <Border Width="14" Height="2" VerticalAlignment="Center"
+                                                            Background="{ThemeResource AccentFillColorDefaultBrush}" />
+                                                    <TextBlock Text="估算花费" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Grid>
+                                        <Canvas x:Name="HomeUsageChart" Height="172" Background="Transparent"
+                                                PointerExited="HomeUsageChart_PointerExited"
+                                                PointerMoved="HomeUsageChart_PointerMoved"
+                                                SizeChanged="HomeUsageChart_SizeChanged" />
+                                        <TextBlock x:Name="HomeUsageChartPeakText"
+                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                    </StackPanel>
+                                </Border>
 
                                 <TextBlock
                                     x:Name="HomeUsageHintText"
@@ -1303,7 +1339,7 @@
                                         Text="代理设置" />
                                     <TextBlock
                                         Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                        Text="启动器与在线服务是否走代理。不影响 DSH 本体。" />
+                                        Text="先选代理模式，再决定它对谁生效。默认启动器走代理，DSH 服务不接管。" />
                                 </StackPanel>
                                 <!-- 故意不写 SelectedIndex：写死的 0 会在首次布局时把选中项
                                      拽回「不使用代理」，紧接着 SelectionChanged 就把刚读出来的
@@ -1340,7 +1376,7 @@
                                     </RadioButtons>
                                     <TextBlock
                                         Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                        Text="本地代理选 http；https 走 TLS。" />
+                                        Text="本地代理选 http；https 走 TLS。SOCKS5 仅支持启动器，不能用于 DSH 服务。" />
                                     <Grid ColumnSpacing="12">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*" />
@@ -1363,6 +1399,31 @@
                                     </Grid>
                                     </StackPanel>
                                 </ContentControl>
+
+                                <!-- 生效范围：两个开关互不影响。 -->
+                                <StackPanel Spacing="2">
+                                    <ToggleSwitch
+                                        x:Name="ProxyForLauncherToggle"
+                                        Header="对启动器生效"
+                                        OffContent="关闭"
+                                        OnContent="开启" />
+                                    <TextBlock
+                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                        Text="更新检查、插件目录、下载，以及启动器拉起的 pnpm / npm / git。" />
+                                </StackPanel>
+                                <StackPanel Spacing="2">
+                                    <ToggleSwitch
+                                        x:Name="ProxyForDshToggle"
+                                        Header="对 DSH 服务生效"
+                                        OffContent="关闭"
+                                        OnContent="开启" />
+                                    <TextBlock
+                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                        Text="接管 DSH 的 HTTP/HTTPS 代理；不使用代理模式强制直连。关闭时保留 DSH 原环境。改动后需要重启服务。" />
+                                    <TextBlock x:Name="ProxyDshErrorText"
+                                        Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                                        TextWrapping="Wrap" Visibility="Collapsed" />
+                                </StackPanel>
                             </StackPanel>
                         </Border>
 
@@ -3573,7 +3634,7 @@
                                     FontSize="14"
                                     FontWeight="SemiBold"
                                     Tapped="VersionText_Tapped"
-                                    Text="v1.5.3"
+                                    Text="v1.5.4"
                                     ToolTipService.ToolTip="连续点击五次可打开开发者管理中心" />
                             </Grid>
                         </Border>
@@ -3800,6 +3861,42 @@
                     </StackPanel>
                     <!-- 开发者管理：模块化。加新板块 = 左边 DeveloperModuleList 加一条 +
                          右边加一个同名面板，并在代码的模块表里登记（见 HANDOVER）。 -->
+                    <StackPanel
+                        x:Name="DownloadsPage"
+                        Spacing="16"
+                        Visibility="Collapsed">
+                        <TextBlock Style="{StaticResource SettingsPageTitleTextStyle}" Text="下载任务" />
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="DownloadSummaryText" VerticalAlignment="Center" TextWrapping="Wrap" />
+                            <Button x:Name="ClearDownloadHistoryButton" Grid.Column="1"
+                                Style="{StaticResource SettingsIconButtonStyle}"
+                                ToolTipService.ToolTip="清空历史记录"
+                                Click="ClearDownloadHistoryButton_Click">
+                                <FontIcon Glyph="&#xE74D;" FontSize="14" />
+                            </Button>
+                        </Grid>
+                        <Pivot x:Name="DownloadsPivot" SelectionChanged="DownloadsPivot_SelectionChanged">
+                            <PivotItem Header="进行中">
+                                <StackPanel Spacing="12">
+                                    <TextBlock x:Name="ActiveDownloadsEmptyText" Text="暂无进行中的下载" TextWrapping="Wrap"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <StackPanel x:Name="ActiveDownloadRows" Spacing="0" />
+                                </StackPanel>
+                            </PivotItem>
+                            <PivotItem Header="历史下载">
+                                <StackPanel Spacing="12">
+                                    <TextBlock x:Name="DownloadHistoryEmptyText" Text="暂无下载记录" TextWrapping="Wrap"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <StackPanel x:Name="DownloadHistoryRows" Spacing="0" />
+                                </StackPanel>
+                            </PivotItem>
+                        </Pivot>
+                    </StackPanel>
+
                     <StackPanel
                         x:Name="DeveloperPage"
                         Spacing="12"

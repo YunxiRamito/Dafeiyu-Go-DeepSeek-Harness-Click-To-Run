@@ -248,13 +248,14 @@ namespace DeepSeekHarnessLauncher
                                     continue;
                                 }
 
-                                long input = ReadLong(root, "inputTokens");
-                                long output = ReadLong(root, "outputTokens");
-                                long cacheRead = ReadLong(root, "cacheReadTokens");
-                                long cacheWrite = ReadLong(root, "cacheWriteTokens");
-                                long reasoning = ReadLong(root, "reasoningTokens");
-
-                                long total = input + output + cacheRead + cacheWrite + reasoning;
+                                // Keep summaries and daily plots on the same local-day, non-future range.
+                                if (stamp > now) continue;
+                                long input = Math.Max(0, ReadLong(root, "inputTokens"));
+                                long output = Math.Max(0, ReadLong(root, "outputTokens"));
+                                long cacheRead = Math.Max(0, ReadLong(root, "cacheReadTokens"));
+                                long cacheWrite = Math.Max(0, ReadLong(root, "cacheWriteTokens"));
+                                // Reasoning is a breakdown of output, not an additional billable count.
+                                long total = input + output + cacheRead + cacheWrite;
                                 if (total < 0)
                                 {
                                     total = 0;
@@ -372,6 +373,25 @@ namespace DeepSeekHarnessLauncher
 
             summary.HasData = summary.Records > 0;
             return summary;
+        }
+
+        internal static string FormatAxisValue(double value, bool currency)
+        {
+            if (Double.IsNaN(value) || Double.IsInfinity(value) || value < 0) return "—";
+            string prefix = currency ? "¥" : String.Empty;
+            if (value == 0) return prefix + "0";
+            // Short suffixes preserve magnitude even for values beyond a trillion.
+            double divisor = value >= 1e12 ? 1e12 : value >= 1e8 ? 1e8 : value >= 1e4 ? 1e4 : value >= 1e3 ? 1e3 : 1;
+            string suffix = divisor == 1e12 ? "兆" : divisor == 1e8 ? "亿" : divisor == 1e4 ? "万" : divisor == 1e3 ? "千" : String.Empty;
+            double scaled = value / divisor;
+            string number;
+            if (scaled >= 1000 || scaled < 1)
+                number = scaled.ToString("0E+0", CultureInfo.InvariantCulture);
+            else
+                number = scaled.ToString("0", CultureInfo.InvariantCulture);
+            // Positive sub-unit costs must not masquerade as zero.
+            if (number == "0") number = scaled.ToString("0E+0", CultureInfo.InvariantCulture);
+            return prefix + number + suffix;
         }
 
         private static long ReadLong(JsonElement root, string name)

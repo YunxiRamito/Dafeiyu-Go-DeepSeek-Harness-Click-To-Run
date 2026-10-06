@@ -34,7 +34,6 @@ namespace DeepSeekHarnessLauncher
         private const string InstallerFolderName = ".installer";
         private const string InstallerExeName = "DSH-Installer.exe";
         private const string UninstallerExeName = "DSH-Uninstall.exe";
-        private const int DownloadTimeoutMs = 300000;
         private const string CacheFileName = "InstallerRelease.json";
 
         /// <summary>
@@ -456,7 +455,8 @@ namespace DeepSeekHarnessLauncher
             InstallerUpdatePackage package,
             string dshRoot,
             Action<long, long> progress,
-            out string error)
+            out string error,
+            LauncherSettings settings = null)
         {
             error = null;
             if (package == null || !IsValidSha256(package.Sha256))
@@ -484,7 +484,25 @@ namespace DeepSeekHarnessLauncher
                 }
 
                 Directory.CreateDirectory(stagingRoot);
-                DownloadFile(package.SetupUrl, setupPath, progress);
+                string usedUrl;
+                if (!DownloadSupport.Download(
+                    new List<string> { package.SetupUrl },
+                    setupPath,
+                    settings,
+                    DownloadSupport.DefaultThreads,
+                    delegate(DownloadProgressInfo info)
+                    {
+                        if (progress != null)
+                        {
+                            progress(info.BytesReceived, info.TotalBytes);
+                        }
+                    },
+                    null,
+                    out usedUrl,
+                    out error))
+                {
+                    return false;
+                }
 
                 string actualHash = UpdateSupport.ComputeSha256(setupPath);
                 if (!String.Equals(
@@ -549,32 +567,6 @@ namespace DeepSeekHarnessLauncher
                     "application/vnd.github+json";
                 ProxySupport.Apply(client);
                 return client.DownloadString(url);
-            }
-        }
-
-        private static void DownloadFile(
-            string url,
-            string target,
-            Action<long, long> progress)
-        {
-            using (TimeoutWebClient client =
-                new TimeoutWebClient(DownloadTimeoutMs))
-            {
-                client.Headers[HttpRequestHeader.UserAgent] =
-                    Constants.UserAgent;
-                ProxySupport.Apply(client);
-                if (progress != null)
-                {
-                    client.DownloadProgressChanged +=
-                        delegate(object sender, DownloadProgressChangedEventArgs args)
-                        {
-                            progress(
-                                args.BytesReceived,
-                                args.TotalBytesToReceive);
-                        };
-                }
-
-                client.DownloadFile(url, target);
             }
         }
 
