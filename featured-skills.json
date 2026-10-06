@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAtUtc": "2026-10-06T13:02:12.8560389Z",
+  "updatedAtUtc": "2026-10-06T13:03:36.1556392Z",
   "items": [
     {
       "owner": "vercel-labs",
@@ -11,6 +11,17 @@
       "category": "AI 与自动化",
       "note": "Helps users discover and install agent skills when they ask questions like \"how do I do X\", \"find a skill for X\", \"is there a skill that can...\", or express interest in extending capabilities. This skill should be used when the user is looking for functionality that might exist as an installable skill.",
       "order": 0,
+      "defaultBranch": "main"
+    },
+    {
+      "owner": "anthropics",
+      "repository": "skills",
+      "path": "skills/frontend-design",
+      "name": "frontend-design",
+      "description": "Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and making choices that don't read as templated defaults.",
+      "category": "前端与设计",
+      "note": "Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and making choices that don't read as templated defaults.",
+      "order": 1,
       "defaultBranch": "main"
     }
   ]
