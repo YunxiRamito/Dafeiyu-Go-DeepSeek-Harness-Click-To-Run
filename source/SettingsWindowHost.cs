@@ -30,6 +30,17 @@ namespace DeepSeekHarnessLauncher
         public Action<string> ApplyApiKey { get; set; } = delegate { };
         public Action RefreshBalance { get; set; } = delegate { };
         public Action SynchronizeInstallerPaths { get; set; } = delegate { };
+
+        /// <summary>
+        /// 「修复安装器」：本机安装器版本读不出来或文件缺失时，用户显式要求重装一次。
+        /// 安装器与启动器独立更新，平时不会自动重装。
+        /// </summary>
+        public Action RepairInstaller { get; set; } = delegate { };
+
+        /// <summary>读取本机安装器版本与判定结果，用于设置页显示（null = 读不到）。</summary>
+        public Func<string> GetInstallerVersion { get; set; } =
+            delegate { return null; };
+
         public Action<string> Log { get; set; } = delegate { };
 
         public event Action UpdateStateChanged = delegate { };

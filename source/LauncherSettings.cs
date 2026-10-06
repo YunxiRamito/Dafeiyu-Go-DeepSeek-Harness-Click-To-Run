@@ -65,6 +65,16 @@ namespace DeepSeekHarnessLauncher
 
         public string ApiKeyProtected { get; set; } = String.Empty;
         public string GitHubTokenProtected { get; set; } = String.Empty;
+
+        /// <summary>
+        /// 技能/插件文档中文翻译用的模型。复用 API 页那把 Key，不另设密钥。
+        /// 只有用户点"翻译成中文"才会联网。
+        /// </summary>
+        public string TranslationModel { get; set; } = "deepseek-chat";
+
+        /// <summary>翻译用的接口根地址。默认和余额查询同一个官方域名。</summary>
+        public string TranslationBaseUrl { get; set; } = "https://api.deepseek.com";
+
         public bool DeveloperModeUnlocked { get; set; }
         public bool LegacyApiKeyMigrationCompleted { get; set; }
         public DateTime? ApiKeyValidatedUtc { get; set; }

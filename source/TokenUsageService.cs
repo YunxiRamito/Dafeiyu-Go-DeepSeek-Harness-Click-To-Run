@@ -381,16 +381,34 @@ namespace DeepSeekHarnessLauncher
             string prefix = currency ? "¥" : String.Empty;
             if (value == 0) return prefix + "0";
             // Short suffixes preserve magnitude even for values beyond a trillion.
-            double divisor = value >= 1e12 ? 1e12 : value >= 1e8 ? 1e8 : value >= 1e4 ? 1e4 : value >= 1e3 ? 1e3 : 1;
-            string suffix = divisor == 1e12 ? "兆" : divisor == 1e8 ? "亿" : divisor == 1e4 ? "万" : divisor == 1e3 ? "千" : String.Empty;
+            double divisor = value >= 1e20 ? 1e20
+                : value >= 1e16 ? 1e16
+                : value >= 1e12 ? 1e12
+                : value >= 1e8 ? 1e8
+                : value >= 1e4 ? 1e4
+                : value >= 1e3 ? 1e3
+                : 1;
+            string suffix = divisor == 1e20 ? "垓"
+                : divisor == 1e16 ? "京"
+                : divisor == 1e12 ? "兆"
+                : divisor == 1e8 ? "亿"
+                : divisor == 1e4 ? "万"
+                : divisor == 1e3 ? "千"
+                : String.Empty;
             double scaled = value / divisor;
-            string number;
-            if (scaled >= 1000 || scaled < 1)
-                number = scaled.ToString("0E+0", CultureInfo.InvariantCulture);
-            else
-                number = scaled.ToString("0", CultureInfo.InvariantCulture);
-            // Positive sub-unit costs must not masquerade as zero.
-            if (number == "0") number = scaled.ToString("0E+0", CultureInfo.InvariantCulture);
+            // 刻度只用普通小数：科学计数法混在「万/亿」里会变成 8E+3万 这种怪东西。
+            string format = scaled >= 100 ? "0" : scaled >= 10 ? "0.#" : "0.##";
+            string number = scaled.ToString(format, CultureInfo.InvariantCulture);
+            if (number == "0")
+            {
+                // 正的零头不能显示成 0（例如 ¥0.004），退到四位小数；再小就明说"小于"。
+                number = scaled.ToString("0.####", CultureInfo.InvariantCulture);
+                if (number == "0")
+                {
+                    return prefix + "<" + (currency ? "0.0001" : "1") + suffix;
+                }
+            }
+
             return prefix + number + suffix;
         }
 

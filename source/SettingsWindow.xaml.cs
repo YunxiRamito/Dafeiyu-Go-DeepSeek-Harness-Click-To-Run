@@ -5,6 +5,7 @@ using System.IO;
 using System.Text;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -12,6 +13,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Media.Animation;
+using Windows.Foundation;
 using Windows.Graphics;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Storage.Pickers;
@@ -56,7 +58,6 @@ namespace DeepSeekHarnessLauncher
             new Dictionary<string, CheckBox>();
 
         private string _backupExportDirectory;
-        private LauncherHealthReport _healthReport;
 
         private string _backupImportArchive;
 
@@ -118,6 +119,8 @@ namespace DeepSeekHarnessLauncher
             RefreshComponents();
             WireSettingsEvents();
             InitializeDownloadCenter();
+            BuildSettingsGroups();
+            BuildSettingsSearchIndex();
 
             SettingsRoot.SizeChanged += SettingsRoot_SizeChanged;
             SettingsRoot.ActualThemeChanged += SettingsRoot_ActualThemeChanged;
@@ -127,6 +130,7 @@ namespace DeepSeekHarnessLauncher
             SettingsNavigationView.SelectedItem = HomeNavItem;
             SelectPage("Home");
             ApplyResponsiveLayout(SettingsRoot.ActualWidth > 0 ? SettingsRoot.ActualWidth : DefaultWindowWidth);
+            DispatcherQueue.TryEnqueue(UpdateTitleBarSearchRegion);
             _ = RefreshApiBalanceAsync();
         }
 
@@ -212,6 +216,678 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
+        // Keep original page instances and bindings inside each group's Pivot.
+        private bool _suppressSectionSelection;
+        private readonly Dictionary<string, PivotItem> _groupTabs =
+            new Dictionary<string, PivotItem>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> _lastGroupTab =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        private void BuildSettingsGroups()
+        {
+            AddGroupTab(BasicTabs, "General", "常规", GeneralPage);
+            AddGroupTab(BasicTabs, "Alerts", "提醒", AlertsPage);
+            AddGroupTab(BasicTabs, "Theme", "外观", ThemePage);
+            AddGroupTab(BasicTabs, "Api", "API 与翻译", ApiPage);
+            AddGroupTab(FeaturesTabs, "Plugins", "插件", PluginsPage);
+            AddGroupTab(FeaturesTabs, "Skills", "技能", SkillsPage);
+            AddGroupTab(SystemTabs, "Service", "服务", ServicePage);
+            AddGroupTab(SystemTabs, "Components", "组件", ComponentsPage);
+            // 更新单拎成一级入口；开发者是左下角的隐藏入口，不是常规设置页。
+            SetDeveloperTabVisible(false);
+            _lastGroupTab["Basic"] = "General";
+            _lastGroupTab["Features"] = "Plugins";
+            _lastGroupTab["System"] = "Service";
+        }
+
+        private void AddGroupTab(Pivot pivot, string tag, string header, FrameworkElement page)
+        {
+            SettingsContentHost.Children.Remove(page);
+            page.Visibility = Visibility.Visible;
+            var item = new PivotItem { Header = header, Tag = tag, Content = page, Margin = new Thickness(0, 20, 0, 0) };
+            pivot.Items.Add(item);
+            _groupTabs[tag] = item;
+        }
+
+        /// <summary>开发者入口只控制左下角那个隐藏项，它不属于任何一级分类。</summary>
+        private void SetDeveloperTabVisible(bool visible)
+        {
+            DeveloperNavItem.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void SelectGroupTab(Pivot pivot, string tag)
+        {
+            if (_groupTabs.TryGetValue(tag, out PivotItem item))
+            {
+                _suppressSectionSelection = true;
+                try { pivot.SelectedItem = item; }
+                finally { _suppressSectionSelection = false; }
+            }
+        }
+
+        private void SettingsSection_SelectionChanged(object sender, SelectionChangedEventArgs args)
+        {
+            if (_initializing || _suppressSectionSelection || args.AddedItems.Count == 0)
+                return;
+            if (args.AddedItems[0] is PivotItem item && item.Tag is string tag)
+                SelectPage(tag);
+        }
+        /// <summary>旧页标签 → 一级入口。开发者有自己的左下角入口，不参与分组。</summary>
+        private static string GroupOf(string tag)
+        {
+            switch (tag)
+            {
+                case "General":
+                case "Theme":
+                case "Api":
+                case "Alerts":
+                    return "Basic";
+                case "Plugins":
+                case "Skills":
+                    return "Features";
+                case "Service":
+                case "Components":
+                    return "System";
+                default:
+                    return null;
+            }
+        }
+
+        // ---------------------------------------------------------------- 设置搜索
+
+        private List<SettingsSearchEntry> _settingsSearchIndex =
+            new List<SettingsSearchEntry>();
+
+        private readonly List<SettingsSearchSuggestion> _settingsSearchSuggestions =
+            new List<SettingsSearchSuggestion>();
+
+        private DispatcherQueueTimer _settingsSearchTimer;
+
+        /// <summary>
+        /// 一次性采集设置索引。
+        ///
+        /// 刻意**不是**每次输入都扫视觉树：这里在窗口构造时走一遍 XAML 对象树，
+        /// 后续输入只跑纯匹配。走对象树而不是视觉树：分组页面只有当前选中项
+        /// 挂在内容宿主里，扫视觉树会漏掉大部分设置项。
+        /// 标题/描述直接取真实控件文案，不会和界面上的字慢慢对不上。
+        /// </summary>
+        private void BuildSettingsSearchIndex()
+        {
+            _settingsSearchIndex = new List<SettingsSearchEntry>();
+
+            CollectSearchEntries(HomePage, "Home", "主页", null);
+            CollectSearchEntries(GeneralPage, "General", "常规", "通用");
+            CollectSearchEntries(ThemePage, "Theme", "外观", "通用");
+            CollectSearchEntries(ApiPage, "Api", "API", "通用");
+            CollectSearchEntries(AlertsPage, "Alerts", "提醒", "通用");
+            CollectSearchEntries(PluginsPage, "Plugins", "插件", "拓展");
+            CollectSearchEntries(SkillsPage, "Skills", "技能", "拓展");
+            CollectSearchEntries(DeveloperPage, "Developer", "开发者", null);
+            CollectSearchEntries(ServicePage, "Service", "服务", "核心");
+            CollectSearchEntries(ComponentsPage, "Components", "组件", "核心");
+            CollectSearchEntries(UpdatesPage, "Updates", "更新", null);
+            CollectSearchEntries(DownloadsPage, "Downloads", "下载任务", null);
+            CollectSearchEntries(AboutPage, "About", "关于", null);
+
+            // 下载页不是标准的「行」布局，采不到条目；单独补一条页面级入口，
+            // 这样搜「下载」或者首字母 xz 都能找到它（入口本身默认是藏着的）。
+            _settingsSearchIndex.Add(new SettingsSearchEntry
+            {
+                OptionId = "Downloads:Page",
+                Title = "下载任务",
+                Description = "下载中的任务与历史记录。",
+                Group = String.Empty,
+                PageTag = "Downloads",
+                PageTitle = "下载",
+                Alias = AliasForPage("Downloads"),
+                Initials = SettingsSearchInitials.Build("下载任务" + "下载"),
+                Anchor = DownloadsPage,
+                Enabled = true
+            });
+
+            _host.Log("设置搜索索引：" + _settingsSearchIndex.Count + " 条");
+        }
+
+        private void CollectSearchEntries(
+            FrameworkElement page,
+            string pageTag,
+            string pageTitle,
+            string group)
+        {
+            if (page == null)
+            {
+                return;
+            }
+
+            Style rowStyle = SettingsRoot.Resources["SettingsRowGridStyle"] as Style;
+            Style titleStyle = SettingsRoot.Resources["SettingsRowTitleTextStyle"] as Style;
+            Style descriptionStyle =
+                SettingsRoot.Resources["SettingsRowDescriptionTextStyle"] as Style;
+            if (rowStyle == null || titleStyle == null)
+            {
+                return;
+            }
+
+            int index = 0;
+            WalkSettingsSearch(
+                page,
+                pageTag,
+                pageTitle,
+                group,
+                rowStyle,
+                titleStyle,
+                descriptionStyle,
+                AliasForPage(pageTag),
+                ref index);
+        }
+
+        private void WalkSettingsSearch(
+            DependencyObject node,
+            string pageTag,
+            string pageTitle,
+            string group,
+            Style rowStyle,
+            Style titleStyle,
+            Style descriptionStyle,
+            string alias,
+            ref int index)
+        {
+            Grid row = node as Grid;
+            if (row != null && ReferenceEquals(row.Style, rowStyle))
+            {
+                TextBlock title = FindStyledText(row, titleStyle);
+                if (title != null && !String.IsNullOrWhiteSpace(title.Text))
+                {
+                    TextBlock description = FindStyledText(row, descriptionStyle);
+                    string optionId = pageTag + ":" + StableOptionName(row, index);
+                    index++;
+                    _settingsSearchIndex.Add(new SettingsSearchEntry
+                    {
+                        OptionId = optionId,
+                        Title = Collapse(title.Text),
+                        Description = Collapse(description == null
+                            ? String.Empty
+                            : description.Text),
+                        Group = String.IsNullOrWhiteSpace(group) ? pageTitle : group,
+                        PageTag = pageTag,
+                        PageTitle = pageTitle,
+                        Alias = alias,
+                        // 拼音首字母：标题 + 所在页名，比如「启动端口」在「常规」页 → qddkcg
+                        Initials = SettingsSearchInitials.Build(
+                            title.Text + pageTitle + alias),
+                        Anchor = row,
+                        // 行本身没有 IsEnabled（Grid 不是 Control），
+                        // 要看行里那个真正可交互的控件。
+                        Enabled = row.Visibility == Visibility.Visible
+                            && IsRowInteractive(row)
+                    });
+                }
+
+                // 行内不再往深里找行，避免嵌套 Grid 重复计数。
+                return;
+            }
+
+            foreach (DependencyObject child in SearchChildren(node))
+            {
+                WalkSettingsSearch(
+                    child,
+                    pageTag,
+                    pageTitle,
+                    group,
+                    rowStyle,
+                    titleStyle,
+                    descriptionStyle,
+                    alias,
+                    ref index);
+            }
+        }
+
+        /// <summary>沿 XAML 对象树取子节点（未选中的 Tab 也要能取到内容）。</summary>
+        private static IEnumerable<DependencyObject> SearchChildren(DependencyObject node)
+        {
+            Panel panel = node as Panel;
+            if (panel != null)
+            {
+                for (int index = 0; index < panel.Children.Count; index++)
+                {
+                    yield return panel.Children[index];
+                }
+
+                yield break;
+            }
+
+            TabView tabs = node as TabView;
+            if (tabs != null)
+            {
+                for (int index = 0; index < tabs.TabItems.Count; index++)
+                {
+                    DependencyObject item = tabs.TabItems[index] as DependencyObject;
+                    if (item != null)
+                    {
+                        yield return item;
+                    }
+                }
+
+                yield break;
+            }
+
+            Border border = node as Border;
+            if (border != null && border.Child != null)
+            {
+                yield return border.Child;
+                yield break;
+            }
+
+            ContentControl content = node as ContentControl;
+            if (content != null && content.Content is DependencyObject contentChild)
+            {
+                yield return contentChild;
+                yield break;
+            }
+
+            ScrollViewer scroller = node as ScrollViewer;
+            if (scroller != null && scroller.Content is DependencyObject scrollerChild)
+            {
+                yield return scrollerChild;
+            }
+        }
+
+        /// <summary>行里那个真正可交互的控件是否可用（Grid 自己没有 IsEnabled）。</summary>
+        private static bool IsRowInteractive(DependencyObject node)
+        {
+            Control control = FindFirstControl(node);
+            return control == null || control.IsEnabled;
+        }
+
+        private static Control FindFirstControl(DependencyObject node)
+        {
+            Control control = node as Control;
+            if (control != null)
+            {
+                return control;
+            }
+
+            foreach (DependencyObject child in SearchChildren(node))
+            {
+                Control found = FindFirstControl(child);
+                if (found != null)
+                {
+                    return found;
+                }
+            }
+
+            return null;
+        }
+
+        private static TextBlock FindStyledText(DependencyObject node, Style style)
+        {
+            TextBlock block = node as TextBlock;
+            if (block != null)
+            {
+                return ReferenceEquals(block.Style, style) ? block : null;
+            }
+
+            foreach (DependencyObject child in SearchChildren(node))
+            {
+                TextBlock found = FindStyledText(child, style);
+                if (found != null)
+                {
+                    return found;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>行里第一个具名控件就是稳定 id；没有就退回行序号。</summary>
+        private static string StableOptionName(DependencyObject node, int fallback)
+        {
+            FrameworkElement element = node as FrameworkElement;
+            if (element != null && !String.IsNullOrWhiteSpace(element.Name))
+            {
+                return element.Name;
+            }
+
+            foreach (DependencyObject child in SearchChildren(node))
+            {
+                string name = StableOptionName(child, -1);
+                if (!String.IsNullOrEmpty(name))
+                {
+                    return name;
+                }
+            }
+
+            return "row" + fallback.ToString();
+        }
+
+        private static string Collapse(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value))
+            {
+                return String.Empty;
+            }
+
+            return SettingsSearchMatcher.NormalizeQuery(
+                value.Replace('\r', ' ').Replace('\n', ' '));
+        }
+
+        /// <summary>少量实用别名，方便中英混着搜。</summary>
+        private static string AliasForPage(string pageTag)
+        {
+            switch (pageTag)
+            {
+                case "General":
+                    return "常规 启动 自启 端口 port 语言";
+                case "Theme":
+                    return "外观 主题 theme 深色 浅色 圆角 窗口风格";
+                case "Api":
+                    return "api key 密钥 token 模型 余额";
+                case "Alerts":
+                    return "提醒 通知 阈值 余额提醒";
+                case "Service":
+                    return "服务 端口 重启 停止 service";
+                case "Components":
+                    return "组件 node git python pnpm 运行库 便携";
+                case "Updates":
+                    return "更新 升级 通道 检查 update 安装器";
+                case "Plugins":
+                    return "插件 plugin 市场 安装 卸载";
+                case "Skills":
+                    return "技能 skill 市场 安装 卸载";
+                case "Downloads":
+                    return "下载 任务 历史 download";
+                case "Developer":
+                    return "开发者 developer 推荐 公告";
+                case "About":
+                    return "关于 版本 开源 许可 about";
+                default:
+                    return String.Empty;
+            }
+        }
+
+        private void SettingsSearchBox_TextChanged(
+            AutoSuggestBox sender,
+            AutoSuggestBoxTextChangedEventArgs args)
+        {
+            if (args.Reason != AutoSuggestionBoxTextChangeReason.UserInput)
+            {
+                return;
+            }
+
+            // 本地小索引其实立刻能算完；防抖只是别让输入法连打时结果列表乱跳。
+            if (_settingsSearchTimer == null)
+            {
+                _settingsSearchTimer = DispatcherQueue.CreateTimer();
+                _settingsSearchTimer.Interval = TimeSpan.FromMilliseconds(180);
+                _settingsSearchTimer.IsRepeating = false;
+                _settingsSearchTimer.Tick += delegate
+                {
+                    _settingsSearchTimer.Stop();
+                    RunSettingsSearch(SettingsSearchBox.Text);
+                };
+            }
+
+            _settingsSearchTimer.Stop();
+            _settingsSearchTimer.Start();
+        }
+
+        private void SettingsSearchBox_SuggestionChosen(
+            AutoSuggestBox sender,
+            AutoSuggestBoxSuggestionChosenEventArgs args)
+        {
+            SettingsSearchSuggestion suggestion =
+                args.SelectedItem as SettingsSearchSuggestion;
+            if (suggestion == null || suggestion.Entry == null)
+            {
+                return;
+            }
+
+            RevealSearchTarget(suggestion.Entry);
+        }
+
+        private void SettingsSearchBox_QuerySubmitted(
+            AutoSuggestBox sender,
+            AutoSuggestBoxQuerySubmittedEventArgs args)
+        {
+            SettingsSearchSuggestion chosen =
+                args.ChosenSuggestion as SettingsSearchSuggestion;
+            if (chosen != null && chosen.Entry != null)
+            {
+                HideSettingsSearchPanel();
+                RevealSearchTarget(chosen.Entry);
+                return;
+            }
+
+            RunSettingsSearch(sender.Text);
+            if (_settingsSearchSuggestions.Count > 0)
+            {
+                HideSettingsSearchPanel();
+                RevealSearchTarget(_settingsSearchSuggestions[0].Entry);
+            }
+        }
+
+        /// <summary>跑一次本地匹配并刷新候选列表。不联网、不调模型、不写设置。</summary>
+        private void RunSettingsSearch(string query)
+        {
+            _settingsSearchSuggestions.Clear();
+            // 有多少条就显示多少条，不再截断成"前 8 项"
+            List<SettingsSearchEntry> matches = SettingsSearchMatcher.Search(
+                _settingsSearchIndex,
+                query,
+                0);
+
+            for (int index = 0; index < matches.Count; index++)
+            {
+                _settingsSearchSuggestions.Add(new SettingsSearchSuggestion
+                {
+                    Entry = matches[index]
+                });
+            }
+
+            SettingsSearchResults.ItemsSource = null;
+            SettingsSearchResults.ItemsSource = _settingsSearchSuggestions;
+            SettingsSearchResults.SelectedIndex = -1;
+
+            // 查询为空就整个收起；有词就垂下面板，没命中也在底部说一句。
+            if (SettingsSearchMatcher.NormalizeQuery(query).Length == 0)
+            {
+                HideSettingsSearchPanel();
+                return;
+            }
+
+            SettingsSearchHint.Text = matches.Count == 0
+                ? "没有匹配项"
+                : "已找到 " + matches.Count + " 个结果";
+            // 没有结果就别留空列表和那条分隔线，只显示一句"没有匹配项"。
+            SettingsSearchResults.Visibility = matches.Count == 0
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+            SettingsSearchFooter.BorderThickness = matches.Count == 0
+                ? new Thickness(0)
+                : new Thickness(0, 1, 0, 0);
+            SettingsSearchPanel.Visibility = Visibility.Visible;
+            SetSearchShellFocused(true);
+        }
+
+        private void HideSettingsSearchPanel()
+        {
+            if (SettingsSearchPanel != null)
+            {
+                SettingsSearchPanel.Visibility = Visibility.Collapsed;
+            }
+
+            // 文本清空但焦点还在输入框时，胶囊描边留着。
+            SetSearchShellFocused(
+                SettingsSearchBox != null
+                && SettingsSearchBox.FocusState != FocusState.Unfocused);
+        }
+
+        private void SettingsSearchResults_ItemClick(
+            object sender,
+            ItemClickEventArgs args)
+        {
+            SettingsSearchSuggestion suggestion = args.ClickedItem as SettingsSearchSuggestion;
+            if (suggestion == null || suggestion.Entry == null)
+            {
+                return;
+            }
+
+            HideSettingsSearchPanel();
+            RevealSearchTarget(suggestion.Entry);
+        }
+
+        /// <summary>上下键选候选、回车打开、Esc 收起。</summary>
+        private void SettingsSearchBox_PreviewKeyDown(
+            object sender,
+            KeyRoutedEventArgs args)
+        {
+            if (SettingsSearchPanel.Visibility != Visibility.Visible)
+            {
+                return;
+            }
+
+            int count = _settingsSearchSuggestions.Count;
+            switch (args.Key)
+            {
+                case Windows.System.VirtualKey.Down:
+                    if (count == 0)
+                    {
+                        break;
+                    }
+
+                    SettingsSearchResults.SelectedIndex =
+                        Math.Min(count - 1, SettingsSearchResults.SelectedIndex + 1);
+                    SettingsSearchResults.ScrollIntoView(SettingsSearchResults.SelectedItem);
+                    args.Handled = true;
+                    break;
+                case Windows.System.VirtualKey.Up:
+                    if (count == 0)
+                    {
+                        break;
+                    }
+
+                    SettingsSearchResults.SelectedIndex =
+                        Math.Max(0, SettingsSearchResults.SelectedIndex - 1);
+                    SettingsSearchResults.ScrollIntoView(SettingsSearchResults.SelectedItem);
+                    args.Handled = true;
+                    break;
+                case Windows.System.VirtualKey.Enter:
+                    int index = SettingsSearchResults.SelectedIndex;
+                    if (index >= 0 && index < count)                    {
+                        HideSettingsSearchPanel();
+                        RevealSearchTarget(_settingsSearchSuggestions[index].Entry);
+                        args.Handled = true;
+                    }
+                    break;
+                case Windows.System.VirtualKey.Escape:
+                    HideSettingsSearchPanel();
+                    args.Handled = true;
+                    break;
+            }
+        }
+
+        /// <summary>跳到目标页并滚动到具体那一行，短暂强调一下。</summary>
+        private void RevealSearchTarget(SettingsSearchEntry entry)
+        {
+            if (entry == null)
+            {
+                return;
+            }
+
+            try
+            {
+                SelectPage(entry.PageTag);
+            }
+            catch (Exception exception)
+            {
+                _host.Log("搜索跳转失败：" + exception.Message);
+                return;
+            }
+
+            // 等这一轮布局跑完，目标元素才真正落到可视树里。
+            DispatcherQueue.TryEnqueue(
+                DispatcherQueuePriority.Low,
+                delegate
+                {
+                    FrameworkElement anchor = entry.Anchor as FrameworkElement;
+                    if (anchor == null)
+                    {
+                        return;
+                    }
+
+                    ExpandSearchAncestors(anchor);
+                    try
+                    {
+                        anchor.StartBringIntoView(new BringIntoViewOptions
+                        {
+                            AnimationDesired = true
+                        });
+                    }
+                    catch
+                    {
+                    }
+
+                    FlashSearchAnchor(anchor);
+                });
+        }
+
+        /// <summary>目标若在折叠区里（Expander），先展开再滚动。</summary>
+        private static void ExpandSearchAncestors(DependencyObject node)
+        {
+            try
+            {
+                DependencyObject current = node;
+                while (current != null)
+                {
+                    Expander expander = current as Expander;
+                    if (expander != null && !expander.IsExpanded)
+                    {
+                        expander.IsExpanded = true;
+                    }
+
+                    current = VisualTreeHelper.GetParent(current);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>短暂高亮目标行，并把键盘焦点交过去。</summary>
+        private void FlashSearchAnchor(FrameworkElement anchor)
+        {
+            Panel panel = anchor as Panel;
+            Brush original = panel == null ? null : panel.Background;
+            if (panel != null)
+            {
+                panel.Background = new SolidColorBrush(
+                    Windows.UI.Color.FromArgb(56, 255, 185, 0));
+            }
+
+            try
+            {
+                anchor.Focus(FocusState.Programmatic);
+            }
+            catch
+            {
+            }
+
+            if (panel == null)
+            {
+                return;
+            }
+
+            DispatcherQueueTimer timer = DispatcherQueue.CreateTimer();
+            timer.Interval = TimeSpan.FromMilliseconds(1400);
+            timer.IsRepeating = false;
+            timer.Tick += delegate
+            {
+                timer.Stop();
+                panel.Background = original;
+            };
+            timer.Start();
+        }
+
         private void ApplyAdaptiveIcons()
         {
             string folder = CornerRadiusHelper.UsesWindows11Style
@@ -220,14 +896,9 @@ namespace DeepSeekHarnessLauncher
                     ? "SettingsNavIconsWin10Dark"
                     : "SettingsNavIconsWin10");
             SetSvgIcon(HomeNavItem, folder, "home.svg");
-            SetSvgIcon(GeneralNavItem, folder, "general.svg");
-            SetSvgIcon(ThemeNavItem, folder, "theme.svg");
-            SetSvgIcon(ApiNavItem, folder, "api.svg");
-            SetSvgIcon(AlertsNavItem, folder, "alerts.svg");
-            SetSvgIcon(ServiceNavItem, folder, "service.svg");
-            SetSvgIcon(PluginsNavItem, folder, "plugins.svg");
-            SetSvgIcon(SkillsNavItem, folder, "skills.svg");
-            SetSvgIcon(ComponentsNavItem, folder, "components.svg");
+            SetSvgIcon(BasicNavItem, folder, "general.svg");
+            SetSvgIcon(FeaturesNavItem, folder, "plugins.svg");
+            SetSvgIcon(SystemNavItem, folder, "components.svg");
             SetSvgIcon(UpdatesNavItem, folder, "updates.svg");
             SetSvgIcon(AboutNavItem, folder, "about.svg");
         }
@@ -328,11 +999,14 @@ namespace DeepSeekHarnessLauncher
             DshPathBox.Text = _settings.DshRoot ?? String.Empty;
             NodePathBox.Text = _settings.NodePath ?? String.Empty;
             ApiKeyBox.Password = LauncherSettingsStore.ReadApiKey(_settings);
+            TranslationModelBox.Text = TranslationService.ResolveModel(_settings);
+            TranslationBaseUrlBox.Text = TranslationService.NormalizeBaseUrl(
+                _settings.TranslationBaseUrl);
             GitHubTokenBox.Password =
                 LauncherSettingsStore.ReadGitHubToken(_settings);
             // 开发者入口只在本窗口会话内有效，每次重新打开设置都要重新解锁。
             _settings.DeveloperModeUnlocked = false;
-            DeveloperNavItem.Visibility = Visibility.Collapsed;
+            SetDeveloperTabVisible(false);
             RefreshServiceState();
             UpdateCustomThresholdStates();
             SyncAcceleratorControls();
@@ -340,6 +1014,11 @@ namespace DeepSeekHarnessLauncher
 
         private void WireSettingsEvents()
         {
+            // 搜索框在标题栏里，系统的方形焦点框套在椭圆上很丑：改由胶囊边框染色提示。
+            SettingsSearchBox.GotFocus += delegate { SetSearchShellFocused(true); };
+            SettingsSearchBox.LostFocus += delegate { SetSearchShellFocused(false); };
+            SettingsSearchBox.Loaded += delegate { HookSearchFocus(); };
+            SettingsSearchBox.PreviewKeyDown += SettingsSearchBox_PreviewKeyDown;
             StartWithWindowsToggle.Toggled += StartWithWindowsToggle_Toggled;
             SilentStartComboBox.SelectionChanged += SettingComboBox_SelectionChanged;
             UpdateSourceComboBox.SelectionChanged += SettingComboBox_SelectionChanged;
@@ -540,6 +1219,16 @@ namespace DeepSeekHarnessLauncher
             {
                 LoadChangelog(true);
             };
+
+            // 安装器独立更新：平时不自动重装，版本读不出来时给一条显式修复路径。
+            RepairInstallerButton.Click += delegate
+            {
+                InstallerResultInfoBar.Title = "正在修复安装器";
+                InstallerResultInfoBar.Message = "将下载安装器 Release 并替换当前安装器与卸载器，请稍候。";
+                InstallerResultInfoBar.IsOpen = true;
+                _host.RepairInstaller();
+            };
+            RefreshInstallerVersion();
 
             UpdateReminderToggle.Toggled += ReminderToggle_Toggled;
             PluginUpdateReminderToggle.Toggled += ReminderToggle_Toggled;
@@ -2275,11 +2964,25 @@ namespace DeepSeekHarnessLauncher
                 "立即更新",
                 StringComparison.Ordinal))
             {
+                // 执行中防重复提交：点第二次不该再起一个后台更新。
+                if (card.Busy)
+                {
+                    return;
+                }
+
+                card.Busy = true;
+                card.CheckEnabled = false;
+                card.PrimaryAction = "更新中…";
                 _host.InstallPluginUpdate(card.Name);
                 PluginActionInfoBar.Severity = InfoBarSeverity.Informational;
                 PluginActionInfoBar.Title = "正在更新 " + card.Name;
-                PluginActionInfoBar.Message = "更新在后台继续执行。";
+                PluginActionInfoBar.Message = "更新在后台继续执行，完成后卡片会自动刷新。";
                 PluginActionInfoBar.IsOpen = true;
+                return;
+            }
+
+            if (card.Busy)
+            {
                 return;
             }
 
@@ -2293,10 +2996,26 @@ namespace DeepSeekHarnessLauncher
             string key = card.Name;
             _ = System.Threading.Tasks.Task.Run(delegate
             {
-                PluginUpdateCheckResult check = PluginUpdateService.Check(
-                    _settings,
-                    false,
-                    _host.Log);
+                PluginUpdateCheckResult check;
+                try
+                {
+                    // 手动点一次就要真的去问，不能吃 4 小时目录缓存 ——
+                    // 否则刚发布的插件会一直被报成"已是最新"。
+                    check = PluginUpdateService.Check(
+                        _settings,
+                        true,
+                        _host.Log);
+                }
+                catch (Exception exception)
+                {
+                    _host.Log("检查插件更新异常（" + key + "）：" + exception.Message);
+                    DispatcherQueue.TryEnqueue(delegate
+                    {
+                        ShowPluginCheckFailure(card, key, exception.Message);
+                    });
+                    return;
+                }
+
                 PluginUpdateMatch match = null;
                 for (int index = 0; index < check.Updates.Count; index++)
                 {
@@ -2310,23 +3029,26 @@ namespace DeepSeekHarnessLauncher
                     }
                 }
 
+                if (match == null && !check.RateLimited
+                    && String.IsNullOrWhiteSpace(check.Error))
+                {
+                    _host.Log("检查插件更新：" + key + " 没有匹配到可更新来源"
+                        + "（目录里 " + check.Updates.Count + " 条）");
+                }
+
                 DispatcherQueue.TryEnqueue(delegate
                 {
                     if (check.RateLimited)
                     {
-                        card.PrimaryAction = "检查更新";
+                        card.PrimaryAction = "重试";
                         card.CheckEnabled = true;
                         PluginActionInfoBar.Severity = InfoBarSeverity.Warning;
                         PluginActionInfoBar.Title = "插件目录限流";
-                        PluginActionInfoBar.Message = "写入 GitHub Token 后重试。";
+                        PluginActionInfoBar.Message = "GitHub 未登录请求配额用完了。写入 GitHub Token 后点「重试」。";
                     }
                     else if (!String.IsNullOrWhiteSpace(check.Error))
                     {
-                        card.PrimaryAction = "检查更新";
-                        card.CheckEnabled = true;
-                        PluginActionInfoBar.Severity = InfoBarSeverity.Error;
-                        PluginActionInfoBar.Title = "检查更新失败";
-                        PluginActionInfoBar.Message = check.Error;
+                        ShowPluginCheckFailure(card, key, check.Error);
                     }
                     else if (match != null)
                     {
@@ -2337,10 +3059,22 @@ namespace DeepSeekHarnessLauncher
                         PluginActionInfoBar.Title = key + " 有新版本";
                         PluginActionInfoBar.Message = "点击卡片里的“立即更新”安装。";
                     }
+                    else if (!card.IsOnline
+                        || String.IsNullOrWhiteSpace(card.InstallSource))
+                    {
+                        // 手动链接/没有来源记录的插件：老实说清楚，不能假装查过了。
+                        card.PrimaryAction = "不可更新";
+                        card.CheckEnabled = false;
+                        card.Tag1 = card.VersionTag;
+                        PluginActionInfoBar.Severity = InfoBarSeverity.Informational;
+                        PluginActionInfoBar.Title = key + " 无法自动更新";
+                        PluginActionInfoBar.Message = "这个插件没有安装来源记录（手动放进去的），只跟着你/上游自己更新。";
+                    }
                     else
                     {
                         card.PrimaryAction = "已是最新";
-                        card.CheckEnabled = false;
+                        card.CheckEnabled = true;
+                        card.Tag1 = card.VersionTag;
                         PluginActionInfoBar.Severity = InfoBarSeverity.Informational;
                         PluginActionInfoBar.Title = key + " 已是最新";
                         PluginActionInfoBar.Message = "在线目录没有更新的提交时间。";
@@ -2349,6 +3083,26 @@ namespace DeepSeekHarnessLauncher
                     PluginActionInfoBar.IsOpen = true;
                 });
             });
+        }
+
+        /// <summary>
+        /// 检查失败：恢复按钮（"重试"）并显示中文原因，别把用户卡在"检查中…"上。
+        /// </summary>
+        private void ShowPluginCheckFailure(
+            PluginCardItem card,
+            string key,
+            string reason)
+        {
+            card.Busy = false;
+            card.PrimaryAction = "重试";
+            card.CheckEnabled = true;
+            card.Tag1 = card.VersionTag;
+            PluginActionInfoBar.Severity = InfoBarSeverity.Error;
+            PluginActionInfoBar.Title = "检查 " + key + " 失败";
+            PluginActionInfoBar.Message = String.IsNullOrWhiteSpace(reason)
+                ? "未知原因，请稍后点「重试」。"
+                : reason + "（可点卡片上的「重试」再试一次）";
+            PluginActionInfoBar.IsOpen = true;
         }
 
         private static PluginCardItem CardFrom(object sender)
@@ -2434,15 +3188,21 @@ namespace DeepSeekHarnessLauncher
                     {
                         PluginActionInfoBar.Severity = result.PnpmMissing
                             || result.PnpmFailed
+                            || result.RestartRequired
                                 ? InfoBarSeverity.Warning
                                 : InfoBarSeverity.Success;
                         PluginActionInfoBar.Title = name + " 已安装";
                         PluginActionInfoBar.Message = result.PnpmMissing
-                            ? "已写入 profile，但没找到 pnpm，请到组件页安装后重启 DSH。"
+                            ? "已写入 profile，但没找到 pnpm，请到组件页安装后重试。"
                             : (result.PnpmFailed
                                 ? "已写入 profile，但 pnpm install 没成功："
-                                    + result.Detail + " 请重启 DSH 前先手动确认。"
-                                : "重启 DSH 后生效。");
+                                    + result.Detail + " 可以点「一键修复」再试。"
+                                : (result.RestartRequired
+                                    ? "已安装。覆盖的是已加载的同名插件，需要重启 DSH 才会加载新代码。"
+                                    : "已安装，DSH 会自动热加载，无需重启。"));
+                        RestartDshFromPluginButton.Visibility = result.RestartRequired
+                            ? Visibility.Visible
+                            : Visibility.Collapsed;
                     }
                     else
                     {
@@ -2458,6 +3218,129 @@ namespace DeepSeekHarnessLauncher
                     LoadLocalPlugins();
                 });
             });
+        }
+
+        /// <summary>
+        /// 插件页：粘贴 GitHub 仓库链接 / owner/repo / tarball 直链 / 本地绝对路径，
+        /// 走官方 <c>dsh plugin add</c> 安装。新包由 base bundle 的热加载直接挂上，
+        /// 不强迫重启；只有官方明确说需要进程重启（覆盖同名包）才给重启按钮。
+        /// </summary>
+        private void InstallPluginFromLink_Click(object sender, RoutedEventArgs args)
+        {
+            string input = (PluginLinkBox.Text ?? String.Empty).Trim();
+            string error;
+            string specifier = DshPluginCliService.NormalizeInstallSpecifier(input, out error);
+            if (String.IsNullOrWhiteSpace(specifier))
+            {
+                RestartDshFromPluginButton.Visibility = Visibility.Collapsed;
+                PluginActionInfoBar.Severity = InfoBarSeverity.Warning;
+                PluginActionInfoBar.Title = "先贴一个来源";
+                PluginActionInfoBar.Message = error ?? "例如 owner/repo 或 GitHub 链接。";
+                PluginActionInfoBar.IsOpen = true;
+                return;
+            }
+
+            if (!DshPluginCliService.IsAvailable(_settings.DshRoot))
+            {
+                PluginActionInfoBar.Severity = InfoBarSeverity.Warning;
+                PluginActionInfoBar.Title = "本机 DSH 没有官方插件管理器";
+                PluginActionInfoBar.Message = "这个 DSH 版本偏旧，可以先用「在线插件」页里的条目安装。";
+                PluginActionInfoBar.IsOpen = true;
+                return;
+            }
+
+            InstallPluginFromLinkButton.IsEnabled = false;
+            RestartDshFromPluginButton.Visibility = Visibility.Collapsed;
+            PluginActionInfoBar.Severity = InfoBarSeverity.Informational;
+            PluginActionInfoBar.Title = "正在安装 " + specifier;
+            PluginActionInfoBar.Message = "调用官方插件管理器…";
+            PluginActionInfoBar.IsOpen = true;
+
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                PluginStoreService.InstallResult result = PluginStoreService.InstallFromSpecifier(
+                    _settings,
+                    specifier,
+                    delegate(string text, double fraction)
+                    {
+                        if (String.IsNullOrWhiteSpace(text))
+                        {
+                            return;
+                        }
+
+                        DispatcherQueue.TryEnqueue(delegate
+                        {
+                            PluginActionInfoBar.Message = "安装中 · " + text;
+                        });
+                    },
+                    _host.Log,
+                    delegate(string line)
+                    {
+                        if (String.IsNullOrWhiteSpace(line))
+                        {
+                            return;
+                        }
+
+                        // 官方命令的每一行都过一遍，InfoBar 上就能看到 pnpm 的真实动静；
+                        // 失败原因（allowBuilds、git 包 prepare 被拦）也在这个流里。
+                        string trimmed = line.Trim();
+                        string tail = trimmed.Length > 160
+                            ? trimmed.Substring(trimmed.Length - 160)
+                            : trimmed;
+                        DispatcherQueue.TryEnqueue(delegate
+                        {
+                            PluginActionInfoBar.Message = tail;
+                        });
+                    });
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    InstallPluginFromLinkButton.IsEnabled = true;
+                    _host.Log(
+                        (result.Ok ? "插件链接安装完成：" : "插件链接安装失败：")
+                        + specifier
+                        + (result.Ok
+                            ? String.Empty
+                            : " · " + (result.Error ?? "未知错误")));
+                    _profilePluginKeys = null;
+
+                    if (result.Ok)
+                    {
+                        PluginActionInfoBar.Severity = result.RestartRequired
+                            ? InfoBarSeverity.Warning
+                            : InfoBarSeverity.Success;
+                        PluginActionInfoBar.Title = "已安装 "
+                            + (String.IsNullOrWhiteSpace(result.Key) ? specifier : result.Key);
+                        PluginActionInfoBar.Message = result.RestartRequired
+                            ? "覆盖的是已加载的同名插件，需要重启 DSH 才会加载新代码。"
+                            : "装完自动生效，DSH 会自动热加载，无需重启。";
+                        RestartDshFromPluginButton.Visibility = result.RestartRequired
+                            ? Visibility.Visible
+                            : Visibility.Collapsed;
+                        PluginLinkBox.Text = String.Empty;
+                        LoadLocalPlugins();
+                    }
+                    else
+                    {
+                        PluginActionInfoBar.Severity = InfoBarSeverity.Error;
+                        PluginActionInfoBar.Title = "安装失败";
+                        PluginActionInfoBar.Message = result.Error ?? "未知错误。";
+                    }
+
+                    PluginActionInfoBar.IsOpen = true;
+                });
+            });
+        }
+
+        /// <summary>只有官方说这次变更要重启（覆盖同名包）时才露出来的按钮，复用现有重启逻辑。</summary>
+        private void RestartDshFromPlugin_Click(object sender, RoutedEventArgs args)
+        {
+            RestartDshFromPluginButton.Visibility = Visibility.Collapsed;
+            _host.RestartService();
+            PluginActionInfoBar.Severity = InfoBarSeverity.Informational;
+            PluginActionInfoBar.Title = "正在重启 DSH";
+            PluginActionInfoBar.Message = "重启完成后新代码就会生效。";
+            PluginActionInfoBar.IsOpen = true;
         }
 
         /// <summary>
@@ -2541,7 +3424,7 @@ namespace DeepSeekHarnessLauncher
                         _host.Log("插件修复完成");
                         PluginActionInfoBar.Severity = InfoBarSeverity.Success;
                         PluginActionInfoBar.Title = "插件修复完成";
-                        PluginActionInfoBar.Message = "重启 DSH 后生效。";
+                        PluginActionInfoBar.Message = "已按 profile 重装依赖，DSH 会自动热加载；若没生效再重启一次。";
                     }
                     else
                     {
@@ -2692,7 +3575,7 @@ namespace DeepSeekHarnessLauncher
                 : InfoBarSeverity.Error;
             PluginActionInfoBar.Title = ok ? "已卸载 " + card.Name : "卸载失败";
             PluginActionInfoBar.Message = ok
-                ? "重启 DSH 后生效。"
+                ? "已从 profile 移除，DSH 会自动重新加载。"
                 : (error ?? "未知错误。");
             PluginActionInfoBar.IsOpen = true;
             LoadLocalPlugins();
@@ -2846,6 +3729,9 @@ namespace DeepSeekHarnessLauncher
                         Status = online ? "在线安装" : "本地链接",
                         IconSource = LocalPluginIcon(plugin.LinkedDirectory),
                         Tag1 = String.IsNullOrWhiteSpace(version)
+                            ? "版本未知"
+                            : "v" + version.TrimStart('v', 'V'),
+                        VersionTag = String.IsNullOrWhiteSpace(version)
                             ? "版本未知"
                             : "v" + version.TrimStart('v', 'V'),
                         Tag2 = plugin.InBundles ? "已挂载" : "未挂载",
@@ -3313,7 +4199,7 @@ namespace DeepSeekHarnessLauncher
         /// </summary>
         private void UnlockDeveloperCenter()
         {
-            DeveloperNavItem.Visibility = Visibility.Visible;
+            SetDeveloperTabVisible(true);
             SelectPage("Developer");
         }
 
@@ -3352,60 +4238,59 @@ namespace DeepSeekHarnessLauncher
                 target = target.Substring(0, tabSeparator);
             }
 
-            HomePage.Visibility = target == "Home" ? Visibility.Visible : Visibility.Collapsed;
-            GeneralPage.Visibility = target == "General" ? Visibility.Visible : Visibility.Collapsed;
-            ThemePage.Visibility = target == "Theme" ? Visibility.Visible : Visibility.Collapsed;
-            ApiPage.Visibility = target == "Api" ? Visibility.Visible : Visibility.Collapsed;
-            AlertsPage.Visibility = target == "Alerts" ? Visibility.Visible : Visibility.Collapsed;
-            ServicePage.Visibility = target == "Service" ? Visibility.Visible : Visibility.Collapsed;
-            PluginsPage.Visibility = target == "Plugins" ? Visibility.Visible : Visibility.Collapsed;
-            SkillsPage.Visibility = target == "Skills" ? Visibility.Visible : Visibility.Collapsed;
-            ComponentsPage.Visibility = target == "Components" ? Visibility.Visible : Visibility.Collapsed;
-            UpdatesPage.Visibility = target == "Updates" ? Visibility.Visible : Visibility.Collapsed;
-            AboutPage.Visibility = target == "About" ? Visibility.Visible : Visibility.Collapsed;
-            DownloadsPage.Visibility = target == "Downloads" ? Visibility.Visible : Visibility.Collapsed;
-            DeveloperPage.Visibility = target == "Developer" ? Visibility.Visible : Visibility.Collapsed;
+            // Selecting a category resumes its last child; explicit links select that child.
+            if (target == "Basic" || target == "Features" || target == "System")
+                target = _lastGroupTab.TryGetValue(target, out string last) ? last : "General";
+            string group = GroupOf(target);
+            string navTag = group ?? target;
+            bool known = navTag == "Home" || navTag == "Basic" || navTag == "Features"
+                || navTag == "System" || navTag == "Updates" || navTag == "About"
+                || navTag == "Downloads" || navTag == "Developer";
+            if (!known) { target = "General"; group = "Basic"; navTag = "Basic"; }
 
-            FrameworkElement page = target switch
+            HomePage.Visibility = navTag == "Home" ? Visibility.Visible : Visibility.Collapsed;
+            BasicPage.Visibility = navTag == "Basic" ? Visibility.Visible : Visibility.Collapsed;
+            FeaturesPage.Visibility = navTag == "Features" ? Visibility.Visible : Visibility.Collapsed;
+            SystemPage.Visibility = navTag == "System" ? Visibility.Visible : Visibility.Collapsed;
+            UpdatesPage.Visibility = navTag == "Updates" ? Visibility.Visible : Visibility.Collapsed;
+            AboutPage.Visibility = navTag == "About" ? Visibility.Visible : Visibility.Collapsed;
+            DownloadsPage.Visibility = navTag == "Downloads" ? Visibility.Visible : Visibility.Collapsed;
+            DeveloperPage.Visibility = navTag == "Developer" ? Visibility.Visible : Visibility.Collapsed;
+            if (group != null)
             {
-                "Home" => HomePage,
-                "Theme" => ThemePage,                "Api" => ApiPage,
-                "Alerts" => AlertsPage,
-                "Service" => ServicePage,
-                "Plugins" => PluginsPage,
-                "Skills" => SkillsPage,
-                "Components" => ComponentsPage,
-                "Updates" => UpdatesPage,
-                "About" => AboutPage,
+                _lastGroupTab[group] = target;
+                Pivot host = group == "Basic" ? BasicTabs
+                    : group == "Features" ? FeaturesTabs : SystemTabs;
+                SelectGroupTab(host, target);
+            }
+
+            FrameworkElement page = navTag switch
+            {
+                "Home" => HomePage, "Features" => FeaturesPage, "System" => SystemPage,
+                "Updates" => UpdatesPage, "About" => AboutPage,
                 "Downloads" => DownloadsPage,
-                "Developer" => DeveloperPage,
-                _ => GeneralPage
+                "Developer" => DeveloperPage, _ => BasicPage
             };
-
-            NavigationViewItem item = target switch
+            NavigationViewItem item = navTag switch
             {
-                "Home" => HomeNavItem,
-                "Theme" => ThemeNavItem,
-                "Api" => ApiNavItem,
-                "Alerts" => AlertsNavItem,
-                "Service" => ServiceNavItem,
-                "Plugins" => PluginsNavItem,
-                "Skills" => SkillsNavItem,
-                "Components" => ComponentsNavItem,
-                "Updates" => UpdatesNavItem,
-                "About" => AboutNavItem,
-                "Downloads" => DownloadsNavItem,
-                "Developer" => DeveloperNavItem,
-                _ => GeneralNavItem
+                "Home" => HomeNavItem, "Basic" => BasicNavItem,
+                "Features" => FeaturesNavItem, "System" => SystemNavItem,
+                "Updates" => UpdatesNavItem, "About" => AboutNavItem,
+                "Developer" => DeveloperNavItem, _ => DownloadsNavItem
             };
-
             _suppressNavigation = true;
             try
             {
                 if (target == "Developer")
                 {
                     // 开发者入口默认隐藏（五连点才解锁）。预览或直接切页时也要能选中它。
-                    DeveloperNavItem.Visibility = Visibility.Visible;
+                    SetDeveloperTabVisible(true);
+                }
+
+                if (target == "Downloads")
+                {
+                    // 下载入口没任务时藏着；搜索「下载 / xz」点进来也要能选中。
+                    DownloadsNavItem.Visibility = Visibility.Visible;
                 }
 
                 SettingsNavigationView.SelectedItem = item;
@@ -3447,12 +4332,14 @@ namespace DeepSeekHarnessLauncher
             if (target == "Updates")
             {
                 ApplyPreviewUpdatePhase(skillTab);
+                RefreshInstallerVersion();
             }
 
             if (target == "About")
             {
                 _ = LoadAuthorAvatarAsync();
                 LoadChangelog(false);
+                RefreshInstallerVersion();
             }
 
             if (target == "Components")
@@ -3616,6 +4503,196 @@ namespace DeepSeekHarnessLauncher
         private void SettingsRoot_SizeChanged(object sender, SizeChangedEventArgs args)
         {
             ApplyResponsiveLayout(args.NewSize.Width);
+            UpdateTitleBarSearchRegion();
+        }
+
+        private Brush _searchShellIdleBrush;
+        private bool _searchFocusHooked;
+
+        /// <summary>
+        /// 聚焦描边用的主题色：自定义强调色写在 SettingsRoot 资源里，
+        /// 跟随系统时那个资源是空的（ApplyAccent 会移除它），所以要问系统拿颜色。
+        /// </summary>
+        private Brush ResolveAccentBrush()
+        {
+            if (SettingsRoot.Resources.TryGetValue(
+                    "AccentFillColorDefaultBrush",
+                    out object custom)
+                && custom is Brush customBrush)
+            {
+                return customBrush;
+            }
+
+            try
+            {
+                if (Application.Current.Resources.TryGetValue(
+                        "AccentFillColorDefaultBrush",
+                        out object system)
+                    && system is Brush systemBrush)
+                {
+                    return systemBrush;
+                }
+            }
+            catch
+            {
+            }
+
+            // 兜底：颜色选择器里那个值（默认蓝），至少保证描边是看得见的
+            try
+            {
+                return new SolidColorBrush(AccentColorPicker.Color);
+            }
+            catch
+            {
+                return new SolidColorBrush(Windows.UI.Color.FromArgb(255, 10, 132, 255));
+            }
+        }
+
+        /// <summary>
+        /// AutoSuggestBox 会把焦点转给模板里的 TextBox，订阅外层控件不一定收得到，
+        /// 所以等模板加载完，直接把焦点事件挂在真正吃焦点的那个 TextBox 上。
+        /// </summary>
+        private void HookSearchFocus()
+        {
+            try
+            {
+                if (_searchFocusHooked)
+                {
+                    return;
+                }
+
+                TextBox inner = FindDescendant<TextBox>(SettingsSearchBox);
+                if (inner == null)
+                {
+                    return;
+                }
+
+                inner.GotFocus += delegate { SetSearchShellFocused(true); };
+                inner.LostFocus += delegate
+                {
+                    if (SettingsSearchPanel == null
+                        || SettingsSearchPanel.Visibility != Visibility.Visible)
+                    {
+                        SetSearchShellFocused(false);
+                    }
+                };
+                _searchFocusHooked = true;
+            }
+            catch
+            {
+            }
+        }
+
+        private static T FindDescendant<T>(DependencyObject root)
+            where T : DependencyObject
+        {
+            if (root == null)
+            {
+                return null;
+            }
+
+            int count = VisualTreeHelper.GetChildrenCount(root);
+            for (int index = 0; index < count; index++)
+            {
+                DependencyObject child = VisualTreeHelper.GetChild(root, index);
+                if (child is T match)
+                {
+                    return match;
+                }
+
+                T deeper = FindDescendant<T>(child);
+                if (deeper != null)
+                {
+                    return deeper;
+                }
+            }
+
+            return null;
+        }
+
+        private static bool IsWithin(DependencyObject node, DependencyObject ancestor)
+        {
+            DependencyObject current = node;
+            while (current != null)
+            {
+                if (ReferenceEquals(current, ancestor))
+                {
+                    return true;
+                }
+
+                current = VisualTreeHelper.GetParent(current);
+            }
+
+            return false;
+        }
+
+        /// <summary>椭圆的聚焦提示：边框换成主题色、加粗一档，不用系统那套方框。</summary>
+        private void SetSearchShellFocused(bool focused)
+        {
+            try
+            {
+                if (SettingsSearchShell == null)
+                {
+                    return;
+                }
+
+                if (_searchShellIdleBrush == null)
+                {
+                    _searchShellIdleBrush = SettingsSearchShell.BorderBrush;
+                }
+
+                SettingsSearchShell.BorderThickness = new Thickness(focused ? 2 : 1);
+                Brush target = focused ? ResolveAccentBrush() : _searchShellIdleBrush;
+                if (target != null)
+                {
+                    SettingsSearchShell.BorderBrush = target;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>
+        /// 标题栏属于系统非客户区：里面的搜索框要能被鼠标点到，就得把它的矩形
+        /// 登记成 Passthrough（否则点上去会被当成拖动窗口）。矩形按物理像素算，
+        /// 窗口一改大小就重算一次；老系统上没有这个 API 时退化成不影响窗口打开。
+        /// </summary>
+        private void UpdateTitleBarSearchRegion()
+        {
+            try
+            {
+                if (SettingsSearchHost == null || _appWindow == null)
+                {
+                    return;
+                }
+
+                double width = SettingsSearchHost.ActualWidth;
+                double height = SettingsSearchHost.ActualHeight;
+                if (width <= 0 || height <= 0)
+                {
+                    return;
+                }
+
+                double scale = SettingsRoot.XamlRoot != null
+                    && SettingsRoot.XamlRoot.RasterizationScale > 0
+                    ? SettingsRoot.XamlRoot.RasterizationScale
+                    : 1.0;
+                Rect bounds = SettingsSearchHost
+                    .TransformToVisual(null)
+                    .TransformBounds(new Rect(0, 0, width, height));
+                var region = new RectInt32(
+                    (int)Math.Round(bounds.X * scale),
+                    (int)Math.Round(bounds.Y * scale),
+                    (int)Math.Round(bounds.Width * scale),
+                    (int)Math.Round(bounds.Height * scale));
+                InputNonClientPointerSource source =
+                    InputNonClientPointerSource.GetForWindowId(_appWindow.Id);
+                source.SetRegionRects(NonClientRegionKind.Passthrough, new[] { region });
+            }
+            catch
+            {
+            }
         }
 
         private void ApplyResponsiveLayout(double width)
@@ -3883,6 +4960,44 @@ namespace DeepSeekHarnessLauncher
                 : PasswordRevealMode.Hidden;
         }
 
+        /// <summary>保存翻译用的模型与接口地址。不验证密钥、不联网。</summary>
+        private void SaveTranslationSettings_Click(object sender, RoutedEventArgs args)
+        {
+            string model = (TranslationModelBox.Text ?? String.Empty).Trim();
+            string baseUrl = (TranslationBaseUrlBox.Text ?? String.Empty).Trim().TrimEnd('/');
+            if (String.IsNullOrWhiteSpace(model))
+            {
+                model = "deepseek-chat";
+            }
+
+            if (String.IsNullOrWhiteSpace(baseUrl))
+            {
+                baseUrl = "https://api.deepseek.com";
+            }
+
+            if (!Uri.IsWellFormedUriString(baseUrl, UriKind.Absolute))
+            {
+                TranslationSettingsInfoBar.Severity = InfoBarSeverity.Error;
+                TranslationSettingsInfoBar.Title = "接口地址不合法";
+                TranslationSettingsInfoBar.Message = "要写成完整的 http(s) 地址，例如 https://api.deepseek.com";
+                TranslationSettingsInfoBar.IsOpen = true;
+                return;
+            }
+
+            _settings.TranslationModel = model;
+            _settings.TranslationBaseUrl = baseUrl;
+            LauncherSettingsStore.Save(_settings);
+
+            TranslationModelBox.Text = model;
+            TranslationBaseUrlBox.Text = baseUrl;
+            TranslationSettingsInfoBar.Severity = InfoBarSeverity.Success;
+            TranslationSettingsInfoBar.Title = "已保存";
+            TranslationSettingsInfoBar.Message = "翻译用 " + model + "，地址 " + baseUrl
+                + "；密钥复用上面的 API Key，只有点「翻译成中文」才会联网。";
+            TranslationSettingsInfoBar.IsOpen = true;
+            _host.Log("翻译设置已更新：" + model + " @ " + baseUrl);
+        }
+
         private async void SaveApiKey_Click(object sender, RoutedEventArgs args)
         {
             string apiKey = ApiKeyBox.Password.Trim();
@@ -4076,6 +5191,41 @@ namespace DeepSeekHarnessLauncher
             }
 
             return message;
+        }
+
+        /// <summary>
+        /// 安装器卡片上的本机版本说明。安装器与启动器各自独立更新，
+        /// 所以这里只报"本机是哪一版"，不报"应该和启动器同为某一版"。
+        /// </summary>
+        private void RefreshInstallerVersion()
+        {
+            string version = null;
+            try
+            {
+                version = _host.GetInstallerVersion != null
+                    ? _host.GetInstallerVersion()
+                    : null;
+            }
+            catch
+            {
+                version = null;
+            }
+
+            bool known = !String.IsNullOrWhiteSpace(version);
+            if (InstallerVersionText != null)
+            {
+                InstallerVersionText.Text = known
+                    ? "本机安装器 " + version
+                        + "。与启动器独立更新，不要求两边版本号一致。"
+                    : "没读到本机安装器版本（可能不是用安装器装的）。"
+                        + "与启动器独立更新；需要时可点「修复安装器」重装一份。";
+            }
+
+            // 关于页把两行版本合在一张卡里，这里只放版本号本身。
+            if (AboutInstallerVersionText != null)
+            {
+                AboutInstallerVersionText.Text = known ? version : "未读到";
+            }
         }
 
         /// <summary>三张卡片上的「当前版本 / 通道」摘要。</summary>
@@ -4318,38 +5468,6 @@ namespace DeepSeekHarnessLauncher
             OpenDirectory(path);
         }
 
-        private void HealthCheck_Click(object sender, RoutedEventArgs args)
-        {
-            try
-            {
-                _healthReport = LauncherHealthReport.Collect(_settings.DshRoot, _settings.NodePath, _settings.PortMode, _settings.FixedPort);
-                HealthExportButton.IsEnabled = true;
-                HealthCheckText.Text = String.Join("\n", _healthReport.Checks.ConvertAll(c => c.Check + "：" + c.Detail + (String.IsNullOrWhiteSpace(c.Action) ? String.Empty : " · " + c.Action)).ToArray());
-            }
-            catch
-            {
-                _healthReport = null;
-                HealthExportButton.IsEnabled = false;
-                HealthCheckText.Text = "检查失败 · 请检查路径与权限后重试";
-            }
-        }
-
-        private async void HealthExport_Click(object sender, RoutedEventArgs args)
-        {
-            if (_healthReport == null) return;
-            try
-            {
-                FileSavePicker picker = new FileSavePicker();
-                picker.FileTypeChoices.Add("JSON", new List<string> { ".json" });
-                picker.SuggestedFileName = "dafeiyu-health-report.json";
-                InitializeWithWindow.Initialize(picker, _windowHandle);
-                Windows.Storage.StorageFile file = await picker.PickSaveFileAsync();
-                if (file == null) return;
-                await Windows.Storage.FileIO.WriteTextAsync(file, _healthReport.ToJson());
-                HealthCheckText.Text += "\n已导出结构化报告";
-            }
-            catch { HealthCheckText.Text += "\n导出失败 · 请重试"; }
-        }
         private void OpenLauncherLogs_Click(object sender, RoutedEventArgs args)
         {
             string path = Path.Combine(
@@ -4430,7 +5548,16 @@ namespace DeepSeekHarnessLauncher
             object sender,
             PointerRoutedEventArgs args)
         {
-            DependencyObject current = args.OriginalSource as DependencyObject;
+            DependencyObject source = args.OriginalSource as DependencyObject;
+            if (SettingsSearchPanel != null
+                && SettingsSearchPanel.Visibility == Visibility.Visible
+                && !IsWithin(source, SettingsSearchPanel)
+                && !IsWithin(source, SettingsSearchHost))
+            {
+                HideSettingsSearchPanel();
+            }
+
+            DependencyObject current = source;
             while (current != null && !ReferenceEquals(current, SettingsRoot))
             {
                 if (current is NumberBox
@@ -4527,6 +5654,14 @@ namespace DeepSeekHarnessLauncher
         private List<SkillCardItem> _localSkills = new List<SkillCardItem>();
         private List<SkillCardItem> _marketSkills = new List<SkillCardItem>();
         private List<SkillCardItem> _marketSkillsFiltered = new List<SkillCardItem>();
+
+        /// <summary>市场全量条目（按技能，不是按仓库）。更新检查要用它，卡片已经按仓库合并了。</summary>
+        private List<SkillMarketService.SkillMarketItem> _marketItems =
+            new List<SkillMarketService.SkillMarketItem>();
+
+        /// <summary>卡片 → 技能集。卡片只带 SourceId，成员明细放这里。</summary>
+        private readonly Dictionary<string, SkillSet> _skillSetsBySourceId =
+            new Dictionary<string, SkillSet>(StringComparer.OrdinalIgnoreCase);
         private List<SkillCardItem> _featuredSkills = new List<SkillCardItem>();
         private List<SkillCardItem> _featuredSkillsFiltered = new List<SkillCardItem>();
         private int _localSkillPage;
@@ -4721,15 +5856,16 @@ namespace DeepSeekHarnessLauncher
 
         private void ApplySkillCatalog(SkillMarketService.MarketResult result)
         {
-            _marketSkills = new List<SkillCardItem>();
+            _marketItems = new List<SkillMarketService.SkillMarketItem>();
             if (result != null)
             {
                 for (int index = 0; index < result.Items.Count; index++)
                 {
-                    _marketSkills.Add(MarketCardFrom(result.Items[index]));
+                    _marketItems.Add(result.Items[index]);
                 }
             }
 
+            RebuildSkillSetCards();
             _skillMarketPage = 0;
             RebuildSkillMarketPage();
 
@@ -4765,6 +5901,158 @@ namespace DeepSeekHarnessLauncher
             SkillCatalogInfoBar.Message = _marketSkills.Count + " 条技能。"
                 + "安装后 DSH 会自动扫到，不用重启。";
             SkillCatalogInfoBar.IsOpen = true;
+        }
+
+        /// <summary>
+        /// 按当前市场全量条目 + 本地安装记录重建"一仓库一卡"的技能集列表。
+        /// 安装/卸载之后也走这里，卡片上的"3 / 8"和按钮文案一律以实际状态为准。
+        /// </summary>
+        private void RebuildSkillSetCards()
+        {
+            _skillSetsBySourceId.Clear();
+            List<SkillSet> sets = SkillSets.Group(MarketSourcesFrom(_marketItems));
+            List<SkillSetInstallInfo> unmatched = SkillSets.MarkInstalled(
+                sets,
+                SkillSetInstallInfos());
+
+            _marketSkills = new List<SkillCardItem>();
+            for (int index = 0; index < sets.Count; index++)
+            {
+                _skillSetsBySourceId[sets[index].SourceId] = sets[index];
+                _marketSkills.Add(SetCardFrom(sets[index]));
+            }
+
+            if (unmatched.Count > 0)
+            {
+                // 认不出来的记录一律原样保留，只记一笔日志。
+                List<string> keys = new List<string>();
+                for (int index = 0; index < unmatched.Count; index++)
+                {
+                    keys.Add(unmatched[index].Key);
+                }
+
+                _host.Log("有 " + unmatched.Count
+                    + " 条技能安装记录没能唯一对上技能集，已原样保留："
+                    + String.Join("、", keys));
+            }
+        }
+
+        /// <summary>技能集用的是整仓库归档，模板取该来源的第一条市场条目。</summary>
+        private SkillMarketService.SkillMarketItem TemplateFor(SkillSet set)
+        {
+            for (int index = 0; index < _marketItems.Count; index++)
+            {
+                SkillMarketService.SkillMarketItem item = _marketItems[index];
+                if (String.Equals(
+                    SkillSets.SourceId(item.Owner, item.Repository, item.DefaultBranch),
+                    set.SourceId,
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    return item;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>把市场条目归一成技能集的来源壳（分组逻辑不认识市场模型）。</summary>
+        private static List<SkillSetSource> MarketSourcesFrom(
+            List<SkillMarketService.SkillMarketItem> items)
+        {
+            List<SkillSetSource> sources = new List<SkillSetSource>();
+            for (int index = 0; index < items.Count; index++)
+            {
+                SkillMarketService.SkillMarketItem item = items[index];
+                sources.Add(new SkillSetSource
+                {
+                    Owner = item.Owner,
+                    Repository = item.Repository,
+                    RepositoryPath = item.RepositoryPath,
+                    Name = item.DisplayName,
+                    Description = item.Description,
+                    DefaultBranch = item.DefaultBranch,
+                    PushedAt = item.PushedAt,
+                    Category = item.Category,
+                    LocalArchive = item.LocalArchive,
+                    Stars = item.Stars
+                });
+            }
+
+            return sources;
+        }
+
+        /// <summary>本地安装记录 → 技能集匹配用的最小视图。</summary>
+        private static List<SkillSetInstallInfo> SkillSetInstallInfos()
+        {
+            List<SkillSetInstallInfo> infos = new List<SkillSetInstallInfo>();
+            Dictionary<string, SkillInstallRecord> records = SkillInstallStore.Load();
+            foreach (KeyValuePair<string, SkillInstallRecord> pair in records)
+            {
+                SkillInstallRecord record = pair.Value;
+                if (record == null)
+                {
+                    continue;
+                }
+
+                infos.Add(new SkillSetInstallInfo
+                {
+                    Key = record.Key,
+                    Owner = record.Owner,
+                    Repository = record.Repository,
+                    RepositoryPath = record.RepositoryPath,
+                    DefaultBranch = record.DefaultBranch,
+                    // 技能记录里 Folder 只有目录名，RootPath 才是技能根。
+                    Folder = String.IsNullOrWhiteSpace(record.RootPath)
+                        ? record.Folder
+                        : Path.Combine(record.RootPath, record.Folder ?? String.Empty),
+                    RootPath = record.RootPath,
+                    SourceSha = record.SourceSha
+                });
+            }
+
+            return infos;
+        }
+
+        /// <summary>技能集卡片：一次代表整个仓库。</summary>
+        private SkillCardItem SetCardFrom(SkillSet set)
+        {
+            bool single = set.TotalCount == 1 && set.Members.Count == 1;
+            SkillSetMember only = single ? set.Members[0] : null;
+            return new SkillCardItem
+            {
+                // 单成员仓库仍然用技能自己的名字，多成员才用仓库名。
+                Name = single ? only.Name : set.DisplayName,
+                Description = String.IsNullOrWhiteSpace(set.Description)
+                    ? "这个仓库没有写简介。"
+                    : set.Description,
+                Tag1 = set.TotalCount > 1 ? set.CountText : set.Category,
+                Tag2 = set.TotalCount > 1 ? set.Category : String.Empty,
+                Stars = set.Stars > 0 ? FormatStars(set.Stars) : String.Empty,
+                LanguageSample = (set.Repository ?? String.Empty)
+                    + " " + (set.Description ?? String.Empty)
+                    + " " + (single ? only.Name : String.Empty),
+                Meta = set.RepositorySlug
+                    + (single && !String.IsNullOrWhiteSpace(only.RepositoryPath)
+                        ? "/" + only.RepositoryPath
+                        : String.Empty),
+                IconSource = SkillAvatar(set.Owner),
+                Repository = set.RepositorySlug,
+                RepositoryPath = single ? only.RepositoryPath : String.Empty,
+                ArchivePath = set.LocalArchive,
+                DefaultBranch = set.Branch,
+                PushedAt = set.PushedAt,
+                StarsCount = set.Stars,
+                RepoSkillCount = set.TotalCount,
+                Category = set.Category,
+                SourceKind = SkillSourceKind.Market,
+                ShowLocalActions = false,
+                ShowOnlineActions = true,
+                // 已有任何成员装过就是"修改"。
+                PrimaryAction = set.PrimaryAction,
+                PrimaryEnabled = true,
+                SetSourceId = set.SourceId,
+                SetCountText = set.CountText
+            };
         }
 
         private SkillCardItem MarketCardFrom(SkillMarketService.SkillMarketItem item)
@@ -4862,7 +6150,7 @@ namespace DeepSeekHarnessLauncher
                 for (int index = 0; index < entries.Count; index++)
                 {
                     SkillEntry entry = entries[index];
-                    cards.Add(new SkillCardItem
+                    SkillCardItem localCard = new SkillCardItem
                     {
                         Name = entry.Name,
                         Description = String.IsNullOrWhiteSpace(entry.Description)
@@ -4892,7 +6180,9 @@ namespace DeepSeekHarnessLauncher
                         ShowLocalActions = true,
                         ShowOnlineActions = false,
                         PrimaryAction = entry.Disabled ? "启用" : "停用"
-                    });
+                    };
+                    localCard.CaptureBaseStatus();
+                    cards.Add(localCard);
                 }
             }
             catch (Exception exception)
@@ -5474,6 +6764,22 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
+            // 仓库级卡片：走技能集的多选对话框（安装 / 修改同一入口）。
+            if (!String.IsNullOrWhiteSpace(card.SetSourceId))
+            {
+                SkillSet set;
+                if (_skillSetsBySourceId.TryGetValue(card.SetSourceId, out set) && set != null)
+                {
+                    _ = ShowSkillSetDialogAsync(card, set);
+                    return;
+                }
+            }
+
+            if (card.Busy)
+            {
+                return;
+            }
+
             SkillMarketService.SkillMarketItem item =
                 new SkillMarketService.SkillMarketItem
                 {
@@ -5554,7 +6860,270 @@ namespace DeepSeekHarnessLauncher
             });
         }
 
+        /// <summary>
+        /// 技能集的多选对话框：列出成员与当前安装状态，全选 / 全不选 / 取消 / 应用。
+        /// 打开时按本地实际扫描重新回填，不拿卡片缓存；应用前会再确认卸载。
+        /// </summary>
+        private async System.Threading.Tasks.Task ShowSkillSetDialogAsync(
+            SkillCardItem card,
+            SkillSet set)
+        {
+            // 重扫：上次卸载过的成员不能还挂着"已安装"。
+            for (int index = 0; index < set.Members.Count; index++)
+            {
+                SkillSetMember member = set.Members[index];
+                member.Installed = false;
+                member.InstalledKey = String.Empty;
+                member.InstalledFolder = String.Empty;
+                member.InstalledRootPath = String.Empty;
+            }
+
+            SkillSets.MarkInstalled(new List<SkillSet> { set }, SkillSetInstallInfos());
+
+            StackPanel panel = new StackPanel { Spacing = 8 };
+            panel.Children.Add(new TextBlock
+            {
+                Text = set.RepositorySlug + " 共 " + set.TotalCount + " 个技能，已安装 "
+                    + set.InstalledCount + " 个。勾选要保留安装的成员：",
+                TextWrapping = TextWrapping.Wrap
+            });
+
+            List<CheckBox> boxes = new List<CheckBox>();
+            for (int index = 0; index < set.Members.Count; index++)
+            {
+                SkillSetMember member = set.Members[index];
+                CheckBox box = new CheckBox
+                {
+                    IsChecked = member.Installed,
+                    Tag = member,
+                    Content = member.Name
+                        + (String.IsNullOrWhiteSpace(member.RepositoryPath)
+                            ? "（仓库根技能）"
+                            : "  ·  " + member.RepositoryPath)
+                        + (member.Installed ? "  [已安装]" : String.Empty)
+                };
+                boxes.Add(box);
+                panel.Children.Add(box);
+            }
+
+            panel.Children.Add(new TextBlock
+            {
+                Text = "取消勾选已安装的成员 = 请求卸载；应用前会再确认一次。",
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 12,
+                Opacity = 0.72
+            });
+
+            StackPanel buttons = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 8
+            };
+            Button selectAll = new Button { Content = "全选" };
+            Button selectNone = new Button { Content = "全不选" };
+            selectAll.Click += delegate
+            {
+                for (int index = 0; index < boxes.Count; index++)
+                {
+                    boxes[index].IsChecked = true;
+                }
+            };
+            selectNone.Click += delegate
+            {
+                for (int index = 0; index < boxes.Count; index++)
+                {
+                    boxes[index].IsChecked = false;
+                }
+            };
+            buttons.Children.Add(selectAll);
+            buttons.Children.Add(selectNone);
+            panel.Children.Add(buttons);
+
+            ScrollViewer scroller = new ScrollViewer
+            {
+                Content = panel,
+                MaxHeight = 380,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+            };
+
+            ContentDialog dialog = new ContentDialog
+            {
+                XamlRoot = SettingsRoot.XamlRoot,
+                Title = set.PrimaryAction + "技能集 · " + set.RepositorySlug,
+                Content = scroller,
+                PrimaryButtonText = "应用",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Primary
+            };
+
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            {
+                return;
+            }
+
+            List<string> selected = new List<string>();
+            for (int index = 0; index < boxes.Count; index++)
+            {
+                if (boxes[index].IsChecked == true)
+                {
+                    selected.Add(((SkillSetMember)boxes[index].Tag).MemberId);
+                }
+            }
+
+            SkillSetDiff diff = SkillSetDiff.Compute(set.Members, selected);
+            if (!diff.HasChanges)
+            {
+                SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
+                SkillActionInfoBar.Title = "没有变更";
+                SkillActionInfoBar.Message = "选择结果和当前安装状态一致，什么都没做。";
+                SkillActionInfoBar.IsOpen = true;
+                return;
+            }
+
+            if (diff.Uninstall.Count > 0)
+            {
+                List<string> names = new List<string>();
+                for (int index = 0; index < diff.Uninstall.Count; index++)
+                {
+                    names.Add("· " + diff.Uninstall[index].Name);
+                }
+
+                ContentDialog confirm = new ContentDialog
+                {
+                    XamlRoot = SettingsRoot.XamlRoot,
+                    Title = "确认卸载 " + diff.Uninstall.Count + " 个技能",
+                    Content = "下面这些会从本地删掉，安装记录一并清除：\n\n"
+                        + String.Join("\n", names),
+                    PrimaryButtonText = "卸载",
+                    CloseButtonText = "取消",
+                    DefaultButton = ContentDialogButton.Close
+                };
+                if (await confirm.ShowAsync() != ContentDialogResult.Primary)
+                {
+                    // 取消时不执行本次任何变更（包括安装）。
+                    SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
+                    SkillActionInfoBar.Title = "已取消";
+                    SkillActionInfoBar.Message = "没有安装也没有卸载任何东西。";
+                    SkillActionInfoBar.IsOpen = true;
+                    return;
+                }
+            }
+
+            await ApplySkillSetAsync(set, diff);
+        }
+
+        /// <summary>
+        /// 执行技能集差异：归档只下一次，成员逐个装；卸载逐个校验路径。
+        /// 逐项报告结果，最后按实际状态重建卡片 —— 不假装全部成功。
+        /// </summary>
+        private async System.Threading.Tasks.Task ApplySkillSetAsync(
+            SkillSet set,
+            SkillSetDiff diff)
+        {
+            SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
+            SkillActionInfoBar.Title = "正在应用 " + set.RepositorySlug;
+            SkillActionInfoBar.Message = "安装 " + diff.Install.Count
+                + " 个，卸载 " + diff.Uninstall.Count + " 个。";
+            SkillActionInfoBar.IsOpen = true;
+
+            List<string> installedNames = new List<string>();
+            List<string> uninstalledNames = new List<string>();
+            List<string> failures = new List<string>();
+
+            SkillMarketService.SkillMarketItem template = TemplateFor(set);
+
+            await System.Threading.Tasks.Task.Run(delegate
+            {
+                if (diff.Install.Count > 0)
+                {
+                    if (template == null)
+                    {
+                        failures.Add("缺少仓库来源信息，安装已跳过。");
+                    }
+                    else
+                    {
+                        List<SkillSetMemberResult> results =
+                            SkillInstallService.InstallManyFromRepository(
+                                _settings,
+                                template,
+                                diff.Install,
+                                delegate(string text, double value)
+                                {
+                                    DispatcherQueue.TryEnqueue(delegate
+                                    {
+                                        SkillActionInfoBar.Message = ProgressActionLabel(text)
+                                            + "（" + (int)value + "%）";
+                                    });
+                                },
+                                _host.Log);
+                        for (int index = 0; index < results.Count; index++)
+                        {
+                            if (results[index].Ok)
+                            {
+                                installedNames.Add(results[index].Name);
+                            }
+                            else
+                            {
+                                failures.Add(results[index].Name + "：" 
+                                    + (results[index].Error ?? "未知错误"));
+                            }
+                        }
+                    }
+                }
+
+                for (int index = 0; index < diff.Uninstall.Count; index++)
+                {
+                    SkillSetMember member = diff.Uninstall[index];
+                    string error = SkillInstallService.UninstallMember(member, _host.Log);
+                    if (error == null)
+                    {
+                        uninstalledNames.Add(member.Name);
+                    }
+                    else
+                    {
+                        failures.Add(error);
+                    }
+                }
+            });
+
+            // 重新扫描本地状态，卡片数量与按钮以实际结果为准。
+            RebuildSkillSetCards();
+            RebuildSkillMarketPage();
+            LoadLocalSkills();
+
+            if (failures.Count > 0)
+            {
+                SkillActionInfoBar.Severity = InfoBarSeverity.Warning;
+                SkillActionInfoBar.Title = "部分操作失败";
+                SkillActionInfoBar.Message = String.Join("；", failures);
+            }
+            else
+            {
+                List<string> parts = new List<string>();
+                if (installedNames.Count > 0)
+                {
+                    parts.Add("已安装 " + String.Join("、", installedNames));
+                }
+
+                if (uninstalledNames.Count > 0)
+                {
+                    parts.Add("已卸载 " + String.Join("、", uninstalledNames));
+                }
+
+                SkillActionInfoBar.Severity = InfoBarSeverity.Success;
+                SkillActionInfoBar.Title = set.RepositorySlug + " 已更新";
+                SkillActionInfoBar.Message = parts.Count == 0
+                    ? "没有实际变更。"
+                    : String.Join("；", parts) + "。DSH 会自动扫到，不用重启。";
+            }
+
+            SkillActionInfoBar.IsOpen = true;
+        }
+
         private SkillCardItem _detailSkillCard;
+
+        /// <summary>技能集详情里当前选中的成员安装目录（翻译时用它找 SKILL.md）。</summary>
+        private string _detailMemberFolder;
 
         private void ShowSkillDetail_Click(object sender, RoutedEventArgs args)
         {
@@ -5587,11 +7156,414 @@ namespace DeepSeekHarnessLauncher
                 : "技能目录：" + card.RepositoryPath;
             InstallDetailSkillButton.Content = card.PrimaryAction;
             InstallDetailSkillButton.IsEnabled = card.PrimaryEnabled;
+
+            // 技能集卡片：把仓库里的成员列出来，点一个就切到那个技能的详情。
+            SkillSet set = null;
+            if (!String.IsNullOrWhiteSpace(card.SetSourceId))
+            {
+                _skillSetsBySourceId.TryGetValue(card.SetSourceId, out set);
+            }
+
+            _detailMemberFolder = null;
+            RenderSkillDetailMembers(set);
             _ = SkillDetailDialog.ShowAsync();        }
+
+        /// <summary>技能集详情里的成员列表；单技能仓库不显示这一段。</summary>
+        private void RenderSkillDetailMembers(SkillSet set)
+        {
+            SkillDetailMembersPanel.Children.Clear();
+            if (set == null || set.TotalCount <= 1)
+            {
+                SkillDetailMembersPanel.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            SkillDetailMembersPanel.Visibility = Visibility.Visible;
+            Style descriptionStyle =
+                SettingsRoot.Resources["SettingsRowDescriptionTextStyle"] as Style;
+            SkillDetailMembersPanel.Children.Add(new TextBlock
+            {
+                Style = descriptionStyle,
+                TextWrapping = TextWrapping.Wrap,
+                Text = "这个仓库共 " + set.TotalCount + " 个技能，已安装 "
+                    + set.InstalledCount + " 个。点下面任意一个看它的详情："
+            });
+
+            for (int index = 0; index < set.Members.Count; index++)
+            {
+                SkillSetMember member = set.Members[index];
+                HyperlinkButton link = new HyperlinkButton
+                {
+                    Tag = member,
+                    Padding = new Thickness(0),
+                    Content = member.Name
+                        + (String.IsNullOrWhiteSpace(member.RepositoryPath)
+                            ? "（仓库根技能）"
+                            : "  ·  " + member.RepositoryPath)
+                        + (member.Installed ? "  [已安装]" : String.Empty)
+                };
+                link.Click += delegate(object sender, RoutedEventArgs args)
+                {
+                    SwitchSkillDetailToMember(sender as HyperlinkButton);
+                };
+                SkillDetailMembersPanel.Children.Add(link);
+            }
+        }
+
+        /// <summary>把详情弹窗切到技能集里的某一个成员。</summary>
+        private void SwitchSkillDetailToMember(HyperlinkButton link)
+        {
+            SkillSetMember member = link == null ? null : link.Tag as SkillSetMember;
+            if (member == null)
+            {
+                return;
+            }
+
+            SkillDetailTitle.Text = member.Name;
+            SkillDetailPathText.Text = String.IsNullOrWhiteSpace(member.RepositoryPath)
+                ? "这个技能在仓库根目录。"
+                : "技能目录：" + member.RepositoryPath;
+            SkillDetailLanguageText.Text = member.Installed ? "已安装" : "未安装";
+            _detailMemberFolder = member.InstalledFolder;
+            _host.Log("技能详情切到成员：" + member.Name);
+        }
 
         private void CloseSkillDetail_Click(object sender, RoutedEventArgs args)
         {
+            CancelDetailTranslation();
             SkillDetailDialog.Hide();
+        }
+
+        // ---------------------------------------------------------------- 中文翻译
+
+        /// <summary>翻译用的界面元素组合，技能详情和插件详情共用一套流程。</summary>
+        private sealed class TranslationPanel
+        {
+            public Button TranslateButton { get; set; }
+
+            public Button ToggleButton { get; set; }
+
+            public InfoBar Bar { get; set; }
+
+            public TextBlock Body { get; set; }
+
+            public string Title { get; set; } = String.Empty;
+        }
+
+        private System.Threading.CancellationTokenSource _translationCts;
+
+        /// <summary>显示的是中文还是原文（同一个详情里切换）。</summary>
+        private bool _showingOriginal;
+        private string _translatedDocument;
+
+        private TranslationPanel SkillPanel()
+        {
+            return new TranslationPanel
+            {
+                TranslateButton = TranslateSkillButton,
+                ToggleButton = ToggleSkillOriginalButton,
+                Bar = SkillTranslateInfoBar,
+                Body = SkillTranslateBody,
+                Title = "技能"
+            };
+        }
+
+        private TranslationPanel PluginPanel()
+        {
+            return new TranslationPanel
+            {
+                TranslateButton = TranslatePluginButton,
+                ToggleButton = TogglePluginOriginalButton,
+                Bar = PluginTranslateInfoBar,
+                Body = PluginTranslateBody,
+                Title = "插件"
+            };
+        }
+
+        private void TranslateSkillDetail_Click(object sender, RoutedEventArgs args)
+        {
+            SkillCardItem card = _detailSkillCard;
+            if (card == null)
+            {
+                return;
+            }
+
+            string path = card.FilePath;
+            if (!String.IsNullOrWhiteSpace(_detailMemberFolder))
+            {
+                // 技能集里点了某个成员：优先翻那个成员自己的 SKILL.md。
+                try
+                {
+                    string candidate = Path.Combine(
+                        _detailMemberFolder,
+                        SkillStore.SkillFileName);
+                    if (File.Exists(candidate))
+                    {
+                        path = candidate;
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            if (String.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                // 市场卡片还没落地，没有本地正文可翻。
+                ShowTranslationHint(
+                    SkillPanel(),
+                    "这个技能还没装到本地，没有可翻译的正文。先在本地页安装，再回来翻译。",
+                    InfoBarSeverity.Informational);
+                return;
+            }
+
+            string markdown;
+            try
+            {
+                markdown = File.ReadAllText(path, Encoding.UTF8);
+            }
+            catch (Exception exception)
+            {
+                ShowTranslationHint(
+                    SkillPanel(),
+                    "读不到技能正文：" + exception.Message,
+                    InfoBarSeverity.Error);
+                return;
+            }
+
+            string objectId = TranslationStore.SkillObjectId(
+                String.IsNullOrWhiteSpace(card.Folder) ? card.Name : card.Folder);
+            _ = RunDetailTranslationAsync(
+                SkillPanel(),
+                objectId,
+                SkillStore.SkillFileName,
+                markdown);
+        }
+
+        private void TranslatePluginDetail_Click(object sender, RoutedEventArgs args)
+        {
+            PluginCardItem card = _detailCard;
+            if (card == null)
+            {
+                return;
+            }
+
+            if (String.IsNullOrWhiteSpace(card.Folder) || !Directory.Exists(card.Folder))
+            {
+                ShowTranslationHint(
+                    PluginPanel(),
+                    "这个插件还没装到本地，没有可翻译的文档。先安装，再回来翻译。",
+                    InfoBarSeverity.Informational);
+                return;
+            }
+
+            string markdown = BuildPluginDocument(card);
+            if (String.IsNullOrWhiteSpace(markdown))
+            {
+                ShowTranslationHint(
+                    PluginPanel(),
+                    "这个插件里没有可翻译的说明文档。",
+                    InfoBarSeverity.Informational);
+                return;
+            }
+
+            _ = RunDetailTranslationAsync(
+                PluginPanel(),
+                TranslationStore.PluginObjectId(card.Name),
+                "README.md",
+                markdown);
+        }
+
+        /// <summary>
+        /// 插件要翻的是"文档"：名称 + 简介 + README。
+        /// 刻意不碰插件运行源码、机器错误码和运行时字符串。
+        /// </summary>
+        private static string BuildPluginDocument(PluginCardItem card)
+        {
+            StringBuilder text = new StringBuilder();
+            if (!String.IsNullOrWhiteSpace(card.Name))
+            {
+                text.Append("# ").Append(card.Name).Append("\n\n");
+            }
+
+            if (!String.IsNullOrWhiteSpace(card.Description))
+            {
+                text.Append(card.Description).Append("\n\n");
+            }
+
+            string[] names = { "README.md", "readme.md", "Readme.md", "README.MD" };
+            for (int index = 0; index < names.Length; index++)
+            {
+                try
+                {
+                    string candidate = Path.Combine(card.Folder, names[index]);
+                    if (File.Exists(candidate))
+                    {
+                        text.Append(File.ReadAllText(candidate, Encoding.UTF8));
+                        break;
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            return text.ToString().Trim();
+        }
+
+        private void ToggleSkillOriginal_Click(object sender, RoutedEventArgs args)
+        {
+            ToggleTranslationView(SkillPanel());
+        }
+
+        private void TogglePluginOriginal_Click(object sender, RoutedEventArgs args)
+        {
+            ToggleTranslationView(PluginPanel());
+        }
+
+        /// <summary>原文/中文来回切。原文永远保留，译文只是另存一份。</summary>
+        private void ToggleTranslationView(TranslationPanel panel)
+        {
+            if (panel == null || panel.Body == null || String.IsNullOrEmpty(_translatedDocument))
+            {
+                return;
+            }
+
+            _showingOriginal = !_showingOriginal;
+            panel.Body.Text = _showingOriginal
+                ? "（原文见上方说明；这里显示的是中文译文）"
+                : _translatedDocument;
+            if (panel.ToggleButton != null)
+            {
+                panel.ToggleButton.Content = _showingOriginal ? "查看中文" : "查看原文";
+            }
+        }
+
+        private void CancelDetailTranslation()
+        {
+            try
+            {
+                if (_translationCts != null)
+                {
+                    _translationCts.Cancel();
+                    _translationCts = null;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private void ShowTranslationHint(
+            TranslationPanel panel,
+            string message,
+            InfoBarSeverity severity)
+        {
+            if (panel == null || panel.Bar == null)
+            {
+                return;
+            }
+
+            panel.Bar.Severity = severity;
+            panel.Bar.Title = "翻译";
+            panel.Bar.Message = message;
+            panel.Bar.IsOpen = true;
+        }
+
+        /// <summary>
+        /// 跑一次翻译：命中缓存直接显示，未命中才联网；失败/取消不写缓存。
+        /// 全程只点一次按钮才联网，列表和页面加载都不会调用模型。
+        /// </summary>
+        private async System.Threading.Tasks.Task RunDetailTranslationAsync(
+            TranslationPanel panel,
+            string objectId,
+            string documentPath,
+            string markdown)
+        {
+            if (panel == null || panel.TranslateButton == null)
+            {
+                return;
+            }
+
+            CancelDetailTranslation();
+            System.Threading.CancellationTokenSource cts =
+                new System.Threading.CancellationTokenSource();
+            _translationCts = cts;
+
+            panel.TranslateButton.IsEnabled = false;
+            panel.TranslateButton.Content = "翻译中…";
+            panel.Bar.IsOpen = false;
+
+            try
+            {
+                TranslationResult result = await TranslationService.TranslateAsync(
+                    _settings,
+                    objectId,
+                    documentPath,
+                    markdown,
+                    null,
+                    delegate(string text, double value)
+                    {
+                        _host.Log("翻译 " + objectId + "：" + text);
+                    },
+                    _host.Log,
+                    cts.Token);
+
+                if (cts.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                if (!result.Ok)
+                {
+                    ShowTranslationHint(
+                        panel,
+                        result.Error ?? "翻译失败。",
+                        InfoBarSeverity.Warning);
+                    panel.TranslateButton.Content = result.Stale
+                        ? "重新翻译"
+                        : "翻译成中文";
+                    return;
+                }
+
+                _translatedDocument = result.Chinese;
+                _showingOriginal = false;
+                panel.Body.Text = result.Chinese;
+                panel.Body.Visibility = Visibility.Visible;
+                panel.ToggleButton.Visibility = Visibility.Visible;
+                panel.ToggleButton.Content = "查看原文";
+                panel.TranslateButton.Content = "重新翻译";
+                panel.Bar.Severity = InfoBarSeverity.Success;
+                panel.Bar.Title = result.FromCache ? "使用已缓存的译文" : "中文译文已生成";
+                panel.Bar.Message = result.Stale
+                    ? "原文已经变了，这是按最新原文重译的版本。"
+                    : "原文没有改动；代码、命令和路径保持原样。原文文件本身没有被修改。";
+                panel.Bar.IsOpen = true;
+                _host.Log("翻译完成：" + objectId + "（模型 "
+                    + result.Model + (result.FromCache ? "，缓存" : "，已联网") + "）");
+            }
+            catch (OperationCanceledException)
+            {
+                panel.TranslateButton.Content = "翻译成中文";
+            }
+            catch (Exception exception)
+            {
+                ShowTranslationHint(
+                    panel,
+                    "翻译失败：" + exception.Message,
+                    InfoBarSeverity.Error);
+                panel.TranslateButton.Content = "翻译成中文";
+            }
+            finally
+            {
+                panel.TranslateButton.IsEnabled = true;
+                if (ReferenceEquals(_translationCts, cts))
+                {
+                    _translationCts = null;
+                }
+
+                cts.Dispose();
+            }
         }
 
         private void OpenDetailSkillRepository_Click(
@@ -5762,6 +7734,13 @@ namespace DeepSeekHarnessLauncher
 
         private List<SkillMarketService.SkillMarketItem> MarketItemsFromCards()
         {
+            // 卡片已经按仓库合并成技能集，不能再从卡片反推市场条目 ——
+            // 更新检查要看到每一个技能，所以直接给市场全量。
+            if (_marketItems.Count > 0)
+            {
+                return _marketItems;
+            }
+
             List<SkillMarketService.SkillMarketItem> items =
                 new List<SkillMarketService.SkillMarketItem>();
             for (int index = 0; index < _marketSkills.Count; index++)
@@ -5870,29 +7849,39 @@ namespace DeepSeekHarnessLauncher
             string key = card.Name;
             _ = System.Threading.Tasks.Task.Run(delegate
             {
-                SkillUpdateCheckResult check = SkillUpdateService.Check(
-                    _settings,
-                    false,
-                    _marketSkills.Count == 0 ? null : MarketItemsFromCards(),
-                    _host.Log);
+                SkillUpdateCheckResult check;
+                try
+                {
+                    // 手动点一次就要真的去问，不能吃目录缓存。
+                    check = SkillUpdateService.Check(
+                        _settings,
+                        true,
+                        _marketSkills.Count == 0 ? null : MarketItemsFromCards(),
+                        _host.Log);
+                }
+                catch (Exception exception)
+                {
+                    _host.Log("检查技能更新异常（" + key + "）：" + exception.Message);
+                    DispatcherQueue.TryEnqueue(delegate
+                    {
+                        ShowSkillCheckFailure(card, key, exception.Message);
+                    });
+                    return;
+                }
 
                 DispatcherQueue.TryEnqueue(delegate
                 {
                     if (check.RateLimited)
                     {
-                        card.PrimaryAction = "检查更新";
+                        card.PrimaryAction = "重试";
                         card.PrimaryEnabled = true;
                         SkillActionInfoBar.Severity = InfoBarSeverity.Warning;
                         SkillActionInfoBar.Title = "技能目录限流";
-                        SkillActionInfoBar.Message = "写入 GitHub Token 后重试。";
+                        SkillActionInfoBar.Message = "GitHub 未登录请求配额用完了。写入 GitHub Token 后点「重试」。";
                     }
                     else if (!String.IsNullOrWhiteSpace(check.Error))
                     {
-                        card.PrimaryAction = "检查更新";
-                        card.PrimaryEnabled = true;
-                        SkillActionInfoBar.Severity = InfoBarSeverity.Error;
-                        SkillActionInfoBar.Title = "检查更新失败";
-                        SkillActionInfoBar.Message = check.Error;
+                        ShowSkillCheckFailure(card, key, check.Error);
                     }
                     else
                     {
@@ -5922,10 +7911,22 @@ namespace DeepSeekHarnessLauncher
                             SkillActionInfoBar.Title = key + " 有新版本";
                             SkillActionInfoBar.Message = "再点一次按钮就覆盖安装。";
                         }
+                        else if (String.IsNullOrWhiteSpace(card.Repository)
+                            && String.IsNullOrWhiteSpace(card.RepositoryPath))
+                        {
+                            // 没有来源的技能（手动放进技能目录的），老实说清楚。
+                            card.PrimaryAction = "不可自动更新";
+                            card.PrimaryEnabled = false;
+                            card.ResetStatusToBase();
+                            SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
+                            SkillActionInfoBar.Title = key + " 无法自动更新";
+                            SkillActionInfoBar.Message = "它是手动放进技能目录的，没有来源记录，只跟着你自己更新。";
+                        }
                         else
                         {
                             card.PrimaryAction = "已是最新";
-                            card.PrimaryEnabled = false;
+                            card.PrimaryEnabled = true;
+                            card.ResetStatusToBase();
                             SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
                             SkillActionInfoBar.Title = key + " 已是最新";
                             SkillActionInfoBar.Message = "在线目录没有更新的提交时间。";
@@ -5935,6 +7936,24 @@ namespace DeepSeekHarnessLauncher
                     SkillActionInfoBar.IsOpen = true;
                 });
             });
+        }
+
+        /// <summary>检查失败：恢复按钮（"重试"）并给出中文原因。</summary>
+        private void ShowSkillCheckFailure(
+            SkillCardItem card,
+            string key,
+            string reason)
+        {
+            card.Busy = false;
+            card.PrimaryAction = "重试";
+            card.PrimaryEnabled = true;
+            card.ResetStatusToBase();
+            SkillActionInfoBar.Severity = InfoBarSeverity.Error;
+            SkillActionInfoBar.Title = "检查 " + key + " 失败";
+            SkillActionInfoBar.Message = String.IsNullOrWhiteSpace(reason)
+                ? "未知原因，请稍后点「重试」。"
+                : reason + "（可点卡片上的「重试」再试一次）";
+            SkillActionInfoBar.IsOpen = true;
         }
 
         /// <summary>覆盖安装本地这一条技能。手工放进去的技能没有来源时会提示。</summary>
@@ -5993,7 +8012,7 @@ namespace DeepSeekHarnessLauncher
                     card.PrimaryAction = installed.Ok ? "已是最新" : "立即更新";
                     if (installed.Ok)
                     {
-                        card.Status = String.Empty;
+                        card.ResetStatusToBase();
                     }
 
                     SkillActionInfoBar.Severity = installed.Ok

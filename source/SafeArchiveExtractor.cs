@@ -27,6 +27,13 @@ namespace DeepSeekHarnessLauncher
                     TarEntry entry;
                     while ((entry = reader.GetNextEntry()) != null)
                     {
+                        // PAX/global extended attribute entries are archive metadata, never payload.
+                        // System.Formats.Tar consumes PAX local ('x') and GNU long-name ('L'/'K') headers
+                        // internally, but returns the PAX global header ('g') to the caller. Skip it by
+                        // entry type - never by name - so valid PAX archives extract while links, devices
+                        // and every other special entry keep being rejected below.
+                        if (entry.EntryType == TarEntryType.GlobalExtendedAttributes)
+                            continue;
                         string name = entry.Name ?? String.Empty;
                         if (!TryGetSafeRelativePath(name, out string relative))
                             throw new InvalidDataException("归档包含不安全路径：" + name);

@@ -7,6 +7,9 @@
     <NoWarn>SYSLIB0014</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../source/ProductVersion.cs" Link="ProductVersion.cs" />
+    <Compile Include="../../source/InstallerVersionPolicy.cs" Link="InstallerVersionPolicy.cs" />
+    <Compile Include="../../source/InstallerVersionReader.cs" Link="InstallerVersionReader.cs" />
     <Compile Include="../../source/InstallerUpdateService.cs" Link="InstallerUpdateService.cs" />
   </ItemGroup>
 </Project>

@@ -120,11 +120,45 @@ namespace DeepSeekHarnessLauncher
 
         public string Description { get; set; } = String.Empty;
 
-        public string Status { get; set; } = String.Empty;
+        private string _status = String.Empty;
 
-        public string Tag1 { get; set; } = String.Empty;
+        public string Status
+        {
+            get { return _status; }
+            set
+            {
+                _status = value ?? String.Empty;
+                Raise("Status");
+                Raise("StatusVisibility");
+            }
+        }
 
-        public string Tag2 { get; set; } = String.Empty;
+        private string _tag1 = String.Empty;
+
+        /// <summary>运行时会被改写（技能集计数、"发现更新"等），必须通知 UI。</summary>
+        public string Tag1
+        {
+            get { return _tag1; }
+            set
+            {
+                _tag1 = value ?? String.Empty;
+                Raise("Tag1");
+                Raise("Tag1Visibility");
+            }
+        }
+
+        private string _tag2 = String.Empty;
+
+        public string Tag2
+        {
+            get { return _tag2; }
+            set
+            {
+                _tag2 = value ?? String.Empty;
+                Raise("Tag2");
+                Raise("Tag2Visibility");
+            }
+        }
 
         public string Meta { get; set; } = String.Empty;
 
@@ -222,6 +256,15 @@ namespace DeepSeekHarnessLauncher
         /// <summary>同一个仓库里有多少个技能。只在详情里说一句，卡片上不重复刷屏。</summary>
         public int RepoSkillCount { get; set; } = 1;
 
+        /// <summary>
+        /// 这张卡片代表的技能集来源标识（<see cref="SkillSets.SourceId"/>）。
+        /// 非空 = 这是仓库级卡片，点击走多选对话框而不是单技能安装。
+        /// </summary>
+        public string SetSourceId { get; set; } = String.Empty;
+
+        /// <summary>技能集的"已安装 / 总数"，例如 3 / 8。</summary>
+        public string SetCountText { get; set; } = String.Empty;
+
         public string DefaultBranch { get; set; } = String.Empty;
 
         public string PushedAt { get; set; } = String.Empty;
@@ -236,11 +279,60 @@ namespace DeepSeekHarnessLauncher
 
         public SkillSourceKind SourceKind { get; set; } = SkillSourceKind.Market;
 
-        public Brush StatusBackground { get; set; } =
+        private string _baseStatus;
+
+        private Brush _statusBackground =
             new SolidColorBrush(Windows.UI.Color.FromArgb(24, 128, 128, 128));
 
-        public Brush StatusForeground { get; set; } =
+        public Brush StatusBackground
+        {
+            get { return _statusBackground; }
+            set
+            {
+                _statusBackground = value;
+                Raise("StatusBackground");
+            }
+        }
+
+        private Brush _statusForeground =
             new SolidColorBrush(Windows.UI.Color.FromArgb(255, 102, 112, 133));
+
+        public Brush StatusForeground
+        {
+            get { return _statusForeground; }
+            set
+            {
+                _statusForeground = value;
+                Raise("StatusForeground");
+            }
+        }
+
+        private Brush _baseStatusBackground;
+        private Brush _baseStatusForeground;
+
+        /// <summary>记住卡片刚建好时的状态，供 <see cref="ResetStatusToBase"/> 还原。</summary>
+        public void CaptureBaseStatus()
+        {
+            _baseStatus = _status;
+            _baseStatusBackground = _statusBackground;
+            _baseStatusForeground = _statusForeground;
+        }
+
+        /// <summary>
+        /// 把状态药丸恢复成卡片原本的样子。检查更新把它改成"有新版本"之后，
+        /// 再查一次没有更新时不能一直挂着绿色标签。
+        /// </summary>
+        public void ResetStatusToBase()
+        {
+            if (_baseStatus == null)
+            {
+                return;
+            }
+
+            Status = _baseStatus;
+            StatusBackground = _baseStatusBackground;
+            StatusForeground = _baseStatusForeground;
+        }
 
         public bool ShowLocalActions { get; set; }
 

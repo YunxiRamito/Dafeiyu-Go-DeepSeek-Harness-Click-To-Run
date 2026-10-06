@@ -10,6 +10,9 @@
     <Compile Include="../../source/DownloadSupport.cs" Link="DownloadSupport.cs" />
     <Compile Include="../../source/DownloadTaskCenter.cs" Link="DownloadTaskCenter.cs" />
     <Compile Include="../../source/UpdateSupport.cs" Link="UpdateSupport.cs" />
+    <!-- SemVer 比较已抽到 ProductVersion，UpdateSupport 与安装器独立更新判定共用 -->
+    <Compile Include="../../source/ProductVersion.cs" Link="ProductVersion.cs" />
+    <Compile Include="../../source/InstallerVersionPolicy.cs" Link="InstallerVersionPolicy.cs" />
     <Compile Include="../../source/DshUpdateService.cs" Link="DshUpdateService.cs" />
     <Compile Include="../../source/InstallerUpdateService.cs" Link="InstallerUpdateService.cs" />
   </ItemGroup>

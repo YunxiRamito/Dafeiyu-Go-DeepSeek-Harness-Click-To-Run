@@ -154,6 +154,259 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
+        // ---------------------------------------------------------------- 技能集
+
+        /// <summary>
+        /// 技能集安装：同一个仓库**只下载一次**归档，再按成员分别落地。
+        ///
+        /// 逐个成员各下一次整个仓库，是技能集最容易犯的浪费 ——
+        /// 一个 8 技能的仓库就是 8 次 10 MB 下载。这里先下、先解，
+        /// 然后从解压出来的树里挑成员目录安装。
+        /// </summary>
+        internal static List<SkillSetMemberResult> InstallManyFromRepository(
+            LauncherSettings settings,
+            SkillMarketService.SkillMarketItem template,
+            IList<SkillSetMember> members,
+            Action<string, double> progress,
+            Action<string> log,
+            Action<DownloadProgressInfo> detail = null)
+        {
+            List<SkillSetMemberResult> results = new List<SkillSetMemberResult>();
+            if (members == null || members.Count == 0)
+            {
+                return results;
+            }
+
+            if (template == null)
+            {
+                for (int index = 0; index < members.Count; index++)
+                {
+                    results.Add(FailedMember(members[index], "缺少仓库来源信息。"));
+                }
+
+                return results;
+            }
+
+            // 本地压缩包不用"只下一次"：它本来就在本地，逐个成员交给已有实现。
+            if (!String.IsNullOrWhiteSpace(template.LocalArchive))
+            {
+                for (int index = 0; index < members.Count; index++)
+                {
+                    SkillSetMember member = members[index];
+                    InstallResult single = InstallFromArchive(
+                        settings,
+                        template.LocalArchive,
+                        member.RepositoryPath,
+                        member.Name,
+                        progress,
+                        log);
+                    results.Add(FromMember(member, single));
+                }
+
+                return results;
+            }
+
+            List<SkillRootInfo> roots = SkillStore.CollectRoots(settings);
+            SkillRootInfo root = SkillStore.ResolveWriteRoot(settings, roots);
+            if (root == null || String.IsNullOrWhiteSpace(root.Path))
+            {
+                for (int index = 0; index < members.Count; index++)
+                {
+                    results.Add(FailedMember(members[index], "还没设置 DSH 根目录，去常规页设一下。"));
+                }
+
+                return results;
+            }
+
+            string staging = Path.Combine(
+                Path.GetTempPath(),
+                "DafeiyuGoSkillSet-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                Directory.CreateDirectory(staging);
+                string archive = Path.Combine(staging, "repo.tar.gz");
+                PluginSpec spec = PluginSpec.Parse("github:" + template.FullName);
+                string downloadError = DownloadRepository(
+                    settings,
+                    spec,
+                    template.DefaultBranch,
+                    archive,
+                    progress,
+                    log,
+                    detail);
+                if (downloadError != null)
+                {
+                    for (int index = 0; index < members.Count; index++)
+                    {
+                        results.Add(FailedMember(members[index], downloadError));
+                    }
+
+                    return results;
+                }
+
+                Report(progress, "解压中", 82);
+                string extractRoot = Path.Combine(staging, "extract");
+                string extractError = ExtractTarGz(archive, extractRoot);
+                if (extractError != null)
+                {
+                    for (int index = 0; index < members.Count; index++)
+                    {
+                        results.Add(FailedMember(members[index], extractError));
+                    }
+
+                    return results;
+                }
+
+                for (int index = 0; index < members.Count; index++)
+                {
+                    SkillSetMember member = members[index];
+                    string relative = (member.RepositoryPath ?? String.Empty)
+                        .Replace('/', Path.DirectorySeparatorChar)
+                        .Trim(Path.DirectorySeparatorChar);
+                    string source = relative.Length == 0
+                        ? extractRoot
+                        : Path.Combine(extractRoot, relative);
+
+                    if (!Directory.Exists(source))
+                    {
+                        results.Add(FailedMember(
+                            member,
+                            "仓库里找不到目录：" + member.RepositoryPath));
+                        continue;
+                    }
+
+                    try
+                    {
+                        InstallResult single = PlaceSkill(
+                            settings,
+                            root,
+                            source,
+                            member.Name,
+                            template.Owner,
+                            template.Repository,
+                            member.RepositoryPath,
+                            String.IsNullOrWhiteSpace(member.Description)
+                                ? template.Description
+                                : member.Description,
+                            template.PushedAt,
+                            template.DefaultBranch,
+                            progress,
+                            log);
+                        results.Add(FromMember(member, single));
+                    }
+                    catch (Exception exception)
+                    {
+                        results.Add(FailedMember(member, "安装失败：" + exception.Message));
+                    }
+                }
+            }
+            catch (Exception exception)
+            {
+                for (int index = 0; index < members.Count; index++)
+                {
+                    if (results.Count <= index)
+                    {
+                        results.Add(FailedMember(members[index], "安装失败：" + exception.Message));
+                    }
+                }
+            }
+            finally
+            {
+                TryDelete(staging);
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// 卸载技能集里的一个成员。
+        /// 只删"能确认归属"的目录和对应记录：先查来源记录，再校验绝对路径，
+        /// 认不出来就原样留着并说明原因。
+        /// </summary>
+        internal static string UninstallMember(SkillSetMember member, Action<string> log)
+        {
+            if (member == null)
+            {
+                return "成员为空。";
+            }
+
+            string key = String.IsNullOrWhiteSpace(member.InstalledKey)
+                ? member.Name
+                : member.InstalledKey;
+            Dictionary<string, SkillInstallRecord> records = SkillInstallStore.Load();
+            SkillInstallRecord record;
+            if (String.IsNullOrWhiteSpace(key)
+                || !records.TryGetValue(key, out record)
+                || record == null)
+            {
+                return "没有 " + (member.Name ?? key) + " 的安装记录，未删除任何文件。";
+            }
+
+            string folder = String.IsNullOrWhiteSpace(record.RootPath)
+                ? record.Folder
+                : Path.Combine(record.RootPath, record.Folder ?? String.Empty);
+            string reason;
+            if (!SkillSets.IsSafeUninstallTarget(folder, record.RootPath, record.Key, out reason))
+            {
+                return key + " 未删除：" + reason;
+            }
+
+            try
+            {
+                if (Directory.Exists(folder))
+                {
+                    Directory.Delete(folder, true);
+                }
+            }
+            catch (Exception exception)
+            {
+                return key + " 目录没删掉：" + exception.Message;
+            }
+
+            SkillInstallStore.Remove(key);
+
+            // 卸载时把该技能名下的中文译文缓存一起清掉。
+            // 只删对象标识匹配的条目，别的来源的缓存一个字都不动。
+            int cleaned = TranslationStore.RemoveByObject(
+                TranslationStore.SkillObjectId(record.Folder));
+            if (cleaned > 0 && log != null)
+            {
+                log("技能集卸载同时清理了 " + cleaned + " 份译文缓存：" + key);
+            }
+            if (log != null)
+            {
+                log("技能集卸载：" + key + " → " + folder);
+            }
+
+            return null;
+        }
+
+        private static SkillSetMemberResult FailedMember(SkillSetMember member, string error)
+        {
+            return new SkillSetMemberResult
+            {
+                MemberId = member == null ? String.Empty : member.MemberId,
+                Name = member == null ? String.Empty : member.Name,
+                Ok = false,
+                Error = error
+            };
+        }
+
+        private static SkillSetMemberResult FromMember(
+            SkillSetMember member,
+            InstallResult result)
+        {
+            return new SkillSetMemberResult
+            {
+                MemberId = member == null ? String.Empty : member.MemberId,
+                Name = member == null ? String.Empty : member.Name,
+                Ok = result != null && result.Ok,
+                Replaced = result != null && result.Replaced,
+                Directory = result == null ? String.Empty : result.Directory,
+                Error = result == null ? "安装没有返回结果。" : result.Error
+            };
+        }
+
         // ---------------------------------------------------------------- 下载与解压
 
         private static string DownloadRepository(

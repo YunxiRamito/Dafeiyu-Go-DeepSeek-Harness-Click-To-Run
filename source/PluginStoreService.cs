@@ -27,6 +27,12 @@ namespace DeepSeekHarnessLauncher
             public bool PnpmMissing { get; set; }
             public bool PnpmFailed { get; set; }
             public string Detail { get; set; } = String.Empty;
+
+            /// <summary>
+            /// 走官方入口装完，但覆盖的是已加载的同名包，官方明确要求重启进程。
+            /// 新装包不会置这个位（base bundle 的热加载会直接挂上）。
+            /// </summary>
+            public bool RestartRequired { get; set; }
         }
 
         private const int DownloadTimeoutMs = 180000;
@@ -48,6 +54,33 @@ namespace DeepSeekHarnessLauncher
             {
                 result.Error = "未配置 DSH 目录。";
                 return result;
+            }
+
+            // ---- 官方能力优先 ----------------------------------------------------
+            // DSH 0.2 起自带 plugin-manager：bundle 校验、peer 兼容检查、profile 写锁、
+            // 失败回滚和 dsh.profile.bundles 选择都由它负责。启动器再自己下载源码、
+            // 写 profile、跑包管理器只会和它两边打架（也正是"装了不生效/重启才生效"的来源）。
+            // 表达不了的来源（monorepo 子目录）和旧版 DSH 继续走下面的旧流程。
+            if (DshPluginCliService.IsAvailable(settings.DshRoot))
+            {
+                string specifier = DshPluginCliService.BuildSpecifier(spec);
+                if (!String.IsNullOrWhiteSpace(specifier))
+                {
+                    InstallResult official = InstallViaOfficialCli(
+                        settings,
+                        spec,
+                        specifier,
+                        expectedKey,
+                        pushedAt,
+                        defaultBranch,
+                        sourceSha,
+                        progress,
+                        log);
+                    if (official != null)
+                    {
+                        return official;
+                    }
+                }
             }
 
             if (!String.IsNullOrWhiteSpace(spec.NpmPackage))
@@ -263,6 +296,376 @@ namespace DeepSeekHarnessLauncher
             Report(progress, "完成", 100);
             result.Ok = true;
             return result;
+        }
+
+        /// <summary>
+        /// 用一条 pnpm 安装表达式装插件 —— 插件页那个「粘贴仓库链接」输入框走这里。
+        ///
+        /// 整仓 / 包名 / tarball 直链 / 本地路径全部交给官方 <c>dsh plugin add</c>
+        /// （桌面安装自动走自带 shim）；只有官方入口不可用的旧版 DSH 才回退，
+        /// 而且旧版只认 GitHub 整仓和 npm 包名，别的来源直接给一条明确的错误。
+        /// </summary>
+        internal static InstallResult InstallFromSpecifier(
+            LauncherSettings settings,
+            string specifier,
+            Action<string, double> progress,
+            Action<string> log,
+            Action<string> output = null)
+        {
+            InstallResult result = new InstallResult();
+            if (settings == null || String.IsNullOrWhiteSpace(settings.DshRoot))
+            {
+                result.Error = "未配置 DSH 目录。";
+                return result;
+            }
+
+            if (String.IsNullOrWhiteSpace(specifier))
+            {
+                result.Error = "没有可安装的来源。";
+                return result;
+            }
+
+            if (DshPluginCliService.IsAvailable(settings.DshRoot))
+            {
+                InstallResult official = InstallViaOfficialCli(
+                    settings,
+                    TryParseSpecifierForRecord(specifier),
+                    specifier,
+                    String.Empty,
+                    null,
+                    null,
+                    null,
+                    progress,
+                    log,
+                    output);
+                if (official != null)
+                {
+                    return official;
+                }
+
+                // official == null：CLI 在但不认 plugin 子命令（版本偏旧），落到下面的旧版回退。
+            }
+
+            if (specifier.StartsWith("github:", StringComparison.OrdinalIgnoreCase))
+            {
+                PluginSpec spec = PluginSpec.Parse(specifier);
+                if (spec.IsGitHub && String.IsNullOrWhiteSpace(spec.SubDirectory))
+                {
+                    return Install(settings, spec, null, null, null, null, progress, log);
+                }
+            }
+            else if (specifier.IndexOf("://", StringComparison.Ordinal) < 0
+                && !DshPluginCliService.IsLocalPathSpecifier(specifier))
+            {
+                PluginSpec spec = PluginSpec.Parse(specifier);
+                if (!String.IsNullOrWhiteSpace(spec.NpmPackage))
+                {
+                    return Install(settings, spec, null, null, null, null, progress, log);
+                }
+            }
+
+            result.Error = "本机 DSH 版本偏旧，装不了这个来源"
+                + "（tarball / 本地路径需要官方插件管理器）。";
+            return result;
+        }
+
+        /// <summary>
+        /// 给安装记录用的尽力解析：tarball / 其它 URL / 本地路径 PluginSpec 只会解析歪，
+        /// 这些来源留空记录（InstallViaOfficialCli 已经允许 spec 为 null）。
+        /// </summary>
+        private static PluginSpec TryParseSpecifierForRecord(string specifier)
+        {
+            try
+            {
+                if (specifier.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                    || specifier.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                    || DshPluginCliService.IsLocalPathSpecifier(specifier))
+                {
+                    return null;
+                }
+
+                return PluginSpec.Parse(specifier);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 走官方 <c>dsh plugin</c> 装插件。
+        /// 返回 null 表示"这个 DSH 不认官方入口"，调用方应回退旧流程；
+        /// 返回非 null 表示已经有结论（成功或失败），调用方直接采用。
+        /// </summary>
+        private static InstallResult InstallViaOfficialCli(
+            LauncherSettings settings,
+            PluginSpec spec,
+            string specifier,
+            string expectedKey,
+            string pushedAt,
+            string defaultBranch,
+            string sourceSha,
+            Action<string, double> progress,
+            Action<string> log,
+            Action<string> output = null)
+        {
+            InstallResult result = new InstallResult();
+            List<string> beforeDependencies;
+            List<string> beforeBundles;
+            ReadProfileKeys(settings.DshRoot, out beforeDependencies, out beforeBundles);
+
+            Report(progress, "安装中 · 调用官方插件管理器", 25);
+            if (log != null)
+            {
+                log("插件安装走官方入口：dsh plugin --profile "
+                    + DshPluginCliService.ResolveProfileName(settings.DshRoot)
+                    + " add " + specifier);
+            }
+
+            DshPluginCliService.CliResult cli = DshPluginCliService.Install(
+                settings,
+                specifier,
+                10 * 60 * 1000,
+                log,
+                output);
+            if (cli.Unsupported)
+            {
+                if (log != null)
+                {
+                    log("本机 DSH 不支持官方 plugin 子命令，回退到启动器自带的安装流程。");
+                }
+
+                return null;
+            }
+
+            if (cli.Failed)
+            {
+                result.Error = String.IsNullOrWhiteSpace(cli.Error)
+                    ? "官方插件命令失败。"
+                    : cli.Error;
+                result.Detail = DshPluginCliService.Summarize(cli.Output);
+                return result;
+            }
+
+            Report(progress, "安装中 · 核对 profile", 88);
+            List<string> afterDependencies;
+            List<string> afterBundles;
+            ReadProfileKeys(settings.DshRoot, out afterDependencies, out afterBundles);
+
+            string key = expectedKey;
+            if (String.IsNullOrWhiteSpace(key) || !afterDependencies.Contains(key))
+            {
+                key = FirstNew(afterDependencies, beforeDependencies);
+            }
+
+            if (String.IsNullOrWhiteSpace(key) || !afterDependencies.Contains(key))
+            {
+                // 命令成功但 profile 里没有新东西：可能装成了普通依赖（没有 dsh.bundle），
+                // 或者 manifest 写的是别的名字。这属于"装了但没生效"，不能算成功。
+                result.Error = "官方命令已执行，但 profile 的依赖里没有看到新插件。"
+                    + "这个包可能不是 DSH bundle（package.json 里缺 dsh.bundle）。";
+                result.Detail = DshPluginCliService.Summarize(cli.Output);
+                return result;
+            }
+
+            bool isBundle = afterBundles.Contains(key);
+            bool linked = false;
+            string dependency = String.Empty;
+            ReadProfileDependency(settings.DshRoot, key, out dependency);
+            linked = dependency.StartsWith("link:", StringComparison.OrdinalIgnoreCase)
+                || dependency.StartsWith("file:", StringComparison.OrdinalIgnoreCase);
+
+            string version = ReadInstalledPackageVersion(settings, key);
+            string folder = ResolveInstalledPackageDirectory(settings, key, dependency);
+
+            PluginInstallStore.Upsert(new PluginInstallRecord
+            {
+                Key = key,
+                Spec = spec == null ? specifier : spec.Raw,
+                Folder = folder,
+                Owner = spec == null ? String.Empty : spec.Owner,
+                Repository = spec == null ? String.Empty : spec.Repository,
+                Version = version,
+                PushedAt = pushedAt ?? String.Empty,
+                InstalledAt = DateTime.UtcNow.ToString("o"),
+                InstallSpecifier = specifier,
+                InstallSource = "official",
+                SourceSha = sourceSha ?? String.Empty,
+                DefaultBranch = defaultBranch ?? String.Empty
+            });
+
+            result.Key = key;
+            result.Version = version;
+            result.Directory = folder;
+            result.Ok = true;
+            result.RestartRequired = cli.RestartRequired;
+            Report(progress, "完成", 100);
+            result.Detail = cli.RestartRequired
+                ? "已安装并写入 profile，但覆盖的是同名包，DSH 需要重启才会加载新代码。"
+                : (isBundle
+                    ? "已安装并加入 profile bundles，DSH 会自动热加载，无需重启。"
+                    : "已装进 profile 但没进 bundles，可能需要在 DSH 里手动启用。");
+            if (log != null)
+            {
+                log("官方插件安装完成：" + key + "（" + result.Detail + "）");
+            }
+
+            return result;
+        }
+
+        private static void ReadProfileKeys(
+            string dshRoot,
+            out List<string> dependencies,
+            out List<string> bundles)
+        {
+            dependencies = new List<string>();
+            bundles = new List<string>();
+            try
+            {
+                string path = DshProfileService.ResolveProfileFilePath(dshRoot);
+                if (String.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                {
+                    return;
+                }
+
+                System.Text.Json.Nodes.JsonNode node =
+                    System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path, Encoding.UTF8));
+                System.Text.Json.Nodes.JsonObject root =
+                    node as System.Text.Json.Nodes.JsonObject;
+                if (root == null)
+                {
+                    return;
+                }
+
+                System.Text.Json.Nodes.JsonObject deps =
+                    root["dependencies"] as System.Text.Json.Nodes.JsonObject;
+                if (deps != null)
+                {
+                    foreach (KeyValuePair<string, System.Text.Json.Nodes.JsonNode> pair in deps)
+                    {
+                        dependencies.Add(pair.Key);
+                    }
+                }
+
+                System.Text.Json.Nodes.JsonArray list =
+                    ((root["dsh"] as System.Text.Json.Nodes.JsonObject)?["profile"]
+                        as System.Text.Json.Nodes.JsonObject)?["bundles"]
+                        as System.Text.Json.Nodes.JsonArray;
+                if (list != null)
+                {
+                    for (int index = 0; index < list.Count; index++)
+                    {
+                        string value = list[index]?.GetValue<string>();
+                        if (!String.IsNullOrWhiteSpace(value))
+                        {
+                            bundles.Add(value);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private static void ReadProfileDependency(
+            string dshRoot,
+            string key,
+            out string dependency)
+        {
+            dependency = String.Empty;
+            try
+            {
+                string path = DshProfileService.ResolveProfileFilePath(dshRoot);
+                if (String.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                {
+                    return;
+                }
+
+                System.Text.Json.Nodes.JsonObject root =
+                    System.Text.Json.Nodes.JsonNode.Parse(
+                        File.ReadAllText(path, Encoding.UTF8))
+                        as System.Text.Json.Nodes.JsonObject;
+                dependency = (root?["dependencies"] as System.Text.Json.Nodes.JsonObject)?[key]
+                    ?.GetValue<string>() ?? String.Empty;
+            }
+            catch
+            {
+            }
+        }
+
+        private static string FirstNew(List<string> after, List<string> before)
+        {
+            for (int index = 0; index < after.Count; index++)
+            {
+                if (!before.Contains(after[index]))
+                {
+                    return after[index];
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>装完从 node_modules 里的 package.json 读实际版本。</summary>
+        private static string ReadInstalledPackageVersion(
+            LauncherSettings settings,
+            string key)
+        {
+            try
+            {
+                string directory = ResolveInstalledPackageDirectory(settings, key, null);
+                if (String.IsNullOrWhiteSpace(directory))
+                {
+                    return String.Empty;
+                }
+
+                string manifest = Path.Combine(directory, "package.json");
+                if (!File.Exists(manifest))
+                {
+                    return String.Empty;
+                }
+
+                System.Text.Json.Nodes.JsonObject root =
+                    System.Text.Json.Nodes.JsonNode.Parse(
+                        File.ReadAllText(manifest, Encoding.UTF8))
+                        as System.Text.Json.Nodes.JsonObject;
+                return root?["version"]?.GetValue<string>() ?? String.Empty;
+            }
+            catch
+            {
+                return String.Empty;
+            }
+        }
+
+        private static string ResolveInstalledPackageDirectory(
+            LauncherSettings settings,
+            string key,
+            string dependency)
+        {
+            try
+            {
+                string profile = DshProfileService.ResolveProfileDirectory(settings.DshRoot);
+                if (String.IsNullOrWhiteSpace(profile))
+                {
+                    return String.Empty;
+                }
+
+                if (!String.IsNullOrWhiteSpace(dependency)
+                    && (dependency.StartsWith("link:", StringComparison.OrdinalIgnoreCase)
+                        || dependency.StartsWith("file:", StringComparison.OrdinalIgnoreCase)))
+                {
+                    string relative = dependency.Substring(dependency.IndexOf(':') + 1);
+                    return Path.GetFullPath(Path.Combine(profile, relative));
+                }
+
+                string direct = Path.Combine(profile, "node_modules", key);
+                return Directory.Exists(direct) ? direct : String.Empty;
+            }
+            catch
+            {
+                return String.Empty;
+            }
         }
 
         /// <summary>
@@ -798,29 +1201,42 @@ namespace DeepSeekHarnessLauncher
             }
 
             bool ownedByLauncher = plugin.Record != null;
+
+            // ---- 官方能力优先 ----------------------------------------------------
+            // 让 plugin-manager 自己取消 bundle 选择、跑 pnpm remove、刷新包清单，
+            // 它会顺带把 dsh.profile.bundles 里的条目摘掉；启动器只负责清理自己
+            // 下载下来的目录和安装记录。
+            if (DshPluginCliService.IsAvailable(settings.DshRoot))
+            {
+                DshPluginCliService.CliResult cli = DshPluginCliService.Remove(
+                    settings,
+                    plugin.Key,
+                    10 * 60 * 1000,
+                    null);
+                if (cli.Unsupported)
+                {
+                    // 旧版 DSH：继续用下面那套自己写 profile 的流程。
+                }
+                else if (cli.Failed)
+                {
+                    error = String.IsNullOrWhiteSpace(cli.Error)
+                        ? "官方卸载命令失败。"
+                        : cli.Error;
+                    return false;
+                }
+                else
+                {
+                    CleanupOwnedFiles(plugin, ownedByLauncher, ref error);
+                    return true;
+                }
+            }
+
             if (!DshProfileService.RemovePlugin(settings.DshRoot, plugin.Key, out error))
             {
                 return false;
             }
 
-            if (ownedByLauncher)
-            {
-                string directory = plugin.Record.Folder;
-                if (!String.IsNullOrWhiteSpace(directory)
-                    && Directory.Exists(directory))
-                {
-                    try
-                    {
-                        Directory.Delete(directory, true);
-                    }
-                    catch (Exception exception)
-                    {
-                        error = "已解除引用，但目录没删掉：" + exception.Message;
-                    }
-                }
-
-                PluginInstallStore.Remove(plugin.Key);
-            }
+            CleanupOwnedFiles(plugin, ownedByLauncher, ref error);
 
             string pnpm = PackageManagerRunner.LocatePnpm(settings);
             if (!String.IsNullOrWhiteSpace(pnpm))
@@ -834,6 +1250,36 @@ namespace DeepSeekHarnessLauncher
             }
 
             return true;
+        }
+
+        /// <summary>删掉启动器自己下载的插件目录并清掉安装记录。</summary>
+        private static void CleanupOwnedFiles(
+            DshProfilePlugin plugin,
+            bool ownedByLauncher,
+            ref string error)
+        {
+            if (!ownedByLauncher || plugin.Record == null)
+            {
+                return;
+            }
+
+            string directory = plugin.Record.Folder;
+            if (!String.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
+            {
+                try
+                {
+                    Directory.Delete(directory, true);
+                }
+                catch (Exception exception)
+                {
+                    error = "已解除引用，但目录没删掉：" + exception.Message;
+                }
+            }
+
+            PluginInstallStore.Remove(plugin.Key);
+
+            // 顺带清掉这个插件名下的中文译文缓存；只删标识匹配的条目。
+            TranslationStore.RemoveByObject(TranslationStore.PluginObjectId(plugin.Key));
         }
 
         // ---------------------------------------------------------------- 下载与解压

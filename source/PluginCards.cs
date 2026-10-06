@@ -25,11 +25,54 @@ namespace DeepSeekHarnessLauncher
 
         public string Description { get; set; } = string.Empty;
 
-        public string Status { get; set; } = string.Empty;
+        private string _status = string.Empty;
 
-        public string Tag1 { get; set; } = string.Empty;
+        public string Status
+        {
+            get { return _status; }
+            set
+            {
+                _status = value ?? string.Empty;
+                Raise("Status");
+                Raise("StatusVisibility");
+            }
+        }
 
-        public string Tag2 { get; set; } = string.Empty;
+        private string _tag1 = string.Empty;
+
+        /// <summary>
+        /// 运行时会被改写（"发现新版本" 之类）。以前它是普通自动属性、XAML 又是
+        /// OneTime 绑定，赋值等于丢进黑洞 —— 卡片上永远看不到。
+        /// </summary>
+        public string Tag1
+        {
+            get { return _tag1; }
+            set
+            {
+                _tag1 = value ?? string.Empty;
+                Raise("Tag1");
+                Raise("Tag1Visibility");
+            }
+        }
+
+        private string _tag2 = string.Empty;
+
+        public string Tag2
+        {
+            get { return _tag2; }
+            set
+            {
+                _tag2 = value ?? string.Empty;
+                Raise("Tag2");
+                Raise("Tag2Visibility");
+            }
+        }
+
+        /// <summary>
+        /// 卡片上原本的版本标签（"v1.2.3"/"版本未知"）。检查更新会临时把 Tag1
+        /// 改成"发现新版本"，再检查一次没更新时要能还原，不能一直挂着旧结论。
+        /// </summary>
+        public string VersionTag { get; set; } = string.Empty;
 
         public string Meta { get; set; } = string.Empty;
 
@@ -66,13 +109,33 @@ namespace DeepSeekHarnessLauncher
 
         public string Repository { get; set; } = string.Empty;
 
-        public Brush StatusBackground { get; set; } =
+        private Brush _statusBackground =
             new SolidColorBrush(
                 Windows.UI.Color.FromArgb(24, 128, 128, 128));
 
-        public Brush StatusForeground { get; set; } =
+        public Brush StatusBackground
+        {
+            get { return _statusBackground; }
+            set
+            {
+                _statusBackground = value;
+                Raise("StatusBackground");
+            }
+        }
+
+        private Brush _statusForeground =
             new SolidColorBrush(
                 Windows.UI.Color.FromArgb(255, 102, 112, 133));
+
+        public Brush StatusForeground
+        {
+            get { return _statusForeground; }
+            set
+            {
+                _statusForeground = value;
+                Raise("StatusForeground");
+            }
+        }
 
         /// <summary>在线插件详情页导出的完整安装配置。</summary>
         public string ConfigJson { get; set; } = string.Empty;
@@ -139,7 +202,26 @@ namespace DeepSeekHarnessLauncher
             get { return Busy ? Visibility.Visible : Visibility.Collapsed; }
         }
 
-        public bool CheckEnabled { get; set; } = true;
+        private bool _checkEnabled = true;
+
+        /// <summary>
+        /// 检查/更新按钮是否可点。检查中要禁用防重复提交，失败要恢复 ——
+        /// 这两个动作全靠通知，只当普通属性存值是没用的。
+        /// </summary>
+        public bool CheckEnabled
+        {
+            get { return _checkEnabled; }
+            set
+            {
+                if (_checkEnabled == value)
+                {
+                    return;
+                }
+
+                _checkEnabled = value;
+                Raise("CheckEnabled");
+            }
+        }
 
         public bool ShowLocalActions { get; set; }
 

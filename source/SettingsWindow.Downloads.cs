@@ -75,6 +75,12 @@ namespace DeepSeekHarnessLauncher
             int paused = tasks.Count(t => t.Status == "Paused");
             int failed = tasks.Count(t => t.Status == "Failed" && IsActiveDownload(t));
             DownloadsNavItem.Content = active > 0 ? "下载任务 · " + active : "下载任务";
+            // 入口默认藏着：真有在下载/暂停/待重试的任务，或者人已经在下载页
+            // （搜索「下载 / xz」点进来）时才露出来。
+            DownloadsNavItem.Visibility = active > 0
+                || DownloadsPage.Visibility == Visibility.Visible
+                ? Visibility.Visible
+                : Visibility.Collapsed;
             DownloadSummaryText.Text = active == 0 ? "共 " + tasks.Count + " 条历史记录"
                 : downloading + " 个下载中 · " + paused + " 个已暂停 · " + failed + " 个待重试";
             ActiveDownloadsEmptyText.Visibility = active == 0 ? Visibility.Visible : Visibility.Collapsed;

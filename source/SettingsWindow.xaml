@@ -19,6 +19,12 @@
             <x:Double x:Key="NavigationViewItemOnLeftMinHeight">40</x:Double>
             <x:Double x:Key="NavigationViewItemOnLeftIconBoxHeight">20</x:Double>
             <Thickness x:Key="NavigationViewItemButtonMargin">4,1,4,1</Thickness>
+            <Style TargetType="PivotHeaderItem">
+                <Setter Property="FontSize" Value="28" />
+            </Style>
+            <Style TargetType="PivotItem">
+                <Setter Property="Margin" Value="0,20,0,0" />
+            </Style>
 
             <Style x:Key="SettingsPageTitleTextStyle" TargetType="TextBlock">
                 <Setter Property="FontSize" Value="28" />
@@ -207,26 +213,26 @@
                                 <Border
                                     Background="{x:Bind StatusBackground, Mode=OneWay}"
                                     Style="{StaticResource SettingsStatusPillStyle}"
-                                    Visibility="{x:Bind StatusVisibility}">
+                                    Visibility="{x:Bind StatusVisibility, Mode=OneWay}">
                                     <TextBlock
                                         FontSize="11"
                                         Foreground="{x:Bind StatusForeground, Mode=OneWay}"
-                                        Text="{x:Bind Status}" />
+                                        Text="{x:Bind Status, Mode=OneWay}" />
                                 </Border>
                                 <Border Style="{StaticResource SettingsTagPillStyle}">
                                     <TextBlock
                                         FontSize="11"
                                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                        Text="{x:Bind Tag1}"
-                                        Visibility="{x:Bind Tag1Visibility}" />
+                                        Text="{x:Bind Tag1, Mode=OneWay}"
+                                        Visibility="{x:Bind Tag1Visibility, Mode=OneWay}" />
                                 </Border>
                                 <Border
                                     Style="{StaticResource SettingsTagPillStyle}"
-                                    Visibility="{x:Bind Tag2Visibility}">
+                                    Visibility="{x:Bind Tag2Visibility, Mode=OneWay}">
                                     <TextBlock
                                         FontSize="11"
                                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                        Text="{x:Bind Tag2}" />
+                                        Text="{x:Bind Tag2, Mode=OneWay}" />
                                 </Border>
                             </StackPanel>
                             <TextBlock
@@ -259,7 +265,7 @@
                                     Content="{x:Bind PrimaryAction, Mode=OneWay}"
                                     Grid.Column="1"
                                     HorizontalAlignment="Stretch"
-                                    IsEnabled="{x:Bind CheckEnabled}"
+                                    IsEnabled="{x:Bind CheckEnabled, Mode=OneWay}"
                                     MinWidth="0"
                                     Click="CheckPluginUpdate_Click"
                                     Style="{StaticResource SettingsCompactButtonStyle}"
@@ -395,27 +401,27 @@
                                 <Border
                                     Background="{x:Bind StatusBackground, Mode=OneWay}"
                                     Style="{StaticResource SettingsStatusPillStyle}"
-                                    Visibility="{x:Bind StatusVisibility}">
+                                    Visibility="{x:Bind StatusVisibility, Mode=OneWay}">
                                     <TextBlock
                                         FontSize="11"
                                         Foreground="{x:Bind StatusForeground, Mode=OneWay}"
-                                        Text="{x:Bind Status}" />
+                                        Text="{x:Bind Status, Mode=OneWay}" />
                                 </Border>
                                 <Border
                                     Style="{StaticResource SettingsTagPillStyle}"
-                                    Visibility="{x:Bind Tag1Visibility}">
+                                    Visibility="{x:Bind Tag1Visibility, Mode=OneWay}">
                                     <TextBlock
                                         FontSize="11"
                                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                        Text="{x:Bind Tag1}" />
+                                        Text="{x:Bind Tag1, Mode=OneWay}" />
                                 </Border>
                                 <Border
                                     Style="{StaticResource SettingsTagPillStyle}"
-                                    Visibility="{x:Bind Tag2Visibility}">
+                                    Visibility="{x:Bind Tag2Visibility, Mode=OneWay}">
                                     <TextBlock
                                         FontSize="11"
                                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                        Text="{x:Bind Tag2}" />
+                                        Text="{x:Bind Tag2, Mode=OneWay}" />
                                 </Border>
                             </StackPanel>
                             <TextBlock
@@ -617,6 +623,33 @@
                 </Border>
             </DataTemplate>
 
+        <!-- 搜索候选：标题 + 描述，右侧小字是它所在的一级入口 · 页面 -->
+        <DataTemplate x:Key="SettingsSearchSuggestionTemplate" x:DataType="local:SettingsSearchSuggestion">
+            <Grid Padding="4,5" ColumnSpacing="10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Spacing="2">
+                    <TextBlock
+                        FontSize="13"
+                        Text="{x:Bind Entry.Title}"
+                        TextTrimming="CharacterEllipsis" />
+                    <TextBlock
+                        FontSize="11"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="{x:Bind Entry.Description}"
+                        TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+                <TextBlock
+                    Grid.Column="1"
+                    VerticalAlignment="Center"
+                    FontSize="11"
+                    Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                    Text="{x:Bind Entry.DisplayPath}" />
+            </Grid>
+        </DataTemplate>
+
         </Grid.Resources>
 
         <Grid.RowDefinitions>
@@ -628,6 +661,11 @@
             x:Name="AppTitleBar"
             Grid.Row="0"
             Background="Transparent">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
             <StackPanel
                 Margin="16,0,0,0"
                 HorizontalAlignment="Left"
@@ -645,6 +683,57 @@
                     FontWeight="SemiBold"
                     Text="Dafeiyu-Go 设置" />
             </StackPanel>
+
+            <!-- 搜索放标题栏正中，椭圆输入框；命中提示跟在右边，不占导航栏 -->
+            <StackPanel
+                x:Name="SettingsSearchHost"
+                Grid.Column="1"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Orientation="Horizontal"
+                Spacing="8">
+                <Border
+                    x:Name="SettingsSearchShell"
+                    Width="360"
+                    Height="34"
+                    Background="{ThemeResource ControlFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="17">
+                    <AutoSuggestBox
+                        x:Name="SettingsSearchBox"
+                        Margin="6,0"
+                        Padding="4,0"
+                        AutomationProperties.Name="搜索设置"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        FontSize="13"
+                        PlaceholderText="搜索设置"
+                        QueryIcon="Find"
+                                                                         
+                                                                             
+                                                                   
+                        UseSystemFocusVisuals="False"
+                        VerticalContentAlignment="Center" QuerySubmitted="SettingsSearchBox_QuerySubmitted" SuggestionChosen="SettingsSearchBox_SuggestionChosen" TextChanged="SettingsSearchBox_TextChanged">
+                        <!--
+                            聚焦不再画系统方框，也不让内层 TextBox 冒出聚焦下划线和悬浮底色：
+                            提示改由外层胶囊边框染色（见 SetSearchShellFocused）。
+                        -->
+                        <AutoSuggestBox.Resources>
+                            <Thickness x:Key="TextControlBorderThemeThicknessFocused">0</Thickness>
+                            <SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="Transparent" />
+                            <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="Transparent" />
+                            <SolidColorBrush x:Key="TextControlBackgroundFocused" Color="Transparent" />
+                            <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent" />
+                        </AutoSuggestBox.Resources>
+                    </AutoSuggestBox>
+                </Border>
+            </StackPanel>
+
+            <!-- 让开系统的最小化 / 最大化 / 关闭 -->
+            <Border
+                Grid.Column="2"
+                Width="140" />
         </Grid>
 
         <Border
@@ -661,9 +750,9 @@
             IsBackButtonVisible="Collapsed"
             IsPaneOpen="True"
             IsSettingsVisible="False"
-            OpenPaneLength="208"
+            OpenPaneLength="224"
             PaneDisplayMode="Left"
-            SelectionChanged="SettingsNavigationView_SelectionChanged">
+                                                                       SelectionChanged="SettingsNavigationView_SelectionChanged">
             <NavigationView.MenuItems>
                 <NavigationViewItem
                     x:Name="HomeNavItem"
@@ -673,68 +762,34 @@
                         <FontIcon Glyph="&#xE80F;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <!--
+                    一级入口：主页 / 通用（常规·提醒·外观·API 与翻译） /
+                    拓展（插件·技能） / 核心（服务·组件） / 更新 / 关于。
+                    更新单独一层；下载任务与开发者留在 Footer，开发者是隐藏入口。
+                    组内使用页内 Pivot 导航，页面不再重复写自己的大标题。
+                -->
                 <NavigationViewItem
-                    x:Name="GeneralNavItem"
-                    Content="常规"
-                    Tag="General">
+                    x:Name="BasicNavItem"
+                    Content="通用"
+                    Tag="Basic">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE713;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem
-                    x:Name="PluginsNavItem"
-                    Content="插件"
-                    Tag="Plugins">
+                    x:Name="FeaturesNavItem"
+                    Content="拓展"
+                    Tag="Features">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE9CE;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem
-                    x:Name="SkillsNavItem"
-                    Content="技能"
-                    Tag="Skills">
-                    <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE8F1;" />
-                    </NavigationViewItem.Icon>
-                </NavigationViewItem>
-                <NavigationViewItem
-                    x:Name="ComponentsNavItem"
-                    Content="组件"
-                    Tag="Components">
+                    x:Name="SystemNavItem"
+                    Content="核心"
+                    Tag="System">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE7B8;" />
-                    </NavigationViewItem.Icon>
-                </NavigationViewItem>
-                <NavigationViewItem
-                    x:Name="ThemeNavItem"
-                    Content="主题"
-                    Tag="Theme">
-                    <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE790;" />
-                    </NavigationViewItem.Icon>
-                </NavigationViewItem>
-                <NavigationViewItem
-                    x:Name="ApiNavItem"
-                    Content="API"
-                    Tag="Api">
-                    <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE8D7;" />
-                    </NavigationViewItem.Icon>
-                </NavigationViewItem>
-                <NavigationViewItem
-                    x:Name="AlertsNavItem"
-                    Content="提醒"
-                    Tag="Alerts">
-                    <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xEA8F;" />
-                    </NavigationViewItem.Icon>
-                </NavigationViewItem>
-                <NavigationViewItem
-                    x:Name="ServiceNavItem"
-                    Content="服务"
-                    Tag="Service">
-                    <NavigationViewItem.Icon>
-                        <FontIcon Glyph="&#xE9F5;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem
@@ -759,7 +814,8 @@
                 <NavigationViewItem
                     x:Name="DownloadsNavItem"
                     Content="下载任务"
-                    Tag="Downloads">
+                    Tag="Downloads"
+                    Visibility="Collapsed">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE896;" />
                     </NavigationViewItem.Icon>
@@ -795,6 +851,171 @@
                         <TextBlock
                             Style="{StaticResource SettingsPageTitleTextStyle}"
                             Text="主页" />
+
+                        <!-- 账户摘要与用量趋势。金额口径在指标旁明确标注。 -->
+                        <Border Style="{StaticResource SettingsCardStyle}" Padding="20,18">
+                            <StackPanel Spacing="18">
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock
+                                        x:Name="HomeUsageTitleText"
+                                        VerticalAlignment="Center"
+                                        FontSize="16"
+                                        FontWeight="SemiBold"
+                                        Text="Token 用量与余额" />
+                                    <ComboBox
+                                        x:Name="HomeUsageRangeBox"
+                                        Grid.Column="1"
+                                        MinWidth="112"
+                                                                                             
+                                        Style="{StaticResource SettingsComboBoxStyle}" SelectionChanged="HomeUsageRangeBox_SelectionChanged">
+                                        <ComboBoxItem
+                                            Content="近 7 天"
+                                            Tag="7" />
+                                        <ComboBoxItem
+                                            Content="近 15 天"
+                                            Tag="15" />
+                                        <ComboBoxItem
+                                            Content="近 30 天"
+                                            Tag="30" />
+                                    </ComboBox>
+                                    <Button
+                                        x:Name="HomeUsageRefreshButton"
+                                        Grid.Column="2"
+                                        Content="刷新"
+                                                                            
+                                        Style="{StaticResource SettingsCompactButtonStyle}"  Click="HomeUsageRefreshButton_Click"/>
+                                </Grid>
+                                <Grid ColumnSpacing="18">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="1.2*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="6">
+                                        <TextBlock Text="账户余额" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                        <TextBlock x:Name="HomeUsageBalanceText" Text="—" FontSize="28" FontWeight="SemiBold"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock x:Name="HomeUsageBalanceStateText" Text="正在读取…"
+                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                    </StackPanel>
+                                    <Border Grid.Column="1" Width="1" Margin="0,4"
+                                            Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                                    <StackPanel Grid.Column="2" Spacing="6">
+                                        <TextBlock Text="今日 Token" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                        <TextBlock x:Name="HomeUsageTodayTokensText" Text="—" FontSize="24" FontWeight="SemiBold" />
+                                        <TextBlock x:Name="HomeUsageTodayRequestsText" Text="等待统计"
+                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="3" Spacing="6">
+                                        <TextBlock Text="今日花费 · 估算" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                        <TextBlock x:Name="HomeUsageTodayCostText" Text="—" FontSize="24" FontWeight="SemiBold" />
+                                        <TextBlock x:Name="HomeUsageTodayLedgerText" Text="按模型单价计算"
+                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <Border x:Name="HomeUsageChartPanel"
+                                        Padding="14,12" CornerRadius="{ThemeResource ControlCornerRadius}"
+                                        Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                        Visibility="Collapsed">
+                                    <StackPanel Spacing="10">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="用量趋势" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="14">
+                                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                                    <Border Width="8" Height="10" VerticalAlignment="Center"
+                                                            Background="{ThemeResource AccentFillColorTertiaryBrush}" />
+                                                    <TextBlock Text="Token" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                                    <Border Width="14" Height="2" VerticalAlignment="Center"
+                                                            Background="{ThemeResource AccentFillColorDefaultBrush}" />
+                                                    <TextBlock Text="估算花费" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Grid>
+                                        <Canvas x:Name="HomeUsageChart" Height="172" Background="Transparent"
+                                                                                            
+                                                                                          
+                                                                                          PointerExited="HomeUsageChart_PointerExited" PointerMoved="HomeUsageChart_PointerMoved" SizeChanged="HomeUsageChart_SizeChanged"/>
+                                        <TextBlock x:Name="HomeUsageChartPeakText"
+                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock
+                                    x:Name="HomeUsageHintText"
+                                    Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                    TextWrapping="Wrap" />
+                                <Button
+                                    x:Name="HomeUsageInstallButton"
+                                    Content="安装用量统计插件"
+                                                                        
+                                    Style="{StaticResource SettingsActionButtonStyle}"
+                                    Visibility="Collapsed"  Click="HomeUsageInstallButton_Click"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel Spacing="10">
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock
+                                        VerticalAlignment="Center"
+                                        FontSize="16"
+                                        FontWeight="SemiBold"
+                                        Text="公告" />
+                                    <Border
+                                        x:Name="HomeUnreadPill"
+                                        Grid.Column="1"
+                                        HorizontalAlignment="Left"
+                                        Background="{ThemeResource SystemFillColorAttentionBackgroundBrush}"
+                                        Style="{StaticResource SettingsStatusPillStyle}"
+                                        Visibility="Collapsed">
+                                        <TextBlock
+                                            x:Name="HomeUnreadText"
+                                            FontSize="12"
+                                            Text="有新公告" />
+                                    </Border>
+                                    <Button
+                                        x:Name="HomeAnnouncementRefreshButton"
+                                        Grid.Column="2"
+                                        Content="刷新"
+                                        Style="{StaticResource SettingsCompactButtonStyle}" />
+                                    <Button
+                                        x:Name="HomeAnnouncementReadButton"
+                                        Grid.Column="3"
+                                        Content="全部已读"
+                                        Style="{StaticResource SettingsCompactButtonStyle}" />
+                                </Grid>
+                                <ItemsRepeater
+                                    x:Name="HomeAnnouncementRepeater"
+                                    ItemTemplate="{StaticResource HomeAnnouncementTemplate}" />
+                                <TextBlock
+                                    x:Name="HomeAnnouncementEmptyText"
+                                    Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                    Text="还没有公告。"
+                                    Visibility="Collapsed" />
+                                <TextBlock
+                                    x:Name="HomeAnnouncementStateText"
+                                    Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                            </StackPanel>
+                        </Border>
+
 
                         <Border Style="{StaticResource SettingsCardStyle}">
                             <Grid ColumnSpacing="16">
@@ -880,171 +1101,6 @@
 
                         <Border Style="{StaticResource SettingsCardStyle}">
                             <StackPanel Spacing="10">
-                                <Grid ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock
-                                        VerticalAlignment="Center"
-                                        FontSize="16"
-                                        FontWeight="SemiBold"
-                                        Text="公告" />
-                                    <Border
-                                        x:Name="HomeUnreadPill"
-                                        Grid.Column="1"
-                                        HorizontalAlignment="Left"
-                                        Background="{ThemeResource SystemFillColorAttentionBackgroundBrush}"
-                                        Style="{StaticResource SettingsStatusPillStyle}"
-                                        Visibility="Collapsed">
-                                        <TextBlock
-                                            x:Name="HomeUnreadText"
-                                            FontSize="12"
-                                            Text="有新公告" />
-                                    </Border>
-                                    <Button
-                                        x:Name="HomeAnnouncementRefreshButton"
-                                        Grid.Column="2"
-                                        Content="刷新"
-                                        Style="{StaticResource SettingsCompactButtonStyle}" />
-                                    <Button
-                                        x:Name="HomeAnnouncementReadButton"
-                                        Grid.Column="3"
-                                        Content="全部已读"
-                                        Style="{StaticResource SettingsCompactButtonStyle}" />
-                                </Grid>
-                                <ItemsRepeater
-                                    x:Name="HomeAnnouncementRepeater"
-                                    ItemTemplate="{StaticResource HomeAnnouncementTemplate}" />
-                                <TextBlock
-                                    x:Name="HomeAnnouncementEmptyText"
-                                    Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                    Text="还没有公告。"
-                                    Visibility="Collapsed" />
-                                <TextBlock
-                                    x:Name="HomeAnnouncementStateText"
-                                    Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                            </StackPanel>
-                        </Border>
-
-                        <!-- 账户摘要与用量趋势。金额口径在指标旁明确标注。 -->
-                        <Border Style="{StaticResource SettingsCardStyle}" Padding="20,18">
-                            <StackPanel Spacing="18">
-                                <Grid ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock
-                                        x:Name="HomeUsageTitleText"
-                                        VerticalAlignment="Center"
-                                        FontSize="16"
-                                        FontWeight="SemiBold"
-                                        Text="Token 用量与余额" />
-                                    <ComboBox
-                                        x:Name="HomeUsageRangeBox"
-                                        Grid.Column="1"
-                                        MinWidth="112"
-                                        SelectionChanged="HomeUsageRangeBox_SelectionChanged"
-                                        Style="{StaticResource SettingsComboBoxStyle}">
-                                        <ComboBoxItem
-                                            Content="近 7 天"
-                                            Tag="7" />
-                                        <ComboBoxItem
-                                            Content="近 15 天"
-                                            Tag="15" />
-                                        <ComboBoxItem
-                                            Content="近 30 天"
-                                            Tag="30" />
-                                    </ComboBox>
-                                    <Button
-                                        x:Name="HomeUsageRefreshButton"
-                                        Grid.Column="2"
-                                        Content="刷新"
-                                        Click="HomeUsageRefreshButton_Click"
-                                        Style="{StaticResource SettingsCompactButtonStyle}" />
-                                </Grid>
-                                <Grid ColumnSpacing="18">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="1.2*" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Spacing="6">
-                                        <TextBlock Text="账户余额" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                        <TextBlock x:Name="HomeUsageBalanceText" Text="—" FontSize="28" FontWeight="SemiBold"
-                                                   TextTrimming="CharacterEllipsis" />
-                                        <TextBlock x:Name="HomeUsageBalanceStateText" Text="正在读取…"
-                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                    </StackPanel>
-                                    <Border Grid.Column="1" Width="1" Margin="0,4"
-                                            Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
-                                    <StackPanel Grid.Column="2" Spacing="6">
-                                        <TextBlock Text="今日 Token" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                        <TextBlock x:Name="HomeUsageTodayTokensText" Text="—" FontSize="24" FontWeight="SemiBold" />
-                                        <TextBlock x:Name="HomeUsageTodayRequestsText" Text="等待统计"
-                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="3" Spacing="6">
-                                        <TextBlock Text="今日花费 · 估算" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                        <TextBlock x:Name="HomeUsageTodayCostText" Text="—" FontSize="24" FontWeight="SemiBold" />
-                                        <TextBlock x:Name="HomeUsageTodayLedgerText" Text="按模型单价计算"
-                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                    </StackPanel>
-                                </Grid>
-
-                                <Border x:Name="HomeUsageChartPanel"
-                                        Padding="14,12" CornerRadius="{ThemeResource ControlCornerRadius}"
-                                        Background="{ThemeResource SubtleFillColorSecondaryBrush}"
-                                        Visibility="Collapsed">
-                                    <StackPanel Spacing="10">
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Text="用量趋势" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
-                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="14">
-                                                <StackPanel Orientation="Horizontal" Spacing="6">
-                                                    <Border Width="8" Height="10" VerticalAlignment="Center"
-                                                            Background="{ThemeResource AccentFillColorTertiaryBrush}" />
-                                                    <TextBlock Text="Token" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                                </StackPanel>
-                                                <StackPanel Orientation="Horizontal" Spacing="6">
-                                                    <Border Width="14" Height="2" VerticalAlignment="Center"
-                                                            Background="{ThemeResource AccentFillColorDefaultBrush}" />
-                                                    <TextBlock Text="估算花费" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                                </StackPanel>
-                                            </StackPanel>
-                                        </Grid>
-                                        <Canvas x:Name="HomeUsageChart" Height="172" Background="Transparent"
-                                                PointerExited="HomeUsageChart_PointerExited"
-                                                PointerMoved="HomeUsageChart_PointerMoved"
-                                                SizeChanged="HomeUsageChart_SizeChanged" />
-                                        <TextBlock x:Name="HomeUsageChartPeakText"
-                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                    </StackPanel>
-                                </Border>
-
-                                <TextBlock
-                                    x:Name="HomeUsageHintText"
-                                    Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                    TextWrapping="Wrap" />
-                                <Button
-                                    x:Name="HomeUsageInstallButton"
-                                    Content="安装用量统计插件"
-                                    Click="HomeUsageInstallButton_Click"
-                                    Style="{StaticResource SettingsActionButtonStyle}"
-                                    Visibility="Collapsed" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Style="{StaticResource SettingsCardStyle}">
-                            <StackPanel Spacing="10">
                                 <TextBlock
                                     FontSize="16"
                                     FontWeight="SemiBold"
@@ -1071,14 +1127,35 @@
                         </Border>
                     </StackPanel>
 
+                    <!--
+                        分组内容宿主：一级入口选择分组，页内 Pivot 选择页面。
+                        保留原有页面实例、字段和事件绑定。
+                    -->
+                    <StackPanel
+                        x:Name="BasicPage"
+                        Spacing="16"
+                        Visibility="Collapsed">
+                        <Pivot x:Name="BasicTabs"                                                     HorizontalAlignment="Stretch"  SelectionChanged="SettingsSection_SelectionChanged"/>
+                    </StackPanel>
+
+                    <StackPanel
+                        x:Name="FeaturesPage"
+                        Spacing="16"
+                        Visibility="Collapsed">
+                        <Pivot x:Name="FeaturesTabs"                                                     HorizontalAlignment="Stretch"  SelectionChanged="SettingsSection_SelectionChanged"/>
+                    </StackPanel>
+
+                    <StackPanel
+                        x:Name="SystemPage"
+                        Spacing="16"
+                        Visibility="Collapsed">
+                        <Pivot x:Name="SystemTabs"                                                     HorizontalAlignment="Stretch"  SelectionChanged="SettingsSection_SelectionChanged"/>
+                    </StackPanel>
+
                     <!-- 常规 -->
                     <StackPanel
                         x:Name="GeneralPage"
                         Spacing="16">
-                        <TextBlock
-                            Style="{StaticResource SettingsPageTitleTextStyle}"
-                            Text="常规" />
-
                         <Border Style="{StaticResource SettingsCardStyle}">
                             <StackPanel Spacing="12">
                                 <Grid Style="{StaticResource SettingsRowGridStyle}">
@@ -1106,13 +1183,13 @@
                                             Content="随机端口"
                                             GroupName="StartupPortMode"
                                             Tag="Random"
-                                            Checked="PortModeRadio_Checked" />
+                                                                             Checked="PortModeRadio_Checked"/>
                                         <RadioButton
                                             x:Name="FixedPortRadio"
                                             Content="固定端口"
                                             GroupName="StartupPortMode"
                                             Tag="Fixed"
-                                            Checked="PortModeRadio_Checked" />
+                                                                             Checked="PortModeRadio_Checked"/>
                                         <RadioButton
                                             x:Name="DefaultPortRadio"
                                             Content="默认 3080"
@@ -1277,7 +1354,7 @@
                                         Text="自动测速并选择最快源。" />
                                     <RadioButtons
                                         x:Name="AcceleratorSourceSelector"
-                                        SelectionChanged="AcceleratorSourceSelector_SelectionChanged">
+                                                                                                      SelectionChanged="AcceleratorSourceSelector_SelectionChanged">
                                         <RadioButton
                                             x:Name="AcceleratorAutoRadio"
                                             Content="自动（推荐）"
@@ -1450,15 +1527,15 @@
                                     <Button
                                         x:Name="BackupExportButton"
                                         Grid.Column="1"
-                                        Click="BackupExportButton_Click"
+                                                                        
                                         Content="导出数据"
-                                        Style="{StaticResource SettingsActionButtonStyle}" />
+                                        Style="{StaticResource SettingsActionButtonStyle}"  Click="BackupExportButton_Click"/>
                                     <Button
                                         x:Name="BackupImportButton"
                                         Grid.Column="2"
-                                        Click="BackupImportButton_Click"
+                                                                        
                                         Content="导入数据"
-                                        Style="{StaticResource SettingsActionButtonStyle}" />
+                                        Style="{StaticResource SettingsActionButtonStyle}"  Click="BackupImportButton_Click"/>
                                 </Grid>
 
                                 <InfoBar
@@ -1490,9 +1567,9 @@
                                         <Button
                                             x:Name="BackupExportFolderButton"
                                             Grid.Column="1"
-                                            Click="BackupExportFolderButton_Click"
+                                                                                  
                                             Content="选择文件夹"
-                                            Style="{StaticResource SettingsActionButtonStyle}" />
+                                            Style="{StaticResource SettingsActionButtonStyle}"  Click="BackupExportFolderButton_Click"/>
                                     </Grid>
                                     <Grid ColumnSpacing="8">
                                         <Grid.ColumnDefinitions>
@@ -1502,9 +1579,9 @@
                                         </Grid.ColumnDefinitions>
                                         <Button
                                             x:Name="BackupExportStartButton"
-                                            Click="BackupExportStartButton_Click"
+                                                                                 
                                             Content="开始导出"
-                                            Style="{StaticResource SettingsAccentActionButtonStyle}" />
+                                            Style="{StaticResource SettingsAccentActionButtonStyle}"  Click="BackupExportStartButton_Click"/>
                                         <ProgressBar
                                             x:Name="BackupExportProgress"
                                             Grid.Column="1"
@@ -1515,10 +1592,10 @@
                                         <Button
                                             x:Name="BackupExportCancelButton"
                                             Grid.Column="2"
-                                            Click="BackupCancel_Click"
+                                                                      
                                             Content="取消"
                                             Style="{StaticResource SettingsCompactButtonStyle}"
-                                            Visibility="Collapsed" />
+                                            Visibility="Collapsed"  Click="BackupCancel_Click"/>
                                     </Grid>
                                     <TextBlock
                                         x:Name="BackupExportDetail"
@@ -1542,9 +1619,9 @@
                                         <Button
                                             x:Name="BackupImportPickButton"
                                             Grid.Column="1"
-                                            Click="BackupImportPickButton_Click"
+                                                                                
                                             Content="选择备份包"
-                                            Style="{StaticResource SettingsActionButtonStyle}" />
+                                            Style="{StaticResource SettingsActionButtonStyle}"  Click="BackupImportPickButton_Click"/>
                                     </Grid>
                                     <StackPanel
                                         x:Name="BackupImportGroupsPanel"
@@ -1581,9 +1658,9 @@
                                         </Grid.ColumnDefinitions>
                                         <Button
                                             x:Name="BackupImportStartButton"
-                                            Click="BackupImportStartButton_Click"
+                                                                                 
                                             Content="开始导入"
-                                            Style="{StaticResource SettingsAccentActionButtonStyle}" />
+                                            Style="{StaticResource SettingsAccentActionButtonStyle}"  Click="BackupImportStartButton_Click"/>
                                         <ProgressBar
                                             x:Name="BackupImportProgress"
                                             Grid.Column="1"
@@ -1594,10 +1671,10 @@
                                         <Button
                                             x:Name="BackupImportCancelButton"
                                             Grid.Column="2"
-                                            Click="BackupCancel_Click"
+                                                                      
                                             Content="取消"
                                             Style="{StaticResource SettingsCompactButtonStyle}"
-                                            Visibility="Collapsed" />
+                                            Visibility="Collapsed"  Click="BackupCancel_Click"/>
                                     </Grid>
                                     <TextBlock
                                         x:Name="BackupImportDetail"
@@ -1613,10 +1690,6 @@
                         x:Name="ThemePage"
                         Spacing="16"
                         Visibility="Collapsed">
-                        <TextBlock
-                            Style="{StaticResource SettingsPageTitleTextStyle}"
-                            Text="主题" />
-
                         <Border Style="{StaticResource SettingsCardStyle}">
                             <Grid Style="{StaticResource SettingsRowGridStyle}">
                                 <Grid.ColumnDefinitions>
@@ -1637,8 +1710,8 @@
                                     x:Name="ThemeComboBox"
                                     Grid.Column="1"
                                     SelectedIndex="2"
-                                    SelectionChanged="ThemeComboBox_SelectionChanged"
-                                    MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                                                                     
+                                    MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center" SelectionChanged="ThemeComboBox_SelectionChanged">
                                     <ComboBoxItem Content="浅色" Tag="Light" />
                                     <ComboBoxItem Content="深色" Tag="Dark" />
                                     <ComboBoxItem Content="跟随系统" Tag="System" />
@@ -1666,8 +1739,8 @@
                                     x:Name="WindowStyleComboBox"
                                     Grid.Column="1"
                                     SelectedIndex="1"
-                                    SelectionChanged="WindowStyleComboBox_SelectionChanged"
-                                    MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                                                                           
+                                    MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center" SelectionChanged="WindowStyleComboBox_SelectionChanged">
                                     <ComboBoxItem Content="Windows 10" Tag="Windows10" />
                                     <ComboBoxItem Content="Windows 11" Tag="Windows11" />
                                 </ComboBox>
@@ -1699,7 +1772,7 @@
                                         x:Name="AccentSourceComboBox"
                                         MinWidth="168"
                                         SelectedIndex="0"
-                                        SelectionChanged="AccentSourceComboBox_SelectionChanged">
+                                                                                                 SelectionChanged="AccentSourceComboBox_SelectionChanged">
                                         <ComboBoxItem Content="跟随 Windows" Tag="System" />
                                         <ComboBoxItem Content="自选" Tag="Custom" />
                                     </ComboBox>
@@ -1713,10 +1786,10 @@
                                             <Flyout>
                                                 <ColorPicker
                                                     x:Name="AccentColorPicker"
-                                                    ColorChanged="AccentColorPicker_ColorChanged"
+                                                                                                 
                                                     IsAlphaEnabled="False"
                                                     IsAlphaSliderVisible="False"
-                                                    IsAlphaTextInputVisible="False" />
+                                                    IsAlphaTextInputVisible="False"  ColorChanged="AccentColorPicker_ColorChanged"/>
                                             </Flyout>
                                         </Button.Flyout>
                                         <Border
@@ -1750,8 +1823,8 @@
                                     x:Name="MaterialComboBox"
                                     Grid.Column="1"
                                     SelectedIndex="0"
-                                    SelectionChanged="MaterialComboBox_SelectionChanged"
-                                    MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                                                                        
+                                    MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center" SelectionChanged="MaterialComboBox_SelectionChanged">
                                     <ComboBoxItem Content="云母" Tag="Mica" />
                                     <ComboBoxItem Content="云母 Alt" Tag="MicaAlt" />
                                     <ComboBoxItem Content="轻薄亚克力" Tag="AcrylicThin" />
@@ -1767,10 +1840,6 @@
                         x:Name="ApiPage"
                         Spacing="16"
                         Visibility="Collapsed">
-                        <TextBlock
-                            Style="{StaticResource SettingsPageTitleTextStyle}"
-                            Text="API" />
-
                         <Border Style="{StaticResource SettingsCardStyle}">
                             <StackPanel Spacing="12">
                                 <StackPanel Spacing="3">
@@ -1791,29 +1860,98 @@
                                     Spacing="14">
                                     <CheckBox
                                         x:Name="ShowApiKeyCheckBox"
-                                        Checked="ShowApiKeyCheckBox_Changed"
+                                                                            
                                         Content="显示 API Key"
-                                        Unchecked="ShowApiKeyCheckBox_Changed" />
+                                                                                Checked="ShowApiKeyCheckBox_Changed" Unchecked="ShowApiKeyCheckBox_Changed"/>
                                     <HyperlinkButton
-                                        Click="OpenApiKeysPage_Click"
+                                                                     
                                         Content="打开 DeepSeek API Keys 页面"
-                                        Padding="0" />
+                                        Padding="0"  Click="OpenApiKeysPage_Click"/>
                                 </StackPanel>
                                 <StackPanel
                                     HorizontalAlignment="Right"
                                     Orientation="Horizontal"
                                     Spacing="8">
                                     <Button
-                                        Click="ClearApiKey_Click"
+                                                                 
                                         Content="清空"
-                                        Style="{StaticResource SettingsActionButtonStyle}" />
+                                        Style="{StaticResource SettingsActionButtonStyle}"  Click="ClearApiKey_Click"/>
                                     <Button
-                                        Click="SaveApiKey_Click"
+                                                                
                                         Content="保存"
-                                        Style="{StaticResource SettingsAccentActionButtonStyle}" />
+                                        Style="{StaticResource SettingsAccentActionButtonStyle}"  Click="SaveApiKey_Click"/>
                                 </StackPanel>
                                 <InfoBar
                                     x:Name="ApiKeyStatusInfoBar"
+                                    IsClosable="False"
+                                    IsOpen="False" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 技能/插件文档中文翻译：复用上面那把 API Key，不另要密钥。 -->
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel Spacing="12">
+                                <StackPanel Spacing="3">
+                                    <TextBlock
+                                        Style="{StaticResource SettingsRowTitleTextStyle}"
+                                        Text="文档中文翻译" />
+                                    <TextBlock
+                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                        Text="技能与插件详情页的「翻译成中文」用这套模型；复用上面的 API Key，只有点按钮才会联网。" />
+                                </StackPanel>
+                                <Grid Style="{StaticResource SettingsRowGridStyle}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel
+                                        VerticalAlignment="Center"
+                                        Spacing="3">
+                                        <TextBlock
+                                            Style="{StaticResource SettingsRowTitleTextStyle}"
+                                            Text="翻译模型" />
+                                        <TextBlock
+                                            Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                            Text="默认 deepseek-chat。" />
+                                    </StackPanel>
+                                    <TextBox
+                                        x:Name="TranslationModelBox"
+                                        Grid.Column="1"
+                                        MinWidth="220"
+                                        PlaceholderText="deepseek-chat" />
+                                </Grid>
+                                <Grid Style="{StaticResource SettingsRowGridStyle}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel
+                                        VerticalAlignment="Center"
+                                        Spacing="3">
+                                        <TextBlock
+                                            Style="{StaticResource SettingsRowTitleTextStyle}"
+                                            Text="接口地址" />
+                                        <TextBlock
+                                            Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                            Text="默认 https://api.deepseek.com。" />
+                                    </StackPanel>
+                                    <TextBox
+                                        x:Name="TranslationBaseUrlBox"
+                                        Grid.Column="1"
+                                        MinWidth="220"
+                                        PlaceholderText="https://api.deepseek.com" />
+                                </Grid>
+                                <StackPanel
+                                    HorizontalAlignment="Right"
+                                    Orientation="Horizontal"
+                                    Spacing="8">
+                                    <Button
+                                                                             
+                                        Content="保存翻译设置"
+                                        Style="{StaticResource SettingsAccentActionButtonStyle}"  Click="SaveTranslationSettings_Click"/>
+                                </StackPanel>
+                                <InfoBar
+                                    x:Name="TranslationSettingsInfoBar"
                                     IsClosable="False"
                                     IsOpen="False" />
                             </StackPanel>
@@ -1839,26 +1977,26 @@
                                     Spacing="14">
                                     <CheckBox
                                         x:Name="ShowGitHubTokenCheckBox"
-                                        Checked="ShowGitHubTokenCheckBox_Changed"
+                                                                                 
                                         Content="显示 Token"
-                                        Unchecked="ShowGitHubTokenCheckBox_Changed" />
+                                                                                     Checked="ShowGitHubTokenCheckBox_Changed" Unchecked="ShowGitHubTokenCheckBox_Changed"/>
                                     <HyperlinkButton
-                                        Click="OpenGitHubTokenPage_Click"
+                                                                         
                                         Content="打开 GitHub Token 设置页面"
-                                        Padding="0" />
+                                        Padding="0"  Click="OpenGitHubTokenPage_Click"/>
                                 </StackPanel>
                                 <StackPanel
                                     HorizontalAlignment="Right"
                                     Orientation="Horizontal"
                                     Spacing="8">
                                     <Button
-                                        Click="ClearGitHubToken_Click"
+                                                                      
                                         Content="清空"
-                                        Style="{StaticResource SettingsActionButtonStyle}" />
+                                        Style="{StaticResource SettingsActionButtonStyle}"  Click="ClearGitHubToken_Click"/>
                                     <Button
-                                        Click="SaveGitHubToken_Click"
+                                                                     
                                         Content="保存"
-                                        Style="{StaticResource SettingsAccentActionButtonStyle}" />
+                                        Style="{StaticResource SettingsAccentActionButtonStyle}"  Click="SaveGitHubToken_Click"/>
                                 </StackPanel>
                                 <InfoBar
                                     x:Name="GitHubTokenStatusInfoBar"
@@ -1909,10 +2047,6 @@
                         x:Name="AlertsPage"
                         Spacing="16"
                         Visibility="Collapsed">
-                        <TextBlock
-                            Style="{StaticResource SettingsPageTitleTextStyle}"
-                            Text="提醒" />
-
                         <Border Style="{StaticResource SettingsCardStyle}">
                             <Grid Style="{StaticResource SettingsRowGridStyle}">
                                 <Grid.ColumnDefinitions>
@@ -2111,10 +2245,6 @@
                         x:Name="ServicePage"
                         Spacing="16"
                         Visibility="Collapsed">
-                        <TextBlock
-                            Style="{StaticResource SettingsPageTitleTextStyle}"
-                            Text="服务" />
-
                         <Border Style="{StaticResource SettingsCardStyle}">
                             <Grid Style="{StaticResource SettingsRowGridStyle}">
                                 <Grid.ColumnDefinitions>
@@ -2171,9 +2301,9 @@
                                         Text="" />
                                     <Button
                                         Grid.Column="1"
-                                        Click="BrowseDshDirectory_Click"
+                                                                        
                                         Content="浏览"
-                                        Style="{StaticResource SettingsCompactButtonStyle}" />
+                                        Style="{StaticResource SettingsCompactButtonStyle}"  Click="BrowseDshDirectory_Click"/>
                                 </Grid>
                                 <InfoBar
                                     x:Name="NextServiceStartInfoBar"
@@ -2207,9 +2337,9 @@
                                         Text="" />
                                     <Button
                                         Grid.Column="1"
-                                        Click="BrowseNodeExecutable_Click"
+                                                                          
                                         Content="浏览"
-                                        Style="{StaticResource SettingsCompactButtonStyle}" />
+                                        Style="{StaticResource SettingsCompactButtonStyle}"  Click="BrowseNodeExecutable_Click"/>
                                 </Grid>
                             </StackPanel>
                         </Border>
@@ -2256,9 +2386,9 @@
                                 </StackPanel>
                                 <Button
                                     Grid.Column="1"
-                                    Click="OpenDshLogs_Click"
+                                                             
                                     Content="打开日志目录"
-                                    Style="{StaticResource SettingsActionButtonStyle}" />
+                                    Style="{StaticResource SettingsActionButtonStyle}"  Click="OpenDshLogs_Click"/>
                             </Grid>
                         </Border>
                     </StackPanel>
@@ -2268,34 +2398,42 @@
                         x:Name="PluginsPage"
                         Spacing="16"
                         Visibility="Collapsed">
-                        <TextBlock
-                            Style="{StaticResource SettingsPageTitleTextStyle}"
-                            Text="插件" />
-
-                        <!-- 自检 / 修复:profile 里记着的插件和 node_modules 里实际有的对不上时用 -->
-                        <StackPanel
-                            Orientation="Horizontal"
-                            Spacing="8">
-                            <Button
-                                x:Name="PluginSelfCheckButton"
-                                Click="PluginSelfCheck_Click"
-                                Content="插件自检" />
-                            <Button
-                                x:Name="PluginRepairButton"
-                                Click="PluginRepair_Click"
-                                Content="一键修复" />
-                            <TextBlock
-                                x:Name="PluginHealthText"
-                                VerticalAlignment="Center"
-                                FontSize="12"
-                                TextWrapping="Wrap"
-                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        </StackPanel>
-
                         <InfoBar
                             x:Name="PluginActionInfoBar"
                             IsClosable="False"
                             IsOpen="False" />
+                        <!-- 粘贴 GitHub 仓库链接直接装：整仓走官方 dsh plugin add，
+                             装完 base bundle 的热加载自动挂上，不用重启；只有覆盖同名包才要重启 -->
+                        <StackPanel Spacing="6">
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <AutoSuggestBox
+                                    x:Name="PluginLinkBox"
+                                    PlaceholderText="粘贴 GitHub 仓库链接或 owner/repo（支持 #ref），也可以填 github:owner/repo、tarball 直链、本地绝对路径"
+                                    QueryIcon="Link" />
+                                <Button
+                                    x:Name="InstallPluginFromLinkButton"
+                                    Grid.Column="1"
+                                    Click="InstallPluginFromLink_Click"
+                                    Content="安装插件"
+                                    Style="{StaticResource SettingsActionButtonStyle}" />
+                                <Button
+                                    x:Name="RestartDshFromPluginButton"
+                                    Grid.Column="2"
+                                    Click="RestartDshFromPlugin_Click"
+                                    Content="重启 DSH"
+                                    Style="{StaticResource SettingsAccentActionButtonStyle}"
+                                    Visibility="Collapsed" />
+                            </Grid>
+                            <TextBlock
+                                Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                Text="装完 DSH 会自动热加载，无需重启；只有覆盖已加载的同名插件时才需要重启。"
+                                TextWrapping="Wrap" />
+                        </StackPanel>
 
                         <TabView
                             x:Name="PluginViewTabs"
@@ -2700,6 +2838,26 @@
                             </TabViewItem>
                         </TabView>
 
+                        <!-- 自检 / 修复:profile 里记着的插件和 node_modules 里实际有的对不上时用 -->
+                        <StackPanel
+                            Orientation="Horizontal"
+                            Spacing="8">
+                            <Button
+                                x:Name="PluginSelfCheckButton"
+                                                             
+                                Content="插件自检"  Click="PluginSelfCheck_Click"/>
+                            <Button
+                                x:Name="PluginRepairButton"
+                                                          
+                                Content="一键修复"  Click="PluginRepair_Click"/>
+                            <TextBlock
+                                x:Name="PluginHealthText"
+                                VerticalAlignment="Center"
+                                FontSize="12"
+                                TextWrapping="Wrap"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+
                     </StackPanel>
 
                     <!-- 技能 -->
@@ -2707,10 +2865,6 @@
                         x:Name="SkillsPage"
                         Spacing="16"
                         Visibility="Collapsed">
-                        <TextBlock
-                            Style="{StaticResource SettingsPageTitleTextStyle}"
-                            Text="技能" />
-
                         <InfoBar
                             x:Name="SkillActionInfoBar"
                             IsClosable="False"
@@ -3077,10 +3231,6 @@
                         x:Name="ComponentsPage"
                         Spacing="16"
                         Visibility="Collapsed">
-                        <TextBlock
-                            Style="{StaticResource SettingsPageTitleTextStyle}"
-                            Text="组件" />
-
                         <Grid ColumnSpacing="12">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
@@ -3129,10 +3279,10 @@
                                 <Button
                                     x:Name="InstallDotNetButton"
                                     Grid.Column="2"
-                                    Click="InstallComponent_Click"
+                                                                  
                                     Content="下载并安装"
                                     Tag="runtime-dotnet"
-                                    Style="{StaticResource SettingsActionButtonStyle}" />
+                                    Style="{StaticResource SettingsActionButtonStyle}"  Click="InstallComponent_Click"/>
                             </Grid>
                         </Border>
 
@@ -3163,10 +3313,10 @@
                                 <Button
                                     x:Name="InstallWinAppRuntimeButton"
                                     Grid.Column="2"
-                                    Click="InstallComponent_Click"
+                                                                  
                                     Content="下载并安装"
                                     Tag="runtime-winapprt"
-                                    Style="{StaticResource SettingsActionButtonStyle}" />
+                                    Style="{StaticResource SettingsActionButtonStyle}"  Click="InstallComponent_Click"/>
                             </Grid>
                         </Border>
 
@@ -3197,10 +3347,10 @@
                                 <Button
                                     x:Name="InstallNodeButton"
                                     Grid.Column="2"
-                                    Click="InstallComponent_Click"
+                                                                  
                                     Content="下载并安装"
                                     Tag="node"
-                                    Style="{StaticResource SettingsActionButtonStyle}" />
+                                    Style="{StaticResource SettingsActionButtonStyle}"  Click="InstallComponent_Click"/>
                             </Grid>
                         </Border>
 
@@ -3231,10 +3381,10 @@
                                 <Button
                                     x:Name="InstallGitButton"
                                     Grid.Column="2"
-                                    Click="InstallComponent_Click"
+                                                                  
                                     Content="下载并安装"
                                     Tag="git"
-                                    Style="{StaticResource SettingsActionButtonStyle}" />
+                                    Style="{StaticResource SettingsActionButtonStyle}"  Click="InstallComponent_Click"/>
                             </Grid>
                         </Border>
 
@@ -3265,10 +3415,10 @@
                                 <Button
                                     x:Name="InstallPnpmButton"
                                     Grid.Column="2"
-                                    Click="InstallComponent_Click"
+                                                                  
                                     Content="下载并安装"
                                     Tag="pnpm"
-                                    Style="{StaticResource SettingsActionButtonStyle}" />
+                                    Style="{StaticResource SettingsActionButtonStyle}"  Click="InstallComponent_Click"/>
                             </Grid>
                         </Border>
 
@@ -3299,10 +3449,10 @@
                                 <Button
                                     x:Name="InstallPythonButton"
                                     Grid.Column="2"
-                                    Click="InstallComponent_Click"
+                                                                  
                                     Content="下载并安装"
                                     Tag="python"
-                                    Style="{StaticResource SettingsActionButtonStyle}" />
+                                    Style="{StaticResource SettingsActionButtonStyle}"  Click="InstallComponent_Click"/>
                             </Grid>
                         </Border>
                     </StackPanel>
@@ -3367,8 +3517,8 @@
                                         Grid.Column="1"
                                         SelectedIndex="0"
                                         IsEnabled="False"
-                                        SelectionChanged="UpdateChannelComboBox_SelectionChanged"
-                                        MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                                                                                 
+                                        MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center" SelectionChanged="UpdateChannelComboBox_SelectionChanged">
                                         <ComboBoxItem Content="自动模式" Tag="Auto" />
                                         <ComboBoxItem Content="正式版" Tag="Stable" />
                                         <ComboBoxItem Content="内测版" Tag="Preview" />
@@ -3394,8 +3544,8 @@
                                         x:Name="DshChannelComboBox"
                                         Grid.Column="1"
                                         SelectedIndex="0"
-                                        SelectionChanged="UpdateChannelComboBox_SelectionChanged"
-                                        MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                                                                                 
+                                        MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center" SelectionChanged="UpdateChannelComboBox_SelectionChanged">
                                         <ComboBoxItem Content="自动模式" Tag="Auto" />
                                         <ComboBoxItem Content="正式版" Tag="latest" />
                                         <ComboBoxItem Content="预览版" Tag="next" />
@@ -3428,8 +3578,8 @@
                                         x:Name="LauncherUpdateModeComboBox"
                                         Grid.Column="1"
                                         SelectedIndex="0"
-                                        SelectionChanged="UpdateModeComboBox_SelectionChanged"
-                                        MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                                                                              
+                                        MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center" SelectionChanged="UpdateModeComboBox_SelectionChanged">
                                         <ComboBoxItem Content="自动下载并安装" Tag="Install" />
                                         <ComboBoxItem Content="仅检查更新" Tag="Check" />
                                         <ComboBoxItem Content="关闭" Tag="Off" />
@@ -3491,8 +3641,8 @@
                                         x:Name="DshUpdateModeComboBox"
                                         Grid.Column="1"
                                         SelectedIndex="2"
-                                        SelectionChanged="UpdateModeComboBox_SelectionChanged"
-                                        MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                                                                              
+                                        MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center" SelectionChanged="UpdateModeComboBox_SelectionChanged">
                                         <ComboBoxItem Content="自动下载并安装" Tag="Install" />
                                         <ComboBoxItem Content="仅检查更新" Tag="Check" />
                                         <ComboBoxItem Content="关闭" Tag="Off" />
@@ -3561,8 +3711,8 @@
                                         x:Name="PluginUpdateModeComboBox"
                                         Grid.Column="1"
                                         SelectedIndex="1"
-                                        SelectionChanged="UpdateModeComboBox_SelectionChanged"
-                                        MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                                                                              
+                                        MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center" SelectionChanged="UpdateModeComboBox_SelectionChanged">
                                         <ComboBoxItem Content="自动下载并安装" Tag="Install" />
                                         <ComboBoxItem Content="仅检查更新" Tag="Check" />
                                         <ComboBoxItem Content="关闭" Tag="Off" />
@@ -3600,6 +3750,38 @@
                                 </StackPanel>
                             </StackPanel>
                         </Border>
+
+                        <!-- 安装器：和启动器各自独立更新，不要求版本号一致 -->
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel Spacing="10">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel
+                                        VerticalAlignment="Center"
+                                        Spacing="3">
+                                        <TextBlock
+                                            Style="{StaticResource SettingsRowTitleTextStyle}"
+                                            Text="安装器" />
+                                        <TextBlock
+                                            x:Name="InstallerVersionText"
+                                            Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                            Text="与启动器独立更新：只有安装器自己出了新版本才替换。" />
+                                    </StackPanel>
+                                    <Button
+                                        x:Name="RepairInstallerButton"
+                                        Grid.Column="1"
+                                        Content="修复安装器"
+                                        Style="{StaticResource SettingsActionButtonStyle}" />
+                                </Grid>
+                                <InfoBar
+                                    x:Name="InstallerResultInfoBar"
+                                    IsClosable="True"
+                                    IsOpen="False" />
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
 
                     <!-- 关于 -->
@@ -3611,108 +3793,7 @@
                             Style="{StaticResource SettingsPageTitleTextStyle}"
                             Text="关于" />
 
-                        <Border Style="{StaticResource SettingsCardStyle}">
-                            <Grid Style="{StaticResource SettingsRowGridStyle}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel
-                                    VerticalAlignment="Center"
-                                    Spacing="3">
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowTitleTextStyle}"
-                                        Text="启动器版本" />
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                        Text="Dafeiyu-Go Launcher" />
-                                </StackPanel>
-                                <TextBlock
-                                    x:Name="VersionText"
-                                    Grid.Column="1"
-                                    VerticalAlignment="Center"
-                                    FontSize="14"
-                                    FontWeight="SemiBold"
-                                    Tapped="VersionText_Tapped"
-                                    Text="v1.5.4"
-                                    ToolTipService.ToolTip="连续点击五次可打开开发者管理中心" />
-                            </Grid>
-                        </Border>
-
-                        <Border Style="{StaticResource SettingsCardStyle}">
-                            <Grid Style="{StaticResource SettingsRowGridStyle}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel
-                                    VerticalAlignment="Center"
-                                    Spacing="3">
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowTitleTextStyle}"
-                                        Text="GitHub" />
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                        Text="源码与发布记录。" />
-                                </StackPanel>
-                                <Button
-                                    Grid.Column="1"
-                                    Click="OpenGitHub_Click"
-                                    Content="打开 GitHub"
-                                    Style="{StaticResource SettingsActionButtonStyle}" />
-                            </Grid>
-                        </Border>
-
-                        <Border Style="{StaticResource SettingsCardStyle}">
-                            <Grid Style="{StaticResource SettingsRowGridStyle}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel
-                                    VerticalAlignment="Center"
-                                    Spacing="3">
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowTitleTextStyle}"
-                                        Text="反馈" />
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                        Text="问题与建议。" />
-                                </StackPanel>
-                                <Button
-                                    Grid.Column="1"
-                                    Click="OpenFeedback_Click"
-                                    Content="提交 GitHub Issue"
-                                    Style="{StaticResource SettingsActionButtonStyle}" />
-                            </Grid>
-                        </Border>
-
-                        <Border Style="{StaticResource SettingsCardStyle}">
-                            <StackPanel Spacing="10">
-                                <TextBlock Style="{StaticResource SettingsRowTitleTextStyle}" Text="环境健康检查" />
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <Button x:Name="HealthCheckButton" Content="检查 / 刷新" Click="HealthCheck_Click" Style="{StaticResource SettingsActionButtonStyle}" />
-                                    <Button x:Name="HealthExportButton" Content="导出诊断" IsEnabled="False" Click="HealthExport_Click" Style="{StaticResource SettingsActionButtonStyle}" />
-                                </StackPanel>
-                                <TextBlock x:Name="HealthCheckText" Text="尚未检查" TextWrapping="Wrap" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                <TextBlock Text="导出仅含版本、可用性与端口状态 · 不含配置、路径或日志" TextWrapping="Wrap" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Style="{StaticResource SettingsCardStyle}">
-                            <Grid Style="{StaticResource SettingsRowGridStyle}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel VerticalAlignment="Center" Spacing="3">
-                                    <TextBlock Style="{StaticResource SettingsRowTitleTextStyle}" Text="日志与诊断" />
-                                    <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="启动器日志目录。" />
-                                </StackPanel>
-                                <Button Grid.Column="1" Click="OpenLauncherLogs_Click" Content="打开日志目录" Style="{StaticResource SettingsActionButtonStyle}" />
-                            </Grid>
-                        </Border>
-
+                        <!-- 更新日志在版本上面 -->
                         <Border Style="{StaticResource SettingsCardStyle}">
                             <StackPanel Spacing="10">
                                 <Grid ColumnSpacing="8">
@@ -3749,6 +3830,125 @@
                                         TextWrapping="Wrap" />
                                 </ScrollViewer>
                             </StackPanel>
+                        </Border>
+
+                        <!-- 启动器与安装器合并成一张卡：右边两行，值对齐 -->
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <Grid Style="{StaticResource SettingsRowGridStyle}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel
+                                    VerticalAlignment="Center"
+                                    Spacing="3">
+                                    <TextBlock
+                                        Style="{StaticResource SettingsRowTitleTextStyle}"
+                                        Text="版本" />
+                                    <TextBlock
+                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                        Text="启动器与安装器各自独立更新。" />
+                                </StackPanel>
+                                <StackPanel
+                                    Grid.Column="1"
+                                    VerticalAlignment="Center"
+                                    Spacing="4">
+                                    <StackPanel
+                                        HorizontalAlignment="Right"
+                                        Orientation="Horizontal"
+                                        Spacing="8">
+                                        <TextBlock
+                                            VerticalAlignment="Center"
+                                            Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                            Text="启动器" />
+                                        <TextBlock
+                                            x:Name="VersionText"
+                                            VerticalAlignment="Center"
+                                            FontSize="14"
+                                            FontWeight="SemiBold"
+                                                                       
+                                            Text="v1.6.0"
+                                            ToolTipService.ToolTip="连续点击五次可打开开发者管理中心"  Tapped="VersionText_Tapped"/>
+                                    </StackPanel>
+                                    <StackPanel
+                                        HorizontalAlignment="Right"
+                                        Orientation="Horizontal"
+                                        Spacing="8">
+                                        <TextBlock
+                                            VerticalAlignment="Center"
+                                            Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                            Text="安装器" />
+                                        <TextBlock
+                                            x:Name="AboutInstallerVersionText"
+                                            VerticalAlignment="Center"
+                                            FontSize="14"
+                                            FontWeight="SemiBold"
+                                            Text="—" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <Grid Style="{StaticResource SettingsRowGridStyle}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel
+                                    VerticalAlignment="Center"
+                                    Spacing="3">
+                                    <TextBlock
+                                        Style="{StaticResource SettingsRowTitleTextStyle}"
+                                        Text="GitHub" />
+                                    <TextBlock
+                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                        Text="源码与发布记录。" />
+                                </StackPanel>
+                                <Button
+                                    Grid.Column="1"
+                                                            
+                                    Content="打开 GitHub"
+                                    Style="{StaticResource SettingsActionButtonStyle}"  Click="OpenGitHub_Click"/>
+                            </Grid>
+                        </Border>
+
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <Grid Style="{StaticResource SettingsRowGridStyle}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel
+                                    VerticalAlignment="Center"
+                                    Spacing="3">
+                                    <TextBlock
+                                        Style="{StaticResource SettingsRowTitleTextStyle}"
+                                        Text="反馈" />
+                                    <TextBlock
+                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                        Text="问题与建议。" />
+                                </StackPanel>
+                                <Button
+                                    Grid.Column="1"
+                                                              
+                                    Content="提交 GitHub Issue"
+                                    Style="{StaticResource SettingsActionButtonStyle}"  Click="OpenFeedback_Click"/>
+                            </Grid>
+                        </Border>
+
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <Grid Style="{StaticResource SettingsRowGridStyle}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center" Spacing="3">
+                                    <TextBlock Style="{StaticResource SettingsRowTitleTextStyle}" Text="日志与诊断" />
+                                    <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="启动器日志目录。" />
+                                </StackPanel>
+                                <Button Grid.Column="1"                                Content="打开日志目录" Style="{StaticResource SettingsActionButtonStyle}"  Click="OpenLauncherLogs_Click"/>
+                            </Grid>
                         </Border>
 
                         <StackPanel Spacing="16">
@@ -3797,13 +3997,13 @@
                                     Orientation="Horizontal"
                                     Spacing="8">
                                     <Button
-                                        Click="OpenBilibili_Click"
+                                                                  
                                         Content="哔哩哔哩"
-                                        Style="{StaticResource SettingsActionButtonStyle}" />
+                                        Style="{StaticResource SettingsActionButtonStyle}"  Click="OpenBilibili_Click"/>
                                     <Button
-                                        Click="OpenDouyin_Click"
+                                                                
                                         Content="抖音"
-                                        Style="{StaticResource SettingsActionButtonStyle}" />
+                                        Style="{StaticResource SettingsActionButtonStyle}"  Click="OpenDouyin_Click"/>
                                 </StackPanel>
                             </StackPanel>
                         </Border>
@@ -3875,11 +4075,11 @@
                             <Button x:Name="ClearDownloadHistoryButton" Grid.Column="1"
                                 Style="{StaticResource SettingsIconButtonStyle}"
                                 ToolTipService.ToolTip="清空历史记录"
-                                Click="ClearDownloadHistoryButton_Click">
+                                                                         Click="ClearDownloadHistoryButton_Click">
                                 <FontIcon Glyph="&#xE74D;" FontSize="14" />
                             </Button>
                         </Grid>
-                        <Pivot x:Name="DownloadsPivot" SelectionChanged="DownloadsPivot_SelectionChanged">
+                        <Pivot x:Name="DownloadsPivot"                                                    SelectionChanged="DownloadsPivot_SelectionChanged">
                             <PivotItem Header="进行中">
                                 <StackPanel Spacing="12">
                                     <TextBlock x:Name="ActiveDownloadsEmptyText" Text="暂无进行中的下载" TextWrapping="Wrap"
@@ -3917,8 +4117,8 @@
                             </Grid.ColumnDefinitions>
                             <ListView
                                 x:Name="DeveloperModuleList"
-                                SelectionChanged="DeveloperModule_SelectionChanged"
-                                SelectionMode="Single">
+                                                                                   
+                                SelectionMode="Single" SelectionChanged="DeveloperModule_SelectionChanged">
                                 <ListViewItem Content="推荐管理" Tag="Featured" />
                                 <ListViewItem Content="下载源（未开放）" Tag="Sources" />
                                 <ListViewItem Content="公告" Tag="Announce" />
@@ -4113,6 +4313,50 @@
             </ScrollViewer>
         </NavigationView>
 
+        <!-- 搜索下拉：从标题栏的搜索框往下垂，输入时实时刷新结果 -->
+        <Border
+            x:Name="SettingsSearchPanel"
+            Grid.Row="1"
+            Width="520"
+            MaxHeight="440"
+            Margin="0,6,0,0"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Top"
+            Background="{ThemeResource SolidBackgroundFillColorSecondaryBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1"
+            CornerRadius="10"
+            Visibility="Collapsed">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <ListView
+                    x:Name="SettingsSearchResults"
+                    Grid.Row="0"
+                    MaxHeight="380"
+                    Padding="4,6"
+                    IsItemClickEnabled="True"
+                                                               
+                    ItemTemplate="{StaticResource SettingsSearchSuggestionTemplate}"
+                    SelectionMode="Single"  ItemClick="SettingsSearchResults_ItemClick"/>
+                <!-- 命中数放面板底部：有多少条就显示多少条；没有结果时不画分隔线 -->
+                <Border
+                    x:Name="SettingsSearchFooter"
+                    Grid.Row="1"
+                    Padding="12,7"
+                    BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+                    BorderThickness="0,1,0,0">
+                    <TextBlock
+                        x:Name="SettingsSearchHint"
+                        FontSize="11"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="没有匹配项" />
+                </Border>
+            </Grid>
+        </Border>
+
         <!-- 在线插件详情卡片 -->
         <ContentDialog
             x:Name="PluginDetailDialog"
@@ -4153,9 +4397,9 @@
                         x:Name="ClosePluginDetailButton"
                         Grid.Column="1"
                         VerticalAlignment="Top"
-                        Click="ClosePluginDetail_Click"
+                                                       
                         Style="{StaticResource SettingsIconButtonStyle}"
-                        ToolTipService.ToolTip="关闭">
+                        ToolTipService.ToolTip="关闭" Click="ClosePluginDetail_Click">
                         <FontIcon FontSize="12" Glyph="&#xE711;" />
                     </Button>
                 </Grid>
@@ -4203,6 +4447,33 @@
                         Message="插件与依赖会以第三方代码的身份在 DSH 里运行，请确认来源可信后再安装。"
                         Severity="Informational"
                         Title="安装来自 GitHub 的第三方插件" />
+                    <!-- 中文翻译：只翻文档，不动插件源码、机器错误码和运行时字符串。 -->
+                    <StackPanel
+                        Orientation="Horizontal"
+                        Spacing="8">
+                        <Button
+                            x:Name="TranslatePluginButton"
+                            AutomationProperties.Name="把插件文档翻译成中文"
+                            Content="翻译成中文"
+                                                               
+                            Style="{StaticResource SettingsActionButtonStyle}"  Click="TranslatePluginDetail_Click"/>
+                        <Button
+                            x:Name="TogglePluginOriginalButton"
+                            AutomationProperties.Name="在中文译文和原文之间切换"
+                            Content="查看原文"
+                                                              
+                            Visibility="Collapsed"
+                            Style="{StaticResource SettingsActionButtonStyle}"  Click="TogglePluginOriginal_Click"/>
+                    </StackPanel>
+                    <InfoBar
+                        x:Name="PluginTranslateInfoBar"
+                        IsClosable="False"
+                        IsOpen="False" />
+                    <TextBlock
+                        x:Name="PluginTranslateBody"
+                        IsTextSelectionEnabled="True"
+                        TextWrapping="Wrap"
+                        Visibility="Collapsed" />
                 </StackPanel>
 
                 <StackPanel
@@ -4214,18 +4485,18 @@
                     <Button
                         x:Name="OpenPluginRepositoryButton"
                         Content="打开 GitHub 仓库"
-                        Click="OpenPluginRepository_Click"
-                        Style="{StaticResource SettingsActionButtonStyle}" />
+                                                          
+                        Style="{StaticResource SettingsActionButtonStyle}"  Click="OpenPluginRepository_Click"/>
                     <Button
                         x:Name="CopyPluginConfigButton"
                         Content="复制配置方式"
-                        Click="CopyPluginConfig_Click"
-                        Style="{StaticResource SettingsActionButtonStyle}" />
+                                                      
+                        Style="{StaticResource SettingsActionButtonStyle}"  Click="CopyPluginConfig_Click"/>
                     <Button
                         x:Name="InstallOnlinePluginButton"
                         Content="安装"
-                        Click="InstallDetailPlugin_Click"
-                        Style="{StaticResource SettingsAccentActionButtonStyle}" />
+                                                         
+                        Style="{StaticResource SettingsAccentActionButtonStyle}"  Click="InstallDetailPlugin_Click"/>
                 </StackPanel>
             </Grid>
             </ScrollViewer>
@@ -4271,9 +4542,9 @@
                         x:Name="CloseSkillDetailButton"
                         Grid.Column="1"
                         VerticalAlignment="Top"
-                        Click="CloseSkillDetail_Click"
+                                                      
                         Style="{StaticResource SettingsIconButtonStyle}"
-                        ToolTipService.ToolTip="关闭">
+                        ToolTipService.ToolTip="关闭" Click="CloseSkillDetail_Click">
                         <FontIcon FontSize="12" Glyph="&#xE711;" />
                     </Button>
                 </Grid>
@@ -4330,12 +4601,44 @@
                         x:Name="SkillDetailPathText"
                         Style="{StaticResource SettingsRowDescriptionTextStyle}"
                         Text="技能目录：-" />
+                    <!-- 技能集：同仓库的成员列在这里，点一个就切到它的详情。 -->
+                    <StackPanel
+                        x:Name="SkillDetailMembersPanel"
+                        Spacing="2"
+                        Visibility="Collapsed" />
                     <InfoBar
                         IsClosable="False"
                         IsOpen="True"
                         Message="技能是给 Agent 看的指令，装上以后模型会照着它执行。请确认来源可信后再安装。"
                         Severity="Informational"
                         Title="安装来自 GitHub 的第三方技能" />
+                    <!-- 中文翻译：只翻自然语言，代码/路径/命令原样保留；原文永远不动。 -->
+                    <StackPanel
+                        Orientation="Horizontal"
+                        Spacing="8">
+                        <Button
+                            x:Name="TranslateSkillButton"
+                            AutomationProperties.Name="把技能正文翻译成中文"
+                            Content="翻译成中文"
+                                                              
+                            Style="{StaticResource SettingsActionButtonStyle}"  Click="TranslateSkillDetail_Click"/>
+                        <Button
+                            x:Name="ToggleSkillOriginalButton"
+                            AutomationProperties.Name="在中文译文和原文之间切换"
+                            Content="查看原文"
+                                                             
+                            Visibility="Collapsed"
+                            Style="{StaticResource SettingsActionButtonStyle}"  Click="ToggleSkillOriginal_Click"/>
+                    </StackPanel>
+                    <InfoBar
+                        x:Name="SkillTranslateInfoBar"
+                        IsClosable="False"
+                        IsOpen="False" />
+                    <TextBlock
+                        x:Name="SkillTranslateBody"
+                        IsTextSelectionEnabled="True"
+                        TextWrapping="Wrap"
+                        Visibility="Collapsed" />
                 </StackPanel>
 
                 <StackPanel
@@ -4347,13 +4650,13 @@
                     <Button
                         x:Name="OpenSkillRepositoryButton"
                         Content="打开 GitHub 仓库"
-                        Click="OpenDetailSkillRepository_Click"
-                        Style="{StaticResource SettingsActionButtonStyle}" />
+                                                               
+                        Style="{StaticResource SettingsActionButtonStyle}"  Click="OpenDetailSkillRepository_Click"/>
                     <Button
                         x:Name="InstallDetailSkillButton"
                         Content="安装"
-                        Click="InstallDetailSkill_Click"
-                        Style="{StaticResource SettingsAccentActionButtonStyle}" />
+                                                        
+                        Style="{StaticResource SettingsAccentActionButtonStyle}"  Click="InstallDetailSkill_Click"/>
                 </StackPanel>
             </Grid>
             </ScrollViewer>
@@ -4430,10 +4733,11 @@
                 Title="GitHub 接口配额已用完">
                 <InfoBar.ActionButton>
                     <Button
-                        Click="FillGitHubToken_Click"
-                        Content="立即填写" />
+                                                     
+                        Content="立即填写"  Click="FillGitHubToken_Click"/>
                 </InfoBar.ActionButton>
             </InfoBar>
         </Grid>
     </Grid>
 </Window>
+

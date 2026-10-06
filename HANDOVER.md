@@ -4,10 +4,321 @@
 > 数据目录、注册表键、计划任务、快捷方式和 npm 包名保持不变。迁移边界与发布顺序
 > 以 [`TRANSITION.md`](TRANSITION.md) 为准。
 
-> 当前源码版本为 `1.5.4`（已发布）；公开清单为 `1.5.4`。
+> 当前源码版本为 `1.6.0`（本地实现与验证完成，**未发布 / 未推包**）；公开清单仍为 `1.5.4`。
 > 以下保留各轮历史交接，旧章节的版本、待办与验证结果不代表本轮状态。
 
-最后更新：2026-10-06
+最后更新：2026-10-07
+
+## 1.6.0 正式发布 + XAML 事故复盘（2026-10-07 02:25）
+
+**发布（最终有效版本）**：`.\release.ps1`（不带 `-NoManifest`）在修复后重跑，manifest.json / manifest-1.6.0.json 均写为 1.6.0，
+`DeepSeekHarness-1.6.0.zip` sha256 `7dd71ab2eb955b76a6b5af498d51ca9c90f96be7271c6da3b46449d228602532`（11.5 MB / 90 文件）。
+验收包 `preview-artifacts/Dafeiyu-Go-1.6.0-settings-UI-review-r3.zip` 已同步，sha256 `8885edb0c1f7018de58d16e7b1345d96cea24b5b71da65430936f760cdd8388b`。
+脚本只**打印**后续 git 命令（add/commit/tag/push + 传 release 资产），**没有自动提交/推送**，GitHub 上**没有** v1.6.0 release。
+> ⚠️ 修复前那一版 zip (`92d732cf…`) 是用丢绑定的源码打的，**已作废，别外发**。
+
+**绑定缺失（比事件更深的一层，修复前的"内容不见了"就是它）**：
+编译器的 obj 中间产物同样会**吃掉 `{x:Bind}`**（70 处）与 `x:DataType`（5 处）——
+只按连接映射补事件，UI 会因为**所有数据绑定为空**而只剩空壳卡片（名称/简介/作者/star 全不见）。
+真正无损的修法是**整块替换 5 个资源模板**（`PluginCardTemplate` / `SkillCardTemplate` /
+`DeveloperEntryTemplate` / `HomeAnnouncementTemplate` / `SettingsSearchSuggestionTemplate`），
+源码取自现场备份 `preview-artifacts\xaml-recovery\SettingsWindow.xaml.broken-*`；
+另按备份补齐 `DefaultPortRadio` 的 `Checked="PortModeRadio_Checked"`。
+
+**事故**：用脚本按"缩进猜块边界"搬 `SettingsWindow.xaml` 的自检横排时切错了边界，
+把插件页 TabView 一段搬走/搬丢，中途又用编译器留在 `source\obj` 里的副本"恢复"，
+结果丢了 **62/64 个 `Click=` 事件**（构建仍 0 错误，属于静默损坏）。
+
+**恢复**（有效且可复现）：
+1. `source\obj\Release\net8.0-windows10.0.19041.0\win-x64\SettingsWindow.xaml` = 结构完整的中间产物，
+   **带 `x:ConnectionId`、没有事件属性**；
+2. `source\obj\Release\net8.0-windows10.0.19041.0\win-x64\SettingsWindow.g.cs`（事故前那次构建）
+   里有 `case N: // SettingsWindow.xaml line L` + `((Btn)el).Click += this.Xxx_Click;` 的**连接映射**；
+3. 按 `x:ConnectionId='N'` 把 94 个事件里 93 个注回元素 → 再清掉注入属性 → `Click=` 回到 64 个；
+4. 导入区（PluginLinkBox 等）从现场备份 `preview-artifacts\xaml-recovery\SettingsWindow.xaml.broken-*` 取回。
+- 验证（最终）：`source\SettingsWindow.xaml` 与现场备份**逐项一致** —— `x:Name` 374/374、`{x:Bind}` 70/70、
+  事件绑定 70/70，`Compare-Object` 差异为空；构建 0 错误；
+  打包后成品实测：插件页 `插件/技能` 页签、导入框、`官方推荐/在线插件/本地插件`、卡片 `dsh-meme` 与作者/star 文本全部真实渲染；
+  回归 10/11 套通过（唯一失败见下条）。
+- 唯一失败 `LauncherSafety.Regression`：`linked target unchanged`，**旧夹具缺陷非产品问题**（第 206 行详述：
+  前面的合法 PAX 解压会先删掉 sentinel，本机允许建符号链接才走这条断言；产品侧 `RejectReparseAncestors` 行为正确）。
+- **教训**：① 不要用脚本按缩进猜 XAML 块边界搬块，要用唯一文本锚点 + `edit`；
+  ② `source\obj` 里的 `.xaml` 是编译器处理过的中间产物，**事件和 `{x:Bind}` 都会被吃掉**，不能当源码恢复；
+  ③ 恢复 XAML 后必须同时核对三类：`x:Name`、事件属性、`{x:Bind}`，只看"能编译"会把静默损坏放行。
+
+**本轮同时修掉**：插件页顶部改为「仓库导入」区（粘贴 GitHub/owner/repo/tarball/本地路径 + 安装插件 + 热加载提示），
+`插件自检 / 一键修复 / PluginHealthText` 挪到插件页**底部**（页签之后，x:Name 与 Click 不变）；
+组内页排版统一：`PivotHeaderItem` 字号 28（与独立页标题同号）、`AddGroupTab` 里 `PivotItem.Margin = (0,20,0,0)`
+（与 v1.5.4 旧版写法一致，之前被代码里显式的 `new Thickness(0)` 盖掉过）。
+
+## 进度小窗动画（2026-10-07 02:00）
+
+- `UpdateProgressWindow` 现在有 Win11 通知那种出入场动画：**先把窗口渲染出来**（窗口先摆到
+  `DisplayArea.OuterBounds` 右边的屏幕外、内容 `Opacity=0`），等 `CompositionTarget.Rendering`
+  给到第一帧之后再开始滑动；入场从屏幕外滑到右下角、同时淡入，退场滑回屏幕外、同时淡出，
+  曲线是 `cubic-bezier(0.16, 1, 0.3, 1)`（自己实现的二分求 t + 三次贝塞尔）。
+- 用**帧数**推进而不是墙钟：启动阶段 UI 线程被插件/市场加载占着时，墙钟算法会直接"到点瞬移"，
+  帧推进保证动画永远是从头播一遍（代价是忙的时候整体变慢，可以接受）。
+- 关闭走 `CloseAnimated()`：滑出屏幕外之后才真正 `Close()`；`Close()` 被调用时会先停掉入场计时器。
+- 实测：起点 x=2576（屏幕宽 2560，完全在屏幕外）→ 2437 → 2278 → 目标 2164；
+  窗口坐标采样有多个中间位置，确认不是瞬移。小窗**不可拖动**（已去掉 `SetTitleBar`）。
+
+## 验收轮补丁：主页顺序 / Y 轴 / 进度小窗 / 插件调研（2026-10-07 01:50）
+
+- **主页卡片顺序**：用量与余额置顶 → 公告 → 版本+状态 → 快捷入口。
+  做法：把 `HomePage` 里那两块 `Border` 在 XAML 里整段搬位置（脚本搬，逐行核对），没有改字段与事件。
+- **Y 轴不再用科学计数法**：`TokenUsageService.FormatAxisValue` 之前对 `scaled>=1000 || scaled<1`
+  会打印 `"0E+0"`，于是出现「8E+3万」。改成按量级给整数 / 一位 / 两位小数，极小值退到四位小数、
+  再小就输出 `<0.0001`；单位链补到 兆(1e12)/京(1e16)/垓(1e20)。回归 `BalanceUsage` 从 32 项加到 34 项全绿。
+- **右下角更新进度小窗的描边（两层）**：
+  1. 外层 2px 是 **DWM 边框** → `DWMWA_BORDER_COLOR` 染成卡片底色（`StyleWindowFrame`），
+     主题/材质变化时跟着换（挂在 `LauncherAppearance` 的回调里）。
+  2. 内层 1px 白线来自 **`WS_OVERLAPPEDWINDOW` 框架样式**：非客户区 3px，DWM 只涂外面 2px，
+     最里面 1px 露出窗口白底。WinUI 的 `SetBorderAndTitleBar(false,false)` 并不会去掉它。
+     解法：`MakeBorderlessPopup()` —— 把窗口样式换成 `WS_POPUP` 再 `SetWindowPos(SWP_FRAMECHANGED)`，
+     非客户区整块消失（实测客户区偏移 3px → 0px，白线像素变成底色）。
+  3. 小窗**不允许拖动**：去掉 `SetTitleBar(root)`（保留 `ExtendsContentIntoTitleBar`）。
+     真鼠标拖拽测试：拖前后窗口坐标一致。
+- 预览模式仍是单实例锁；`--settings-preview=UpdateWindow` 会同时拉起设置窗口（落在 Updates 页）。
+
+### 插件安装：官方实现调研结论（子代理只读调研，未改代码）
+
+来源：桌面版 `G:\DSH_Official`（DSH 0.2.0-rc.2）+ `G:\DeepSeek DSH\node_modules\@deepseek-ai\*`（0.2.1-alpha.1）。
+
+- **清单**是 profile 的 `package.json`：`dependencies` + `dsh.profile.bundles[]`；装完由官方
+  plugin-manager 自动把带 `dsh.bundle` 的新依赖追加进 bundles（`dsh-plugin-manager/lib/types/operations.js:44-72`）。
+- **官方入口** `dsh plugin --profile <名> <pnpm 参数…>`：直接转发 pnpm，支持
+  `github:owner/repo#rev`、tarball、绝对路径、`link:`/`file:`。子目录仓库没有 git 语义，仍需自研下载 + `link:`。
+- **不需要重启**：base bundle 默认启用 `@deepseek-ai/dsh-hmr`（chokidar 盯 profile/package.json、
+  profile/cordis.patch.yml、`$DSH_HOME/cordis.patch.yml`），bundles 一变就热重算并挂载新插件。
+  **只有覆盖已加载的同名包才必须重启**（`replacing "X" requires a process restart`）。
+- **没有** reload 命令 / HTTP 重载接口；桌面 IPC 只有 shutdown/quit-inspection/update-tasks；`/api` 需要
+  启动随机 token 换的 cookie，外部进程调不通。
+- **桌面 profile 有保护**：直接 `node <dshRoot>\node_modules\@deepseek-ai\dsh\lib\bin.js plugin --profile desktop`
+  会被 `rejectElectronProfile` 拒；必须走桌面 shim `G:\DSH_Official\resources\runtime\cli\bin\dsh.cmd`
+  （`ELECTRON_RUN_AS_NODE=1` + 桌面自带 pnpm 11.7.0）。
+- 现有 `DshPluginCliService.cs` 有两处坑：用的是被拒的 bin.js 路径；`DSH_HOME` 被写死成 `<dshRoot>\.dsh`，
+  而桌面 app 真实 home 是 `C:\Users\...\.dsh`。
+- **改造计划（待做）**：插件页加「粘贴 GitHub 链接」入口 → 翻成 `github:owner/repo#rev` → 调桌面 shim 的
+  `plugin add`；本地目录走绝对路径；装卸完不再要求重启（提示"已热加载"），只有同名覆盖才提示重启；
+  子目录仓库保留自研下载 + `link:`。风险：两把锁（CLI 的 package.json 锁 vs Electron 的 `<profile>\lock`）、
+  pnpm 11 的 `allowBuilds`、Windows 绝对路径。
+
+## 验收轮：搜索重构 + 分组改名 + 关于页/下载入口/更新小窗（2026-10-07 01:40，优先于下方历史交接）
+
+用户一口气提了 8 条，全部实现并用真实窗口验证过。**未提交、未推送、未发布、未改 manifest。**
+
+### 1) 搜索（借鉴 deskbox 的样子）
+
+- **位置与形状**：搜索框从导航栏搬到**标题栏正中**，椭圆（Border 圆角 17 + 透明底的 AutoSuggestBox）。
+  代码：`SettingsWindow.xaml` 的 `AppTitleBar`（三列：品牌 / 搜索 / 让开系统按钮的 140px 占位）。
+- **必须让非客户区里的输入框收得到鼠标**：`UpdateTitleBarSearchRegion()` 用
+  `InputNonClientPointerSource.GetForWindowId(...).SetRegionRects(NonClientRegionKind.Passthrough, ...)`
+  把搜索框矩形登记成通透区（物理像素，`SettingsRoot.SizeChanged` 时重算）。没有这一步，点搜索框会被当成拖标题栏。
+- **聚焦不再有系统方框**：`UseSystemFocusVisuals="False"` + 覆盖
+  `TextControlBorderThemeThicknessFocused` / `TextControlBorderBrushFocused` /
+  `TextControl{Background,BorderBrush}PointerOver`；聚焦提示改成胶囊描边加粗一档 + 主题色。
+  主题色走 `ResolveAccentBrush()`：先看 `SettingsRoot.Resources["AccentFillColorDefaultBrush"]`
+  （只有「自定义强调色」时 ApplyAccent 才会写这个键），没有再问 `Application.Current.Resources`，最后兜底颜色选择器。
+  **坑**：AutoSuggestBox 会把焦点转给模板里的 TextBox，普通 `GotFocus +=` 收不到，
+  所以 `HookSearchFocus()` 用 `FindDescendant<TextBox>` 直接把事件挂在真正吃焦点的控件上。
+- **下拉面板**：不再用 AutoSuggestBox 自带候选（`ItemsSource` 不再设），改成标题栏下面垂一个
+  `SettingsSearchPanel`（Grid.Row=1，居中，520 宽，`SolidBackgroundFillColorSecondaryBrush` 不透明底——
+  用卡片色刷会半透明、透出后面的内容）。列表是 `SettingsSearchResults`（复用 `SettingsSearchSuggestionTemplate`）。
+  交互：输入实时刷新（180ms 防抖）、Up/Down 选、Enter 打开、Esc 收起、点空白处收起、点候选跳页并收起。
+- **命中数在面板底部**：`SettingsSearchHint` 文案是「已找到 n 个结果 / 没有匹配项」；
+  **有多少条显示多少条**（`Search(..., limit: 0)`，不再截断 8 条）；
+  没有结果时列表和分隔线一起收掉，只留一句「没有匹配项」。
+- **拼音首字母搜索**：新增 `source/SettingsSearchInitials.cs`（832 个设置界面里出现过的汉字，
+  按 GB2312 码位离线推出来的声母，5KB 静态表）。`SettingsSearchEntry.Initials` 存
+  `标题 + 页名 + 别名` 的首字母串，`SettingsSearchMatcher.Score` 里纯英文字母的词会命中 `Initials`（权重 2）。
+  例：`cg` → 常规页、`jkdz` → 接口地址、`xz` → 下载任务、`fymx` → 翻译模型。
+  **坑**：`title` 是 TextBlock，一开始写成 `title + pageTitle` 拼进去的是控件对象（编译不报错、匹配全废），
+  必须用 `title.Text`。
+
+### 2) 分组与页面标题
+
+- 一级入口改名：**主页 / 通用 / 拓展 / 核心 / 更新 / 关于**（原 基础设置/功能管理/系统管理）。
+- 通用组内顺序：**常规 / 提醒 / 外观 / API 与翻译**（提醒提到外观前面）。
+- **更新单拎成一级入口**（`UpdatesNavItem`，Tag=Updates，SVG 用 `updates.svg`），不再挂在系统管理里。
+- **有子页签的页面不再重复写自己的大标题**：删掉 General/Theme/Api/Alerts/Plugins/Skills/Service/Components
+  八个页面里的 `SettingsPageTitleTextStyle` 那块。主页、更新、关于、下载、开发者是独立页，保留标题。
+
+### 3) 关于页
+
+- 删掉「环境健康检查」卡片（连同 `_healthReport`、`HealthCheck_Click`、`HealthExport_Click`；
+  `LauncherHealthReport` 类保留，回归测试还在用）。「日志与诊断」卡片保留。
+- **更新日志挪到版本卡上面**。
+- **启动器版本 + 安装器版本合并成一张卡**：右边两行右对齐（启动器 / 安装器 + 版本值），
+  不再单开一栏；`RefreshInstallerVersion()` 同时写 Updates 页那句说明和
+  `AboutInstallerVersionText`（只放版本号，读不到就是「未读到」），About 页也会调它。
+
+### 4) 下载入口默认隐藏
+
+- XAML 里 `DownloadsNavItem` 默认 `Visibility="Collapsed"`。
+- `RefreshDownloadCenterCore()`：只有在**有活动下载**（`active > 0`，即下载中/暂停/待重试），
+  或者人已经在下载页时才显示；纯历史记录不再让入口常驻。
+- `SelectPage("Downloads")` 里先把它设成可见再选中（否则选一个折叠项选不上）。
+- **下载页本身要能搜到**：它不是标准行布局、索引采不到条目，所以 `BuildSettingsSearchIndex()`
+  里补了一条页面级条目（Title=下载任务，PageTitle=下载，Anchor=DownloadsPage）——
+  这就是「搜 xz / 下载 → 点进去 → 入口出现」这条链路。
+
+### 5) 启动时右下角进度小窗的描边
+
+- `UpdateProgressWindow`：无边框窗口默认还会被 DWM 套一圈方角细描边。新增 `StyleWindowFrame()`，
+  在 `Show()` 里 `DwmSetWindowAttribute(DWMWA_BORDER_COLOR = COLOR_NONE)` +
+  `DWMWA_WINDOW_CORNER_PREFERENCE = DWMWA_ROUND`；内容再套一层同色 Grid 底，避免圆角处露白。
+
+### 6) 更新时的重复弹窗
+
+- 删掉 `InstallUpdate()` 开头那条「正在更新到 vX…」托盘气泡（右下角已经有进度小窗）。
+- 更新完成的通知本来就有：重启后的实例读 `--updated=` 推 `_pendingUpdateNotification`，保持不动。
+
+### 验证与交付
+
+- Release/x64 构建 0 错误、40 条既有 SYSLIB0014 警告；`SettingsSearch.Regression` 从 36 项加到 **43 项**全绿。
+- 真实窗口验证（仓库外脚本 `../verify-search-click.ps1` 真鼠标点击 + 真键盘/ UIA 输入）：
+  搜索框可点可输入；api / jkdz / xz 出对应候选；面板在搜索框下方；底部命中数与候选数一致；
+  Esc 收起；点候选跳页并收起。`../verify-focus-ring.ps1` 截图对比：聚焦后胶囊四周 3000+ 主题色像素、
+  内部没有整行横线（方框/下划线已消）。默认导航 6 项（下载任务隐藏）、搜 xz 才出现。
+- 验收包：`preview-artifacts/Dafeiyu-Go-1.6.0-settings-UI-review-r3.zip`（12.2 MB / 100 项），
+  含 `screenshots/`（General/About/Plugins/Skills/Updates/Api + 搜索面板.png + 搜索框聚焦.png）、
+  `1-预览设置界面.cmd`、`README.txt`。**包内二进制最后一次刷新时间见文件时间戳。**
+- 预览模式是**单实例**（互斥锁 `Local\DeepSeekHarness.Launcher.Preview`），所以
+  `--settings-preview=UpdateWindow` 现在会**同时**拉起设置窗口（落在 Updates 页），
+  一次就能看全设置 + 右下角进度小窗。
+- **没验的**：深色/窄窗/高 DPI 人工观感、真跑一次自更新看小窗与通知、开发者解锁手势。
+- 辅助脚本都在仓库外：`../capture-ui.ps1`、`../capture-package.ps1`、`../verify-search-click.ps1`、
+  `../verify-focus-ring.ps1`。
+
+## 本轮完成：回退二级菜单 + 用户后续两条修正（2026-10-07 00:20，优先于下方历史交接）
+
+> 用户在本轮后来又提了两条，都已实现并用真实窗口验证：
+> 1. **开发者必须留在左下角隐藏入口**，不能写进常规设置页 → 它不再是功能管理里的页签，回到 Footer 独立页面（可见性由 SelectPage 单独控制，搜索分组也不再挂「功能管理」）。
+> 2. **更新要单拎出来** → 从系统管理移出，成为一级入口，页面单独显示、不参与任何组内页签。
+>
+> 现在的一级入口是 6 个：主页 / 基础设置（常规·外观·API 与翻译·提醒）/ 功能管理（插件·技能）/ 系统管理（服务·组件）/ 更新 / 关于；底部 下载任务、开发者（隐藏）。
+> 如果用户还想继续调整分类，改动点只有 `GroupOf()`、`BuildSettingsGroups()` 的 AddGroupTab 列表、`SelectPage()` 的 standalone 分支和 XAML 里的 NavigationViewItem。
+
+- 已执行下节要求：恢复「一级入口 + 组内页内 Pivot」，不再动态添加左侧子项、不再展开分类。保留导航宽度 224、去除分类重复大标题、原页面实例与搜索索引、主页默认行为及其他 1.6.0 未提交改动。
+- `source/SettingsWindow.xaml`：BasicTabs / FeaturesTabs / SystemTabs 恢复为 Pivot，绑定 SettingsSection_SelectionChanged；未恢复 TabView 外观或额外页面上边距。新增一级入口 `UpdatesNavItem`（Tag=Updates，字形 E895，SVG 走 `updates.svg`）。
+- `source/SettingsWindow.xaml.cs`：恢复 `_groupTabs`、AddGroupTab、SelectGroupTab(Pivot) 与 `_suppressSectionSelection`；页内点击仍走 SelectPage 执行原有加载/刷新，分类恢复上次子页，左侧选中一级入口。`GroupOf()` 不再把 Developer/Updates 归到任何组；SelectPage 把 Developer、Updates 当独立页面（只切 Visibility），DeveloperNavItem 只在 Footer，五连点解锁照旧。
+- Release/x64/win-x64 构建通过：0 错误、40 条既有 SYSLIB0014 弃用警告；SettingsSearch.Regression 离线 36 项通过（索引分组改为不再把开发者/更新挂到分类下，跑过确认没破）。
+- 真实窗口 UI Automation（构建产物 5 页 + 验收包 6 页各跑一遍）：一级入口正好 7 项且顺序为 主页/基础设置/功能管理/系统管理/更新/关于/下载任务；基础设置组内页签 常规/外观/API 与翻译/提醒、系统管理 服务/组件、功能管理 插件/技能；更新页不再出现组内页签；普通预览无「开发者」，解锁/Developer 预览里 Footer 有「开发者」且它不是任何组内页签。页面自己的内层页签（如技能页的「本地技能」、开发者页的「插件推荐」）不参与判断。切页（API→常规、插件→技能、更新→服务）与搜索「监听」→ 常规页「启动端口」通过。未实测五连点解锁、深色/窄窗/高 DPI 完整视觉验收及所有功能交互。
+- 仓库外 `../capture-ui.ps1` 的 Select 改为 Pivot TabItem，新增 SubmitSearch 与 -Exe；证据在 `../preview-artifacts/rescue-160/`。截图未做视觉验收，不代表外观全部通过。
+- 本轮只修改两份设置窗口源码与本交接，保留既有其他文件改动；辅助预览脚本在仓库外。`git diff --check` 发现原有技能集代码一处尾随空格（SettingsWindow.xaml.cs 的 failures.Add 行），未做无关清理。
+- 未提交、未推送、未发布。旧 `preview-artifacts/Dafeiyu-Go-1.6.0-settings-UI-review.zip` 仍包含已撤销的二级菜单，不能当作本轮结果。
+
+### 本轮收尾：重新打包与全量回归（2026-10-07 00:00 前后）
+
+- 用当前源码重新走了一遍正式打包流程：`.\release.ps1 -NoManifest`（publish + csc 引导 + Compress-Archive），产物 `source/dist-1.6.0`（90 文件）与仓库根 `DeepSeekHarness-1.6.0.zip`；两个 exe 的 FileVersion 均为 1.6.0.0。**没有动 manifest.json、没有打 tag、没有发 npm。**
+- 最终验收包（末尾那次打包，已含上面两条修正）：`preview-artifacts/Dafeiyu-Go-1.6.0-settings-UI-review-r2.zip`（12.3 MB / 97 项），
+  SHA-256 `d3e84ad9cc5b75b196a6b6b6e57ccac21ea15b4e5501e8ae88395e36c9f53488`。
+  内容 = dist-1.6.0 + `screenshots/`（General/Plugins/Skills/Updates/Api，均为本包实际运行截图） + `1-预览设置界面.cmd` + `README.txt`，同名解包目录也在 `preview-artifacts/` 下。（更早那版 hash `2f33de06…` 已被此次覆盖，作废。）
+- **验收包本体验证**：从包内引导 exe 启动（新增仓库外脚本 `../capture-package.ps1`，只跟踪自己拉起的 bootstrap 及其子进程），UIA 读到一级入口 7 项、顺序正确，普通预览看不到「开发者」，Developer 预览里能看到，更新页无组内页签。截图未人工目检。
+- **全量离线回归 10 套**：BalanceUsage 32、ProxyScope 32、DownloadTasks 34、UpdateIntegrity 49、PluginOfficial 29、SkillSets 57、TranslationCore 42、SettingsSearch 36、TranslationStore 63 全绿；
+  **LauncherSafety 未过**：在最后一条 `linked target unchanged` 断言处抛异常。原因已定位为**测试夹具陈旧、不是产品缺陷**：前面的 PAX 合法解压（Program.cs 第 98/111 行）会整体替换目标目录，`sentinel` 那时就已被删除；该断言只在“成功创建符号链接”的分支里执行，本机现在允许创建符号链接（以前因权限不足走 SKIP），于是暴露出来。产品侧行为正确：`SafeArchiveExtractor` 在解压前 `RejectReparseAncestors` 直接拒绝链接目标，返回错误且不动原目录（第 118 行断言通过）。修法是测试里在第 113 行的链接探针前重建 sentinel；本轮按“只做导航改动”的范围约束**没有改测试**，留给用户/下一轮决定。
+- 辅助脚本改动都在仓库外：`../capture-ui.ps1`（Select 改 TabItem、新增 SubmitSearch 与 -Exe）、新增 `../capture-package.ps1`。本轮只改了两份设置窗口源码、HANDOVER，以及仓库 `preview-artifacts/`（已 gitignore）里的验收包；`git diff --check` 之前发现的那处既有尾随空格未动。
+
+## 最新用户验收反馈与下一轮任务（2026-10-06 23:36，已由上节执行完成）
+
+用户验收设置界面 ZIP 后明确要求：**「菜单二级界面这个改动回退吧，其他没什么大问题，二级菜单怎么改都很怪」**。随后要求仅把任务写入交接文档，让下一轮执行。本轮因此没有执行源码回退，也没有重新构建或打包；只更新本节。
+
+### 下一轮应做
+
+- 回退本轮新增的**左侧可展开二级菜单**，恢复实施该改动之前的导航。不要重新设计二级菜单，不要继续尝试另一种层级导航。
+- 根据本轮明确的回退承诺，优先恢复「左侧五个一级入口 + 组内页内 Pivot 导航」的上一版。用户的原话也可能表示希望取消全部二级界面；如果下一轮发现此含义影响实施范围，应先确认，不要擅自恢复原作者所有 TabView 视觉问题。
+- 保留其他已获认可的布局优化：导航栏宽度 224、删除基础设置/功能管理/系统管理内容区重复大标题，以及原有页面、搜索、功能逻辑。默认页面行为不要变。
+- 项目有大量原有 1.6.0 未提交改动，**禁止用 git reset/checkout 整文件来回退**。仅针对本轮层级导航修改做精确还原；不提交、不推送、不发包，除非用户另行要求。
+
+### 当前源码状态与修改定位
+
+仓库：`G:\DeepSeek DSH\DSH Works\Project\Dafeiyu-Go\Dafeiyu-Go-DeepSeek-Harness-Click-To-Run`。
+
+- `source/SettingsWindow.xaml`：`BasicTabs`、`FeaturesTabs`、`SystemTabs` 当前是 `ContentControl`；此前为 `Pivot`，绑定 `SelectionChanged="SettingsSection_SelectionChanged"`。这三个内容宿主位于 BasicPage/FeaturesPage/SystemPage 中，重复分类标题已移除。
+- `source/SettingsWindow.xaml.cs`：`BuildSettingsGroups()` 当前调用 `AddSettingsSection()`，动态把子项加入 BasicNavItem/FeaturesNavItem/SystemNavItem.MenuItems。`DeveloperNavItem` 从 Footer 搬到 FeaturesNavItem.MenuItems。
+- 当前 `_sectionPages` 保存页面实例，`_sectionNavItems` 保存二级导航项；页面从 SettingsContentHost 摘下后，由 `SelectGroupTab(ContentControl, tag)` 设置 Content 显示。
+- 当前 `SelectPage()` 将分类入口解析为 `_lastGroupTab`，选中具体子项并执行 `parent.IsExpanded = true`。回退时恢复选中一级分类，并由组内 Pivot 选择子页。
+- 上一版 Pivot 实现使用 `_groupTabs: Dictionary<string, PivotItem>`，AddGroupTab(Pivot, tag, header, page) 摘下页面后放入 PivotItem.Content；PivotItem.Margin 为 0。开发者子页默认隐藏，保留原有解锁规则。
+- 上一版有 `SettingsSection_SelectionChanged` 调用 SelectPage(tag)，以及 `_suppressSectionSelection` 防重入；程序调用 SelectGroupTab 时暂时抑制该事件，避免重复加载。不要遗漏子页点击时的加载/刷新逻辑。
+- 上一版最终已移除额外的 `page.Margin = new Thickness(0, 20, 0, 0)`，无需恢复这层多余间距。
+- 搜索索引直接从各原页面实例采集，未挂在可视树中的页面仍须可搜索；搜索结果调用 RevealSearchTarget → SelectPage。
+
+### 已做验证与交付（仅代表当前二级菜单版本）
+
+- 最后一次 Release/x64 构建：0 错误、40 条弃用警告；使用仓库 SDK：
+  `& 'G:\DeepSeek DSH\.tools\dotnet\dotnet.exe' build source\DeepSeekHarness.csproj -c Release -p:Platform=x64 -r win-x64 --no-restore -m:1 -nodeReuse:false`
+- 已通过真实窗口 UI Automation 检查：API → 常规、插件 → 技能、更新 → 服务；搜索「监听」命中「启动端口」。搜索结果提交跳转、所有功能页完整交互、深色模式和窄窗外观尚未全面验收，不能声称全部通过。
+- 用户验收包：`preview-artifacts/Dafeiyu-Go-1.6.0-settings-UI-review.zip`，该包包含**被用户要求回退的二级菜单**，不能作为回退后的最终包。
+- 辅助脚本位于仓库外的 `../capture-ui.ps1`，支持 Page/Select/Search 参数；Select 当前按 NavigationView 的 ListItem 查找，恢复 Pivot 后需要调整为 TabItem 才能测试页内选项。
+- 截图与 UIA 输出在仓库外 `../preview-artifacts/rescue-160/`；预览配置通过 `DAFEIYU_LAUNCHER_SETTINGS_DIRECTORY` 指向独立目录。
+- 下一轮完成精确回退后，重新构建、验证页面切换/搜索定位/开发者显隐，再按用户需要重新打包。不要把当前 ZIP 当成回退结果交付。
+
+
+## 1.6.0 本轮交接（2026-10-06，未推包）
+
+按 `DS41-实施任务.md` 完成的一轮改造。**未提交、未推送、未打标签、未发 npm**；公开
+`manifest.json` 仍是 1.5.4，没有动。
+
+### 改了什么
+
+- **设置重新分组**：一级入口 13 → 5（主页 / 基础设置 / 功能管理 / 系统管理 / 关于），
+  下载任务与开发者留 Footer。页面在 XAML 里原地不动，`BuildSettingsGroups()` 在构造期
+  把它们搬进组内 TabView；`SelectPage` 用 `GroupOf()` 做旧标签 → 新入口映射，
+  托盘 / 主页快捷入口 / `ShowSettings("Api")` 等调用点一个都没改。默认主页行为未动。
+- **设置搜索**：导航顶部 `AutoSuggestBox`；索引在构造期**一次性**沿 XAML 对象树采集
+  （走对象树而非视觉树，否则未选中的 Tab 采不到），标题/描述直接取真实控件文案。
+  匹配是纯函数（`source/SettingsSearch.cs`）：大小写不敏感、全角空格当分隔、多词 AND、
+  标题(3)>别名(2)>描述(1)。点击结果会切页 + 展开 Expander + 滚动 + 高亮 + 交焦点。
+  不联网、不调模型、不写设置。
+- **技能集**：`source/SkillSets.cs` 负责来源标识（类型+规范化仓库+分支）、成员标识
+  （来源标识+仓库内路径）、归组、`MarkInstalled`（认不出的记录原样返回）、
+  `SkillSetDiff`、卸载路径安全校验。市场列表改成一仓库一卡（Tag1 = `已安装 / 总数`，
+  有任何成员装过按钮变「修改」），点进去是多选对话框，反选卸载列名字二次确认。
+  `SkillInstallService.InstallManyFromRepository` 同仓库只下一次归档。
+- **官方插件入口**：`source/DshPluginCliService.cs` 调
+  `node <dshRoot>\node_modules\@deepseek-ai\dsh\lib\bin.js plugin --profile <名> <pnpm 参数>`
+  （设 `DSH_HOME`），识别旧版 DSH 与 `restart-required`。`PluginStoreService` 装/卸
+  优先走它，装完核对 profile 依赖与 bundles，表达不了的来源（monorepo 子目录）回退旧流程。
+- **PAX 解压**：`SafeArchiveExtractor` 按类型跳过 `GlobalExtendedAttributes`。
+  实测 .NET 8 的 `TarReader` 会把 `pax_global_header`（typeflag `g`）返回给调用方，
+  而 `x`/`L`/`K` 它自己吞掉；旧代码只放行目录/普通文件，于是合法 PAX 归档被拒。
+- **中文翻译**：`source/TranslationCore.cs`（缓存键 / Markdown 分块 / 结构校验）、
+  `source/TranslationStore.cs`（缓存落盘，写 `.tmp` 再原子替换，只有校验通过才保存）、
+  `source/TranslationService.cs`（提示词、分块并发 2、按序重组、重试、返回解析）。
+  缓存在 `%LOCALAPPDATA%\DeepSeekHarness\translations`。设置页「基础设置 · API」
+  新增模型/接口地址；技能与插件详情页新增翻译按钮与原文/中文切换。
+- **安装器独立更新**：SemVer 比较抽到 `source/ProductVersion.cs`；新增
+  `source/InstallerVersionPolicy.cs`（UpToDate/Update/Repair/UnknownLocal）与
+  `source/InstallerVersionReader.cs`（状态记录 → 安装清单 → 注册表 → 文件版本）。
+  `InstallerUpdateService.FetchLatestPackage(requiredVersion)` →
+  `FetchLatestRelease(settings, out)`，缓存不再按启动器版本过滤。
+  `PrepareInstallerCompanion` 改为**返回警告而不阻断**启动器更新；设置页「更新」新增
+  「修复安装器」。
+- **更新按钮修复**：卡片属性改了通知（`PluginCards.cs` / `SkillsModels.cs`），XAML 绑定补
+  `Mode=OneWay`；单卡检查改 `forceRefresh: true`；失败恢复按钮 + 中文原因 + 「重试」；
+  无来源记录的手动项明确提示不可自动更新。
+
+### 验证
+
+- 离线回归 **10 套 446 项**全绿：BalanceUsage 32 / ProxyScope 32 / DownloadTasks 34 /
+  LauncherSafety 72 / UpdateIntegrity 49 / PluginOfficial 29 / SkillSets 57 /
+  TranslationCore 42 / SettingsSearch 36 / TranslationStore 63。
+  新增测试工程：`PluginOfficial.Regression`、`SkillSets.Regression`、
+  `TranslationCore.Regression`、`TranslationStore.Regression`、`SettingsSearch.Regression`。
+- `Release/x64` 构建 0 错误、40 条既有弃用警告（`SYSLIB0014`）。
+- 本机 16 GB 内存且用户开着 Minecraft 时，WinUI XAML 编译器会 OOM；
+  构建需 `-m:1 -nodeReuse:false`。
+- **未测**：真实模型翻译的联网调用（需要 Key 与网络，不拿用户账户做测试）、
+  设置窗口/对话框真机点击、深浅色与高 DPI 视觉核对、UAC、完整安装卸载 e2e。
+
+### 未做 / 已知限制
+
+- 翻译只支持已安装到本地的技能与插件（市场里没装的条目没有本地正文）。
+- 技能集只做了多选安装/卸载与详情成员列表，没有「按技能集批量更新」的独立按钮
+  （单项更新与整体更新仍走原有入口）。
+- 安装器仓库本轮只做了独立更新解耦所需的改动（删除误导性的硬编码 `LauncherVersion`），
+  没有新增安装/卸载流程功能。
 
 ## 1.5.4 已发布交接（2026-10-06）
 

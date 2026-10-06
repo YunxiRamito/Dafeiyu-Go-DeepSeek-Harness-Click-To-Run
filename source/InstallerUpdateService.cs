@@ -18,7 +18,11 @@ namespace DeepSeekHarnessLauncher
     }
 
     /// <summary>
-    /// Keeps the launcher and the installer/uninstaller on the same version.
+    /// 安装器/卸载器的独立更新。
+    ///
+    /// 安装器不再和启动器共用一个版本号：这里只跟安装器自己仓库的最新 Release 比，
+    /// 远端更新才替换，没有新版本就跳过。启动器更新也不再因为安装器检查失败而中断，
+    /// 失败只反馈警告、保留当前安装器。
     ///
     /// The setup EXE is a bootstrapper with the installer payload appended as a
     /// ZIP (and, in signed builds, an Authenticode certificate appended after
@@ -42,9 +46,15 @@ namespace DeepSeekHarnessLauncher
         /// </summary>
         private static readonly TimeSpan CacheLifetime = TimeSpan.FromHours(12);
 
-        internal static InstallerUpdatePackage FetchLatestPackage(
+        /// <summary>
+        /// 取安装器仓库的最新 Release。
+        ///
+        /// 刻意**不再接收"启动器目标版本"**：安装器和启动器各自和自己的更新源比版本，
+        /// 安装器没有新版本就跳过，不再因为两边版本号不同而阻止启动器更新。
+        /// 返回的包可能没有 SHA-256（只有 302 兜底拿到的版本号），调用方要自己判断。
+        /// </summary>
+        internal static InstallerUpdatePackage FetchLatestRelease(
             LauncherSettings settings,
-            string requiredVersion,
             out string error)
         {
             error = null;
@@ -52,7 +62,7 @@ namespace DeepSeekHarnessLauncher
             // 先吃本地缓存。api.github.com 对未登录请求只有 60 次/小时，而设置页每次打开、
             // 每次点「立即检查」都会来一发 —— 撞上就是界面里那句英文的
             // "(403) rate limit exceeded"，用户完全不知道该怎么办。
-            InstallerUpdatePackage fresh = ReadCache(requiredVersion, true);
+            InstallerUpdatePackage fresh = ReadCache(true);
             if (fresh != null)
             {
                 return fresh;
@@ -60,47 +70,37 @@ namespace DeepSeekHarnessLauncher
 
             try
             {
-                InstallerUpdatePackage package = FetchFromApi(
-                    settings,
-                    requiredVersion,
-                    out error);
-                if (package != null && !String.IsNullOrWhiteSpace(package.Sha256))
+                InstallerUpdatePackage package = FetchFromApi(settings, out error);
+                if (package == null)
+                {
+                    return null;
+                }
+
+                if (IsValidSha256(package.Sha256))
                 {
                     WriteCache(package);
                 }
 
-                if (package == null || String.IsNullOrWhiteSpace(package.Sha256))
-                {
-                    if (String.IsNullOrWhiteSpace(error))
-                    {
-                        error = "安装器 Release 未提供 SHA-256 校验值，更新已停止。";
-                    }
-                    return null;
-                }
-
+                // 有版本号、没有校验值：不能拿来装，但版本本身仍然有用 ——
+                // 如果本机安装器不比它旧，这次根本不需要动安装器。
                 return package;
             }
             catch (Exception exception)
             {
                 // 限流或断网：过期的缓存也比"检查更新失败"强
-                InstallerUpdatePackage stale = ReadCache(requiredVersion, false);
+                InstallerUpdatePackage stale = ReadCache(false);
                 if (stale != null)
                 {
                     error = null;
                     return stale;
                 }
 
-                // 连缓存都没有：绕开 API，直接问 GitHub 要最新 tag（走 302 跳转，不吃配额）
+                // 连缓存都没有：绕开 API，直接问 GitHub 要最新 tag（走 302 跳转，不吃配额）。
+                // 只能拿到版本号，拿不到可信 SHA-256，所以只够判断"要不要更新"。
                 string version;
-                if (TryResolveVersionWithoutApi(settings, out version)
-                    && String.Equals(
-                        version,
-                        requiredVersion,
-                        StringComparison.OrdinalIgnoreCase))
+                if (TryResolveVersionWithoutApi(settings, out version))
                 {
-                    error = "已找到安装器 v" + version
-                        + "，但无法取得 SHA-256 校验值。更新已停止，请稍后重试。";
-                    return null;
+                    return new InstallerUpdatePackage { Version = version };
                 }
 
                 error = DescribeError(exception);
@@ -110,7 +110,6 @@ namespace DeepSeekHarnessLauncher
 
         private static InstallerUpdatePackage FetchFromApi(
             LauncherSettings settings,
-            string requiredVersion,
             out string error)
         {
             error = null;
@@ -131,18 +130,10 @@ namespace DeepSeekHarnessLauncher
                     return null;
                 }
 
+                // 这里**不再**和启动器版本比对。安装器与启动器各自独立发布，
+                // 只推其中一个包是合法状态，版本号不同不该阻止任何一侧更新。
                 string version = (tag.GetString() ?? String.Empty)
                     .TrimStart('v', 'V');
-                if (!String.Equals(
-                        version,
-                        requiredVersion,
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    error = "安装器 v" + version
-                        + " 与启动器目标版本 v" + requiredVersion
-                        + " 不一致，已停止启动器更新。";
-                    return null;
-                }
 
                 InstallerUpdatePackage package =
                     new InstallerUpdatePackage
@@ -282,7 +273,7 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        private static void WriteCache(InstallerUpdatePackage package)
+        internal static void WriteCache(InstallerUpdatePackage package)
         {
             try
             {
@@ -306,9 +297,11 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        private static InstallerUpdatePackage ReadCache(
-            string requiredVersion,
-            bool requireFresh)
+        /// <summary>
+        /// 读缓存。缓存里存的是"上次看到的安装器最新版"，**不再按某个期望版本过滤** ——
+        /// 过滤规则一旦跟着启动器版本走，就等于又把这俩绑回一起了。
+        /// </summary>
+        internal static InstallerUpdatePackage ReadCache(bool requireFresh)
         {
             try
             {
@@ -329,10 +322,7 @@ namespace DeepSeekHarnessLauncher
                     }
 
                     string cachedVersion = version.GetString() ?? String.Empty;
-                    if (!String.Equals(
-                        cachedVersion,
-                        requiredVersion,
-                        StringComparison.OrdinalIgnoreCase))
+                    if (!ProductVersion.IsValid(cachedVersion))
                     {
                         return null;
                     }

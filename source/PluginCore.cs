@@ -209,8 +209,6 @@ namespace DeepSeekHarnessLauncher
             "@deepseek-ai/dsh-headless"
         };
 
-        private const string ProfileName = "web";
-
         private static readonly JsonSerializerOptions JsonOptions =
             new JsonSerializerOptions
             {
@@ -227,7 +225,14 @@ namespace DeepSeekHarnessLauncher
                 : Path.Combine(dshRoot, "plugins");
         }
 
-        /// <summary>定位 profile 目录；现在恒定是 web。</summary>
+        /// <summary>
+        /// 定位 profile 目录。
+        ///
+        /// 普通安装是 <c>&lt;dshRoot&gt;\.dsh\profiles\&lt;name&gt;</c>（历史行为，默认 web）；
+        /// 桌面安装的 home 在 <c>%USERPROFILE%\.dsh</c>，profile 名默认 desktop ——
+        /// 这里统一交给 <see cref="DshPluginCliService"/> 判形态，别再自己拼 <c>.dsh</c>，
+        /// 否则读写的会是桌面安装目录下那个根本不存在的 home。
+        /// </summary>
         internal static string ResolveProfileDirectory(string dshRoot)
         {
             if (String.IsNullOrWhiteSpace(dshRoot))
@@ -235,8 +240,16 @@ namespace DeepSeekHarnessLauncher
                 return null;
             }
 
-            string profiles = Path.Combine(dshRoot, ".dsh", "profiles");
-            string preferred = Path.Combine(profiles, ProfileName);
+            string home = DshPluginCliService.ResolveDshHome(dshRoot);
+            if (String.IsNullOrWhiteSpace(home))
+            {
+                home = Path.Combine(dshRoot, ".dsh");
+            }
+
+            string profiles = Path.Combine(home, "profiles");
+            string preferred = Path.Combine(
+                profiles,
+                DshPluginCliService.ResolveProfileName(dshRoot, home));
             if (Directory.Exists(preferred))
             {
                 return preferred;

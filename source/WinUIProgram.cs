@@ -42,7 +42,7 @@ namespace DeepSeekHarnessLauncher
     {
         public const string Title = "Dafeiyu-Go";
         public const string EnglishTitle = "Dafeiyu-Go";
-        public const string Version = "1.5.4";
+        public const string Version = "1.6.0";
         public const string Repository = "YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run";
         public const string LegacyRepository = "YunxiRamito/DSH-Launcher";
         public const string UserAgent = "Dafeiyu-Go/" + Version;
@@ -86,6 +86,9 @@ namespace DeepSeekHarnessLauncher
         private static bool _settingsPreview;
         private static string _settingsPreviewPage = "General";
         private static SettingsWindow _settingsPreviewWindow;
+
+        /// <summary>预览模式下的更新进度小窗（--settings-preview=UpdateWindow）。</summary>
+        private static UpdateProgressWindow _updatePreviewWindow;
         private static LauncherSettings _launcherSettings;
         private static bool _startupLaunch;
 
@@ -242,6 +245,33 @@ namespace DeepSeekHarnessLauncher
                 SynchronizationContext.SetSynchronizationContext(
                     new DispatcherQueueSynchronizationContext(previewDispatcher));
                 EnsureXamlControlsResources();
+
+                // --settings-preview=UpdateWindow：单独把右下角那个更新进度小窗调出来，
+                // 给它一个看得见的状态，方便截图核对（不用真去跑一次更新）。
+                if (String.Equals(
+                    _settingsPreviewPage,
+                    "UpdateWindow",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    _updatePreviewWindow = new UpdateProgressWindow(previewDispatcher);
+                    _updatePreviewWindow.Show();
+                    _updatePreviewWindow.Update(
+                        "正在下载启动器更新",
+                        "1.2 MB/s · 8.4 MB / 24.0 MB",
+                        42);
+
+                    // 预览模式全局只有一个实例（同一个互斥锁），所以顺手把设置窗口
+                    // 也拉起来：一次就能看全设置界面 + 右下角进度小窗。
+                    _settingsPreviewWindow = new SettingsWindow();
+                    _settingsPreviewWindow.Destroyed += delegate
+                    {
+                        _settingsPreviewWindow = null;
+                        ExitProcess(0);
+                    };
+                    _settingsPreviewWindow.ShowWindow("Updates");
+                    return;
+                }
+
                 _settingsPreviewWindow = new SettingsWindow();
                 _settingsPreviewWindow.Destroyed += delegate
                 {
@@ -1622,26 +1652,14 @@ namespace DeepSeekHarnessLauncher
                     "步骤 1/2 · 更新安装器和卸载器",
                     0);
 
-                string installerUpdateError;
-                if (!PrepareInstallerCompanion(
+                // 安装器是独立发布线：它没新版、检查失败或替换失败都不拦启动器更新。
+                string installerWarning = PrepareInstallerCompanion(
                     manifest.Version,
-                    out installerUpdateError))
+                    false);
+                if (!String.IsNullOrWhiteSpace(installerWarning))
                 {
-                    UpdateLauncherUi(
-                        UpdateUiActivity.Failed,
-                        manifest.Version,
-                        "安装器更新失败",
-                        0,
-                        false,
-                        installerUpdateError);
-                    UpdateWindow(
-                        "更新失败",
-                        installerUpdateError,
-                        0);
-                    WriteLog("安装器更新失败: " + installerUpdateError);
-                    Thread.Sleep(4000);
-                    FinishUpdateWindow();
-                    return;
+                    WriteLog("安装器伴随更新: " + installerWarning);
+                    ShowNotification(installerWarning, false);
                 }
 
                 string staging;
@@ -1797,9 +1815,7 @@ namespace DeepSeekHarnessLauncher
                     {
                         try
                         {
-                            _updateWindow = new UpdateProgressWindow(
-                                _dispatcherQueue,
-                                delegate { ShowSettings("Downloads"); });
+                            _updateWindow = new UpdateProgressWindow(_dispatcherQueue);
                             _updateWindow.Show();
                             _updateWindow.Update("正在检查更新…", "正在读取版本清单", -1);
                         }
@@ -2018,33 +2034,20 @@ namespace DeepSeekHarnessLauncher
             string staging;
             string error;
             _updateDownloadStartedUtc = DateTime.UtcNow;
-            InvokeOnUi(delegate()
-            {
-                ShowNotification("正在更新到 v" + _availableUpdateVersion + "…", false);
-            });
+            // 这里刻意不再弹「正在更新到 vX…」的气泡：右下角已经有进度小窗了，
+            // 两个一起冒出来是重复的。更新完成的通知由重启后的实例推（见 Start()）。
 
-            string installerUpdateError;
-            if (!PrepareInstallerCompanion(
+            // 同上：安装器这条线出问题只警告，不挡启动器自更新。
+            string installerWarning = PrepareInstallerCompanion(
                 _pendingManifest.Version,
-                out installerUpdateError))
+                false);
+            if (!String.IsNullOrWhiteSpace(installerWarning))
             {
-                _updateInProgress = false;
-                UpdateLauncherUi(
-                    UpdateUiActivity.Failed,
-                    _availableUpdateVersion,
-                    "安装器更新失败",
-                    0,
-                    false,
-                    installerUpdateError);
-                WriteLog("安装器更新失败: " + installerUpdateError);
+                WriteLog("安装器伴随更新: " + installerWarning);
                 InvokeOnUi(delegate()
                 {
-                    _trayIcon.UpdateTip(Constants.Title + " 正在运行");
-                    ShowNotification(
-                        "更新失败:" + installerUpdateError,
-                        true);
+                    ShowNotification(installerWarning, false);
                 });
-                return;
             }
 
             staging = UpdateSupport.PrepareStaging(
@@ -2125,31 +2128,71 @@ namespace DeepSeekHarnessLauncher
             InvokeOnUi(ExitApplication);
         }
 
-        private bool PrepareInstallerCompanion(
-            string version,
-            out string error)
+        /// <summary>
+        /// 安装器伴随更新。
+        ///
+        /// 返回 null = 已处理完（更新成功、本来就不需要更新，或版本未知时已跳过）；
+        /// 返回非空字符串 = 给用户看的警告。
+        ///
+        /// **任何情况下都不再阻断启动器更新**：安装器和启动器是两条独立发布线，
+        /// 只推其中一个包是合法状态，版本号不同也不该卡住另一侧。
+        /// </summary>
+        private string PrepareInstallerCompanion(
+            string launcherTargetVersion,
+            bool forceRepair)
         {
-            error = null;
             UpdateLauncherUi(
                 UpdateUiActivity.Installing,
-                version,
+                launcherTargetVersion,
                 "安装器检查中",
                 -1,
                 true,
                 String.Empty);
             UpdateWindow(
-                "正在更新 Dafeiyu-Go v" + version,
-                "步骤 1/2 · 获取安装器",
+                "正在更新 Dafeiyu-Go v" + launcherTargetVersion,
+                "步骤 1/2 · 检查安装器",
                 -1);
 
+            string localSource;
+            string localVersion = InstallerVersionReader.TryRead(_root, out localSource);
+            bool filesPresent = InstallerVersionReader.FilesPresent(_root);
+            WriteLog("本机安装器版本: " + (localVersion ?? "(未知)")
+                + "，来源: " + (localSource ?? "(没有记录)"));
+
+            string fetchError;
             InstallerUpdatePackage package =
-                InstallerUpdateService.FetchLatestPackage(
-                    _settings,
-                    version,
-                    out error);
+                InstallerUpdateService.FetchLatestRelease(_settings, out fetchError);
             if (package == null)
             {
-                return false;
+                WriteLog("安装器检查失败，保留当前安装器: " + fetchError);
+                return "安装器检查失败，已保留当前安装器（不影响启动器更新）："
+                    + fetchError;
+            }
+
+            InstallerUpdateAction action = InstallerVersionPolicy.Decide(
+                localVersion,
+                package.Version,
+                filesPresent);
+            string judgement = InstallerVersionPolicy.Describe(
+                action,
+                localVersion,
+                package.Version,
+                forceRepair);
+            WriteLog("安装器判定: " + judgement);
+
+            if (!InstallerVersionPolicy.NeedsDownload(action, forceRepair))
+            {
+                UpdateWindow(null, "步骤 1/2 · 安装器无需更新", 35);
+                // "版本读不出来但文件还在"要让用户知道有手动修复这条路，
+                // 其余情况（已是最新）不用打扰。
+                return action == InstallerUpdateAction.UnknownLocal ? judgement : null;
+            }
+
+            if (!InstallerUpdateService.IsValidSha256(package.Sha256))
+            {
+                WriteLog("安装器 Release 没有可用的 SHA-256，跳过安装器更新");
+                return "安装器 " + package.Version
+                    + " 没有提供 SHA-256 校验值，已跳过安装器更新（不影响启动器更新）。";
             }
 
             bool applied = InstallerUpdateService.PrepareAndApply(
@@ -2169,23 +2212,25 @@ namespace DeepSeekHarnessLauncher
                             + FormatBytes(total);
                     UpdateLauncherUi(
                         UpdateUiActivity.Installing,
-                        version,
+                        launcherTargetVersion,
                         "安装器下载中",
                         percent,
                         indeterminate,
                         detail);
                     UpdateWindow(null, detail, percent);
                 },
-                out error,
+                out fetchError,
                 _settings);
             if (!applied)
             {
-                return false;
+                WriteLog("安装器更新失败，保留当前安装器: " + fetchError);
+                return "安装器更新失败，已保留当前安装器（不影响启动器更新）："
+                    + fetchError;
             }
 
             UpdateLauncherUi(
                 UpdateUiActivity.Installing,
-                version,
+                launcherTargetVersion,
                 "安装器已更新",
                 35,
                 false,
@@ -2194,9 +2239,42 @@ namespace DeepSeekHarnessLauncher
                 null,
                 "步骤 1/2 · 安装器和卸载器已更新",
                 35);
-            InstallerRegistration.SynchronizeInstallerVersion(version);
-            WriteLog("安装器与卸载器已更新到 v" + version);
-            return true;
+            InstallerRegistration.SynchronizeInstallerVersion(package.Version);
+            WriteLog("安装器与卸载器已更新到 v" + package.Version);
+            return null;
+        }
+
+        /// <summary>
+        /// 设置页的「修复安装器」：本机版本读不出来或文件缺失时，用户显式要求重装一次。
+        /// </summary>
+        private void RepairInstallerFromSettings()
+        {
+            Thread worker = new Thread(delegate()
+            {
+                try
+                {
+                    string warning = PrepareInstallerCompanion(Constants.Version, true);
+                    InvokeOnUi(delegate()
+                    {
+                        ShowNotification(
+                            String.IsNullOrWhiteSpace(warning)
+                                ? "安装器修复完成。"
+                                : warning,
+                            !String.IsNullOrWhiteSpace(warning));
+                    });
+                }
+                catch (Exception exception)
+                {
+                    WriteLog("修复安装器失败: " + exception.Message);
+                    InvokeOnUi(delegate()
+                    {
+                        ShowNotification("修复安装器失败：" + exception.Message, true);
+                    });
+                }
+            });
+            worker.IsBackground = true;
+            worker.Name = "InstallerRepair";
+            worker.Start();
         }
 
         private void BalanceItemClick()
@@ -2238,6 +2316,12 @@ namespace DeepSeekHarnessLauncher
                     ApplyApiKey = ApplyApiKeyFromSettings,
                     RefreshBalance = RefreshBalanceAsync,
                     SynchronizeInstallerPaths = SynchronizeInstallerPaths,
+                    RepairInstaller = RepairInstallerFromSettings,
+                    GetInstallerVersion = delegate
+                    {
+                        string versionSource;
+                        return InstallerVersionReader.TryRead(_root, out versionSource);
+                    },
                     Log = WriteLog
                 };
                 _settingsHost = host;

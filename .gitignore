@@ -43,3 +43,9 @@ preview-artifacts/
 # Regression test build outputs
 tests/**/bin/
 tests/**/obj/
+
+# Regression test fixtures（每次运行自建自删，被强杀时可能残留）
+.launcher-safety-tests/
+.update-integrity-tests/
+.plugin-official-tests/
+.translation-store-tests/

@@ -48,7 +48,9 @@ try
         Assert(label.Length <= 9 && (v == 0 || label != "¥0"), "compact axis " + v);
     }
     Assert(TokenUsageService.FormatAxisValue(123456789, false).Contains("亿"), "token axis preserves hundred-million magnitude");
-    Assert(TokenUsageService.FormatAxisValue(0.000001, true).Contains("E"), "tiny currency axis does not collapse to zero");
+    Assert(!TokenUsageService.FormatAxisValue(0.000001, true).Contains("E"), "tiny currency axis avoids scientific notation");
+    Assert(TokenUsageService.FormatAxisValue(0.000001, true) != "¥0", "tiny currency axis does not collapse to zero");
+    Assert(!TokenUsageService.FormatAxisValue(8000, false).Contains("E"), "axis label never uses scientific notation");
     Assert(TokenUsageService.FormatAxisValue(0, false) == "0", "zero axis is compact");
     Assert(DeepSeekBalanceClient.FormatBalance(12.5m, "USD") == "$12.50", "balance summary keeps currency");
     string root = Path.Combine(AppContext.BaseDirectory, "usage-fixture-" + Guid.NewGuid().ToString("N"));
