@@ -10,6 +10,8 @@
 
 Windows 10 / 11 · x64 · WinUI 3
 
+**1.5.4 已发布**：余额 / Token 图表改进、下载中心、启动器与 DSH 服务独立代理范围。官方包未签名；两仓 CI、npm / 镜像与公开清单已核验，验证范围见 [交接](HANDOVER.md)。
+
 </div>
 
 ![大肥鱼Go 启动器插件页实机截图排版](docs/images/readme-promo.png)
