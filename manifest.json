@@ -1,11 +1,11 @@
 {
-  "version": "1.5.3",
-  "sha256": "56a21d1057a392a4b5b24c3f2d74aa34fc98d529242dc02a188a5332045c66ec",
+  "version": "1.5.4",
+  "sha256": "2a0e93e8c078c6f648582b29048e2a07745a4a8038cbe825b39f9c8d68843fb8",
   "subDirectory": "",
   "assets": {
-    "github": "https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/download/v1.5.3/DeepSeekHarness-1.5.3.zip",
+    "github": "https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/download/v1.5.4/DeepSeekHarness-1.5.4.zip",
     "mirrors": []
   },
-  "notes": "健康检查与诊断报告预览/导出；安装计划和提权原因预览；修复归档路径越界、重叠目录卸载数据保护、修复模式范围与目录恢复、Node目录边界匹配；安装器更新缺少有效SHA-256时停止。更新README实机宣传图与操作说明。",
-  "releasedAt": "2026-10-04T13:30:00+08:00"
+  "notes": "余额/Token图表短刻度与账户币种隔离；新增下载中心、进度、暂停继续、重试取消及历史；启动器和DSH服务独立代理范围（默认启动器开启、DSH关闭）。修复更新任务暂存互删、分片初始化竞态；DSH不支持SOCKS5时显式拒绝。",
+  "releasedAt": "2026-10-06T14:31:25+08:00"
 }
