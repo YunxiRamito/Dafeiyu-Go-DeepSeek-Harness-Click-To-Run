@@ -121,13 +121,19 @@ if (-not $SkipAsset) {
     }
 
     $uploadUrl = "https://uploads.github.com/repos/$Repository/releases/$($release.id)/assets?name=$([uri]::EscapeDataString((Split-Path $ZipPath -Leaf)))"
-    $bytes = [System.IO.File]::ReadAllBytes($ZipPath)
     $uploadHeaders = $Headers.Clone()
     $uploadHeaders['Content-Type'] = 'application/zip'
 
-    $asset = Invoke-RestMethod -Method Post -Uri $uploadUrl -Headers $uploadHeaders -Body $bytes -TimeoutSec 900
+    # 用 -InFile 流式上传：-Body [byte[]] 在部分 PowerShell 版本上会少传末尾字节，
+    # 线上资产就和 manifest 的 sha256 对不上、客户端校验失败（v1.6.0 首次上传踩过）。
+    $localSha = (Get-FileHash $ZipPath -Algorithm SHA256).Hash.ToLower()
+    $asset = Invoke-RestMethod -Method Post -Uri $uploadUrl -Headers $uploadHeaders -InFile $ZipPath -TimeoutSec 900
     Ok ("资产已上传: " + $asset.browser_download_url)
     Ok ("大小: {0:N1} MB  状态: {1}" -f ($asset.size / 1MB), $asset.state)
+    if ($asset.digest -and $asset.digest -ne "sha256:$localSha") {
+        throw "线上资产摘要与本地不一致（线上 $($asset.digest) / 本地 sha256:$localSha），自更新会校验失败，请重传"
+    }
+    Ok ("摘要校验: sha256:$localSha")
 }
 
 # 4) 验证下载地址真的能下

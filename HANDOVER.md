@@ -11,11 +11,16 @@
 
 ## 1.6.0 正式发布 + XAML 事故复盘（2026-10-07 02:25）
 
-**发布（最终有效版本）**：`.\release.ps1`（不带 `-NoManifest`）在修复后重跑，manifest.json / manifest-1.6.0.json 均写为 1.6.0，
-`DeepSeekHarness-1.6.0.zip` sha256 `7dd71ab2eb955b76a6b5af498d51ca9c90f96be7271c6da3b46449d228602532`（11.5 MB / 90 文件）。
-验收包 `preview-artifacts/Dafeiyu-Go-1.6.0-settings-UI-review-r3.zip` 已同步，sha256 `8885edb0c1f7018de58d16e7b1345d96cea24b5b71da65430936f760cdd8388b`。
-脚本只**打印**后续 git 命令（add/commit/tag/push + 传 release 资产），**没有自动提交/推送**，GitHub 上**没有** v1.6.0 release。
-> ⚠️ 修复前那一版 zip (`92d732cf…`) 是用丢绑定的源码打的，**已作废，别外发**。
+**发布（已上线，2026-10-07 03:03）**：`.\release.ps1` 与 `.\publish-release.ps1` 均已执行。
+`DeepSeekHarness-1.6.0.zip` sha256 `f6a9488c3a47ca1c8f373f669c15dc126a966837063c0454cf52a938632ea8b4`（12,020,168 字节 / 90 文件）；
+GitHub Release `v1.6.0` 已创建（非草稿、非预发布），资产已上传且**线上摘要与本地、与 `manifest.json` 的 `sha256` 三方一致**；
+`main` 已推送（`6b8b2da`），标签 `v1.6.0` 已推送。
+Release：https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/tag/v1.6.0
+（推送时旧标签 `v1.3.20` 因远端已存在被拒，与本次发布无关。）
+> ⚠️ 修复前那一版 zip (`92d732cf…`) 是用丢绑定的源码打的，**已作废，别外发**；修复后中间版 `7dd71ab2…` 未发布。
+> ⚠️ 发布脚本坑（已修）：`publish-release.ps1` 原先用 `-Body [byte[]]` 上传，实测**少传末尾 420 字节**，
+> 线上资产与 manifest 哈希对不上（客户端自更新会校验失败）。已改为 `-InFile` 流式上传，
+> 并在上传后自校验 `asset.digest`，不一致直接抛错——这个检查以后能拦住同类问题。
 
 **绑定缺失（比事件更深的一层，修复前的"内容不见了"就是它）**：
 编译器的 obj 中间产物同样会**吃掉 `{x:Bind}`**（70 处）与 `x:DataType`（5 处）——
