@@ -6,7 +6,7 @@
 
 一键启动 · 余额与用量 · 插件与技能 · 更新与备份
 
-[**下载安装器**](https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Setup/releases/latest) · [**下载启动器 ZIP**](https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/latest) · [更新日志](CHANGELOG.md)
+[**在线交互预览**](https://yunxiramito.github.io/Dafeiyu-Go/) · [**下载安装器**](https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Setup/releases/latest) · [**下载启动器 ZIP**](https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/latest) · [更新日志](CHANGELOG.md)
 
 Windows 10 / 11 · x64 · WinUI 3
 
