@@ -1,5 +1,13 @@
 # 交接：大肥鱼Go / Dafeiyu-Go Launcher
 
+## 2026-10-08 19:40 v1.7.0 已发布（本节优先）
+
+- 正式 Release：`https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/tag/v1.7.0`（id `406746499`，tag v1.7.0 → `842b128`）。
+- 资产：`DeepSeekHarness-1.7.0.zip`，66,200,443 字节，SHA-256 `736A28A9479E698EA4772857B4DF88C5D79EBC4A87464A255DA630975C3D8D54`（本地发布流程构建；tag CI 因公共 runner 卡在回归步被取消）。
+- `manifest.json` / `manifest-1.7.0.json` 已登记上述哈希并推送（1d29326）；npm `@yunxiramito/dsh-launcher@1.7.0` 已用 `publish-npm.ps1` 发布。
+- 本地验收：`release.ps1 -NoManifest` 成功；`verify.ps1 -Dist .\source\dist-1.7.0 -DshRoot 'G:\DeepSeek DSH' -Version 1.7.0` 通过（1 条提醒）；CI 的 7 套回归本地全绿（PatchSystem 改成离线 stub 后 127 项 5.6 秒）。
+- ⚠️ 重跑 tag CI 会用 CI 构建的 ZIP 覆盖同一 Release 资产，重跑后必须用 CI 资产哈希重新更新 manifest。
+
 ## 2026-10-08 17:30 最新测试包与收尾（本节优先）
 
 - 当前 ZIP 为 `DeepSeekHarness-1.7.0-feedback-log-startup-review.zip`，66,200,155 字节，SHA-256 `7D9F90AE5C93340EF1BD03BFE752C2B5CE6E01F72674596C1465411FFAC9A3B8`。入口 `source/dist-1.7.0-feedback-log-startup-review/DeepSeek Harness.exe`，旧测试目录不含本轮全部修改。
