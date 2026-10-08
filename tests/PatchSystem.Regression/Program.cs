@@ -536,6 +536,9 @@ namespace DeepSeekHarnessLauncher
     {
         public string PatchUpdateMode { get; set; } = "Check";
         public string LauncherChannel { get; set; } = "Stable";
+        // UpdateMetadataReader.BackendCandidates 会读这两个字段（BackendDownloadSource.IsSelected）。
+        public string UpdateSource { get; set; } = "Official";
+        public string MirrorSource { get; set; } = "Auto";
     }
 
     internal static class Constants
