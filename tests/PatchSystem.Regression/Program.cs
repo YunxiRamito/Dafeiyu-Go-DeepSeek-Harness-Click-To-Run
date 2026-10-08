@@ -536,9 +536,14 @@ namespace DeepSeekHarnessLauncher
     {
         public string PatchUpdateMode { get; set; } = "Check";
         public string LauncherChannel { get; set; } = "Stable";
-        // UpdateMetadataReader.BackendCandidates 会读这两个字段（BackendDownloadSource.IsSelected）。
-        public string UpdateSource { get; set; } = "Official";
-        public string MirrorSource { get; set; } = "Auto";
+    }
+
+    // 回归测试必须完全离线：UpdateMetadataReader.BackendCandidates 只用到下面两支。
+    // 用「不做后端包装」的桩，避免强制刷新补丁清单时真的去连 202.189.21.218:8787。
+    internal static class BackendDownloadSource
+    {
+        internal static bool IsBackendUrl(string url) => false;
+        internal static string WrapMetadata(string url) => url;
     }
 
     internal static class Constants
