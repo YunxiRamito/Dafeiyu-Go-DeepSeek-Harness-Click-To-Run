@@ -130,7 +130,7 @@ namespace DeepSeekHarnessLauncher
                                 candidates[index],
                                 "GET",
                                 null,
-                                token,
+                                null,
                                 ReadTimeoutMs,
                                 out textStatus,
                                 out error);
@@ -482,6 +482,29 @@ namespace DeepSeekHarnessLauncher
         }
 
         private static string Send(
+            LauncherSettings settings, string url, string method, string body, string token,
+            int timeoutMs, out HttpStatusCode status, out string error)
+        {
+            if (BackendDownloadSource.IsSelected(settings) && method == "GET" && String.IsNullOrWhiteSpace(token))
+            {
+                string proxied = SendRead(settings, BackendDownloadSource.WrapMetadata(url),
+                    null, Math.Min(timeoutMs, 4000), out status, out error);
+                if (proxied != null) return proxied;
+            }
+            return method == "GET" ? SendRead(settings, url, token, Math.Min(timeoutMs, 8000), out status, out error)
+                : SendOnce(settings, url, method, body, token, timeoutMs, out status, out error, out _);
+        }
+
+        private static string SendRead(LauncherSettings settings, string url, string token, int timeoutMs,
+            out HttpStatusCode status, out string error)
+        {
+            string text = SendOnce(settings, url, "GET", null, token, timeoutMs, out status, out error, out bool anonymousRateLimit);
+            if (text != null || (status != 0 && !NoticeReadRetryHandler.IsTransientStatus(status) && !anonymousRateLimit)) return text;
+            System.Threading.Thread.Sleep(150);
+            return SendOnce(settings, url, "GET", null, token, timeoutMs, out status, out error, out _, true);
+        }
+
+        private static string SendOnce(
             LauncherSettings settings,
             string url,
             string method,
@@ -489,18 +512,23 @@ namespace DeepSeekHarnessLauncher
             string token,
             int timeoutMs,
             out HttpStatusCode status,
-            out string error)
+            out string error,
+            out bool anonymousRateLimit,
+            bool forceDirect = false)
         {
-            status = HttpStatusCode.OK;
+            status = 0;
             error = null;
+            anonymousRateLimit = false;
             try
             {
                 HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+                BackendDownloadSource.Apply(request);
                 request.Method = method;
                 request.Accept = "application/vnd.github+json";
                 request.UserAgent = Constants.UserAgent;
                 request.Timeout = timeoutMs;
                 request.ReadWriteTimeout = timeoutMs;
+                request.AllowAutoRedirect = false;
                 request.AutomaticDecompression =
                     DecompressionMethods.GZip | DecompressionMethods.Deflate;
                 request.Headers["X-GitHub-Api-Version"] = "2022-11-28";
@@ -512,8 +540,11 @@ namespace DeepSeekHarnessLauncher
                 {
                     ProxySupport.Apply(request);
                 }
+                if (forceDirect) request.Proxy = null;
 
-                if (!String.IsNullOrWhiteSpace(token))
+                if (!String.IsNullOrWhiteSpace(token)
+                    && request.RequestUri.Scheme == Uri.UriSchemeHttps
+                    && request.RequestUri.Host == "api.github.com")
                 {
                     request.Headers["Authorization"] = "Bearer " + token.Trim();
                 }
@@ -533,15 +564,29 @@ namespace DeepSeekHarnessLauncher
                 using (Stream stream = response.GetResponseStream())
                 using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
                 {
-                    return reader.ReadToEnd();
+                    const int maximumCharacters = 4 * 1024 * 1024;
+                    char[] chunk = new char[8192];
+                    var text = new StringBuilder();
+                    int count;
+                    while ((count = reader.Read(chunk, 0, chunk.Length)) > 0)
+                    {
+                        if (text.Length + count > maximumCharacters) throw new InvalidDataException("仓库文件响应超过大小限制。");
+                        text.Append(chunk, 0, count);
+                    }
+                    return text.ToString();
                 }
             }
             catch (WebException exception)
             {
+                LogRequestFailure(settings, url, method, forceDirect, exception);
                 HttpWebResponse response = exception.Response as HttpWebResponse;
                 if (response != null)
                 {
                     status = response.StatusCode;
+                    anonymousRateLimit = method == "GET" && String.IsNullOrWhiteSpace(token)
+                        && response.ResponseUri.Scheme == Uri.UriSchemeHttps
+                        && response.ResponseUri.Host == "api.github.com"
+                        && status == HttpStatusCode.Forbidden && response.Headers["X-RateLimit-Remaining"] == "0";
                     try
                     {
                         using (Stream stream = response.GetResponseStream())
@@ -563,16 +608,34 @@ namespace DeepSeekHarnessLauncher
 
                 if (String.IsNullOrWhiteSpace(error))
                 {
-                    error = exception.Message;
+                    error = DescribeConnectionFailure(exception);
                 }
 
                 return null;
             }
             catch (Exception exception)
             {
-                error = exception.Message;
+                LogRequestFailure(settings, url, method, forceDirect, exception);
+                error = DescribeConnectionFailure(exception);
                 return null;
             }
+        }
+
+        private static void LogRequestFailure(LauncherSettings settings, string url, string method, bool direct, Exception error)
+        {
+            string host = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : "invalid";
+            LauncherLog.Write(Path.Combine(LauncherSettingsStore.DirectoryPath, "launcher-errors.log"),
+                LauncherLog.DescribeException("GitHub " + method + " host=" + host + " route="
+                    + (direct ? "direct-fallback" : ProxySupport.EffectiveMode(settings)), error));
+        }
+
+        private static string DescribeConnectionFailure(Exception error)
+        {
+            string detail = error.GetBaseException().Message;
+            if (detail.Contains("SSL", StringComparison.OrdinalIgnoreCase) || detail.Contains("TLS", StringComparison.OrdinalIgnoreCase)
+                || error is WebException web && (web.Status == WebExceptionStatus.TrustFailure || web.Status == WebExceptionStatus.SecureChannelFailure))
+                return "GitHub 安全连接失败，请检查代理或网络后重试。详细原因见启动器日志。";
+            return LauncherDiagnostics.Redact(detail);
         }
 
         /// <summary>把 GitHub 的错误 JSON 压成一句话，别把整段响应甩给用户。</summary>
@@ -624,4 +687,3 @@ namespace DeepSeekHarnessLauncher
         }
     }
 }
-

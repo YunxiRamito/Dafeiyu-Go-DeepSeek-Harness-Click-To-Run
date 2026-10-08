@@ -86,6 +86,15 @@ jobs:
             throw "缺少 SignPath 配置: $($missing -join ', ')。请先按 SIGNING.md 完成仓库变量和 secret。"
           }
 
+      - name: 发布门禁与离线回归
+        shell: pwsh
+        run: |
+          .\check-release-gate.ps1 -Version '${{ steps.meta.outputs.version }}'
+          foreach ($suite in @('PluginUpdateCompare', 'PluginInstallRepair', 'PatchSystem', 'SettingsSearch', 'ClientNotice', 'DeveloperNotice', 'InfoWindowClient')) {
+            dotnet run --project "tests\$suite.Regression\$suite.Regression.csproj" -c Release
+            if ($LASTEXITCODE -ne 0) { throw "$suite regression failed" }
+          }
+
       - name: 编译主程序(WinUI3)
         shell: pwsh
         run: |
@@ -110,6 +119,12 @@ jobs:
             "/out:source\dist-release\DeepSeek Harness.exe" `
             "source\RuntimeBootstrap.cs"
           if ($LASTEXITCODE -ne 0) { throw "引导程序编译失败" }
+
+      - name: 验证发布目录
+        shell: pwsh
+        run: |
+          .\verify.ps1 -Dist .\source\dist-release -Version '${{ steps.meta.outputs.version }}'
+          if ($LASTEXITCODE -ne 0) { throw 'Release artifacts invalid' }
 
       - name: 打包未签名 ZIP
         shell: pwsh
@@ -166,7 +181,11 @@ jobs:
             $required = @(
               'DeepSeek Harness.exe',
               'DeepSeek Harness.Core.exe',
-              'DeepSeek Harness.Core.dll'
+              'DeepSeek Harness.Core.dll',
+              'info-host/DafeiyuGo.Info.exe',
+              'info-host/DafeiyuGo.Info.dll',
+              'info-host/DafeiyuGo.Info.pri',
+              'info-host/App.xbf'
             )
             foreach ($name in $required) {
               $path = Join-Path $verifyDir $name

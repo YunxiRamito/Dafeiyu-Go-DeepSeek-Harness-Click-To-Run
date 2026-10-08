@@ -7,6 +7,7 @@ using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Text.Json;
 
 namespace DeepSeekHarnessLauncher
 {
@@ -35,117 +36,48 @@ namespace DeepSeekHarnessLauncher
         /// <summary>预览通道的清单。仓库里没有这个文件时自动退回 manifest.json。</summary>
         private const string PreviewManifestFile = "manifest-preview.json";
 
-        private const int FetchTimeoutMs = 20000;
-
-        // ---------------------------------------------------------------- 清单
-
-        /// <summary>
-        /// 版本清单地址。默认用启动器仓库根目录的 manifest.json;
-        /// 同目录的 launcher.json 可以通过 updateManifestUrls 覆盖(镜像 / 自建源 / 内网用)。
-        /// </summary>
-        private static string[] ResolveManifestUrls(
-            bool official,
-            LauncherSettings settings)
+        internal static List<IReadOnlyList<string>> ResolveManifestGroups(LauncherSettings settings)
         {
-            List<string> configured = ReadConfiguredManifestUrls();
+            var groups = new List<IReadOnlyList<string>>();
+            var configured = ReadConfiguredManifestUrls();
             if (configured.Count > 0)
             {
-                return configured.ToArray();
+                // launcher.json is an explicit fallback order, so each configured URL
+                // gets its own priority group instead of racing the next URL.
+                foreach (string url in configured)
+                    groups.Add(new List<string> { url });
+                return groups;
             }
-
-            // 预览通道先试 manifest-preview.json，拿不到再退回正式清单——仓库里还
-            // 没有预览清单时，选了预览也不该让检查更新直接失败。
-            bool preview = settings != null
-                && String.Equals(
-                    settings.LauncherChannel,
-                    "Preview",
-                    StringComparison.OrdinalIgnoreCase);
-            string[] files = preview
-                ? new string[] { PreviewManifestFile, ManifestFile }
-                : new string[] { ManifestFile };
-
-            // 清单要"实时",但 raw.githubusercontent 在国内经常直接超时,
-            // jsDelivr 也可能因为 TLS 中间设备连不上。所以准备一长串候选,挨个试:
-            //   1. raw(带时间戳破缓存)        国外/网络好的时候最快
-            //   2. GitHub 加速镜像(套前缀)     国内主力
-            //   3. jsDelivr                    兜底
-            //   4. GitHub API 的 releases/latest(最后手段,官方接口,一般不被拦)
-            //
-            // 每个候选都带时间戳:raw 和 jsDelivr 背后都有 CDN 缓存,
-            // 不换 URL 就会读到旧清单,误判成"已经最新"。
-            List<string> urls = new List<string>();
-            string nonce = DateTime.UtcNow.Ticks.ToString();
-
-            if (official)
+            bool preview = String.Equals(settings?.LauncherChannel, "Preview", StringComparison.OrdinalIgnoreCase);
+            var releaseGroups = new List<IReadOnlyList<string>>();
+            foreach (string file in preview ? new[] { PreviewManifestFile, ManifestFile } : new[] { ManifestFile })
             {
                 foreach (string repository in Repositories)
                 {
-                    for (int fileIndex = 0; fileIndex < files.Length; fileIndex++)
-                    {
-                        AddOfficialRepositoryUrls(
-                            urls,
-                            repository,
-                            files[fileIndex],
-                            nonce);
-                    }
-                }
+                    List<string> urls;
+                    if (BackendDownloadSource.IsSelected(settings))
+                        urls = UpdateMetadataReader.BackendCandidates(
+                            "https://raw.githubusercontent.com/" + repository + "/" + Branch + "/" + file,
+                            "https://fastly.jsdelivr.net/gh/" + repository + "@" + Branch + "/" + file,
+                            "https://cdn.jsdelivr.net/gh/" + repository + "@" + Branch + "/" + file);
+                    else
+                        urls = GitHubAccelerator.RawCandidates(repository, Branch, file, settings);
+                    groups.Add(urls);
 
-                return urls.ToArray();
-            }
-
-            // 这个顺序是实测出来的(2026-09-19 本机):
-            //   api.github.com       600ms  通
-            //   ghproxy.net         1.1s   通
-            //   ghfast.top          超时
-            //   raw.githubusercontent 超时  jsDelivr SSL 失败
-            // 所以官方 API 放最前,它给的 releases/latest 结构在 ParseGitHubRelease 里转换。
-            foreach (string repository in Repositories)
-            {
-                for (int fileIndex = 0; fileIndex < files.Length; fileIndex++)
-                {
-                    string file = files[fileIndex];
-                    string rawPath = repository + "/" + Branch + "/" + file;
-                    string raw = "https://raw.githubusercontent.com/" + rawPath + "?t=" + nonce;
-                    string jsdelivr = "https://cdn.jsdelivr.net/gh/" + repository + "@" + Branch + "/" + file + "?t=" + nonce;
-
-                    if (String.Equals(file, ManifestFile, StringComparison.Ordinal))
-                    {
-                        // releases/latest 对应的是正式清单，预览清单没有这条兜底。
-                        urls.Add("https://api.github.com/repos/" + repository + "/releases/latest");
-                    }
-
-                    for (int index = 0; index < GitHubPrefixes.Length; index++)
-                    {
-                        urls.Add(GitHubPrefixes[index] + raw);
-                    }
-
-                    urls.Add(raw);
-                    urls.Add(jsdelivr);
+                    // The GitHub release API is only a stable fallback. Keep it in a
+                    // lower-priority group so a slower raw mirror cannot be overtaken by
+                    // an older release response, and so it never competes with preview.
+                    if (file == ManifestFile)
+                        releaseGroups.Add(BackendDownloadSource.IsSelected(settings)
+                            ? UpdateMetadataReader.BackendCandidates("https://api.github.com/repos/" + repository + "/releases/latest")
+                            : new List<string> { "https://api.github.com/repos/" + repository + "/releases/latest" });
                 }
             }
-
-            return urls.ToArray();
+            groups.AddRange(releaseGroups);
+            return groups;
         }
 
-        private static void AddOfficialRepositoryUrls(
-            List<string> urls,
-            string repository,
-            string file,
-            string nonce)
-        {
-            string rawPath = repository + "/" + Branch + "/" + file;
-            string raw = "https://raw.githubusercontent.com/" + rawPath + "?t=" + nonce;
-            urls.Add(raw);
-            urls.Add("https://api.github.com/repos/" + repository + "/releases/latest");
-        }
-
-        /// <summary>GitHub 加速前缀,按实测可用性排序。</summary>
-        private static readonly string[] GitHubPrefixes = new string[]
-        {
-            "https://ghproxy.net/",
-            "https://ghfast.top/",
-            "https://gh-proxy.com/",
-        };
+        // ---------------------------------------------------------------- 清单
 
         /// <summary>从同目录 launcher.json 里读 updateManifestUrls(字符串或数组都认)。</summary>
         private static List<string> ReadConfiguredManifestUrls()
@@ -221,54 +153,28 @@ namespace DeepSeekHarnessLauncher
                     settings.UpdateSource,
                     "Official",
                     StringComparison.OrdinalIgnoreCase);
-            string[] urls = ResolveManifestUrls(official, settings);
-
-            string json = null;
-            List<string> failures = new List<string>();
-            for (int index = 0; index < urls.Length; index++)
+            var result = UpdateMetadataReader.ReadFirstValid(ResolveManifestGroups(settings), json =>
             {
-                try
-                {
-                    json = HttpGetText(urls[index], FetchTimeoutMs);
-                    if (!string.IsNullOrEmpty(json))
-                    {
-                        break;
-                    }
-                }
-                catch (Exception exception)
-                {
-                    failures.Add(urls[index] + " -> " + exception.Message);
-                }
-            }
-
-            if (string.IsNullOrEmpty(json))
-            {
-                error = failures.Count > 0
-                    ? string.Join("; ", failures.ToArray())
-                    : "版本清单拿不到(网络不通?)";
-                return null;
-            }
-
-            UpdateManifest manifest = ParseManifest(json, settings, out error);
-            if (manifest == null && !string.IsNullOrEmpty(json) && json.IndexOf("\"tag_name\"", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                // 走到 GitHub API 的 releases/latest 了:那个返回的是 GitHub 自己的结构,
-                // 不是我们的清单格式,得转换一下
-                manifest = ParseGitHubRelease(json, settings, out error);
-            }
-
-            if (manifest != null && official)
-            {
-                manifest.Urls.RemoveAll(delegate(string url)
-                {
-                    return url.StartsWith(
-                        "https://registry.npmmirror.com/",
-                        StringComparison.OrdinalIgnoreCase);
-                });
-            }
-
-            return manifest;
+                string parseError;
+                UpdateManifest manifest = json.IndexOf("\"tag_name\"", StringComparison.OrdinalIgnoreCase) >= 0
+                    ? ParseGitHubRelease(json, settings, out parseError)
+                    : ParseManifest(json, settings, out parseError);
+                if (manifest == null || !String.IsNullOrWhiteSpace(parseError))
+                    throw new InvalidDataException(parseError ?? "无效版本清单。");
+                if (official)
+                    manifest.Urls.RemoveAll(url => !IsOfficialDownloadUrl(url));
+                if (manifest.Urls.Count == 0) throw new InvalidDataException("清单没有当前源允许的下载地址。");
+                return manifest;
+            }, request => ProxySupport.Apply(request, settings), groupBudgetMilliseconds: 4000);
+            error = result.Error;
+            return result.Value;
         }
+
+        private static bool IsOfficialDownloadUrl(string url)
+            => Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme == "https"
+                && String.IsNullOrEmpty(uri.UserInfo) && (uri.Host == "github.com"
+                    || uri.Host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase)
+                    || uri.Host == "registry.npmjs.org");
 
         /// <summary>
         /// 把 GitHub API 的 releases/latest 响应转成我们的清单结构。
@@ -290,11 +196,30 @@ namespace DeepSeekHarnessLauncher
 
             UpdateManifest manifest = new UpdateManifest();
             manifest.Version = tag.TrimStart('v', 'V');
+            using (var document = JsonDocument.Parse(json))
+            {
+                if (document.RootElement.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
+                    foreach (var asset in assets.EnumerateArray())
+                        if (asset.TryGetProperty("browser_download_url", out var download) && download.ValueKind == JsonValueKind.String
+                            && download.GetString().EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+                            && asset.TryGetProperty("digest", out var digest) && digest.ValueKind == JsonValueKind.String
+                            && digest.GetString().StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string hash = digest.GetString().Substring(7);
+                            if (!InstallerUpdateService.IsValidSha256(hash)) continue;
+                            manifest.Sha256 = hash;
+                            manifest.Urls.AddRange(Mirrorize(download.GetString(), settings));
+                            break;
+                        }
+            }
+            if (!ProductVersion.IsValid(manifest.Version) || !InstallerUpdateService.IsValidSha256(manifest.Sha256))
+            { error = "GitHub Release 缺少有效版本或 ZIP 的 SHA-256，不能作为安装清单。"; return null; }
 
             // 找出资产里那个 zip
             MatchCollection names = Regex.Matches(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+)\"");
             for (int index = 0; index < names.Count; index++)
             {
+                if (manifest.Urls.Count > 0) break;
                 string url = names[index].Groups[1].Value.Replace("\\/", "/");
                 if (url.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                 {
@@ -344,6 +269,13 @@ namespace DeepSeekHarnessLauncher
         {
             error = null;
             UpdateManifest manifest = new UpdateManifest();
+            try
+            {
+                using var document = JsonDocument.Parse(json);
+                if (document.RootElement.ValueKind != JsonValueKind.Object)
+                { error = "启动器清单顶层必须是 JSON 对象。"; return null; }
+            }
+            catch (JsonException exception) { error = "启动器清单 JSON 无效：" + exception.Message; return null; }
 
             manifest.Version = MatchString(json, "version");
             manifest.Sha256 = MatchString(json, "sha256");
@@ -383,9 +315,15 @@ namespace DeepSeekHarnessLauncher
                 }
             }
 
-            if (string.IsNullOrEmpty(manifest.Version))
+            if (!ProductVersion.IsValid(manifest.Version))
             {
                 error = "清单里没有 version 字段";
+                return null;
+            }
+
+            if (!InstallerUpdateService.IsValidSha256(manifest.Sha256))
+            {
+                error = "清单缺少有效的 SHA-256 校验值。";
                 return null;
             }
 
@@ -560,6 +498,8 @@ namespace DeepSeekHarnessLauncher
         public static string PrepareStaging(UpdateManifest manifest, string installDirectory, Action<long, long> progress, out string error, LauncherSettings settings = null)
         {
             error = null;
+            if (manifest == null || !InstallerUpdateService.IsValidSha256(manifest.Sha256))
+            { error = "启动器更新包缺少有效的 SHA-256，已拒绝下载或安装。"; return null; }
 
             // A paused DSH/installer download may still own a sibling directory.
             // Each launcher attempt owns only its GUID staging directory.
@@ -649,7 +589,7 @@ namespace DeepSeekHarnessLauncher
         /// 应用更新:拉起一个独立的替换脚本,然后退出自己。
         /// 必须由脚本干替换的活 —— 正在运行的程序没法覆盖自己的 exe。
         /// </summary>
-        public static void ApplyUpdateAndExit(string newFilesDirectory, string installDirectory)
+        public static void ApplyUpdateAndExit(string newFilesDirectory, string installDirectory, string infoSession = null)
         {
             string scriptPath = Path.Combine(Path.GetTempPath(), "DeepSeekHarnessUpdate", "apply-update.ps1");
             string restartCommandPath = Path.Combine(
@@ -663,6 +603,10 @@ namespace DeepSeekHarnessLauncher
             string launcherCommand =
                 "\"" + Path.Combine(installDirectory, "DeepSeek Harness.exe") + "\" "
                 + "--no-browser --updated=" + Constants.Version;
+            if (!String.IsNullOrEmpty(infoSession)
+                && infoSession.StartsWith("DafeiyuGo.Info.", StringComparison.Ordinal)
+                && Guid.TryParseExact(infoSession.Substring("DafeiyuGo.Info.".Length), "N", out Guid _))
+                launcherCommand += " --info-session=" + infoSession;
 
             string restartCommand =
                 "@echo off" + Environment.NewLine
@@ -778,16 +722,6 @@ namespace DeepSeekHarnessLauncher
 
         // ---------------------------------------------------------------- HTTP / 文件
 
-        private static string HttpGetText(string url, int timeoutMs)
-        {
-            using (TimeoutWebClient client = new TimeoutWebClient(timeoutMs))
-            {
-                client.Headers[HttpRequestHeader.UserAgent] = Constants.UserAgent;
-                ProxySupport.Apply(client);
-                return client.DownloadString(url);
-            }
-        }
-
         public static string ComputeSha256(string path)
         {
             try
@@ -869,36 +803,5 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        /// <summary>WebClient 的同步下载没法直接设超时,套一层。</summary>
-        private sealed class TimeoutWebClient : WebClient
-        {
-            private readonly int _timeoutMs;
-
-            public TimeoutWebClient(int timeoutMs)
-            {
-                _timeoutMs = timeoutMs;
-            }
-
-            protected override WebRequest GetWebRequest(Uri address)
-            {
-                WebRequest request = base.GetWebRequest(address);
-                if (request != null)
-                {
-                    // 连接超时压短一点:某个镜像连不上时要赶紧跳到下一个,
-                    // 别让用户对着进度条干等好几分钟。
-                    request.Timeout = ConnectTimeoutMs;
-                    HttpWebRequest http = request as HttpWebRequest;
-                    if (http != null)
-                    {
-                        http.ReadWriteTimeout = _timeoutMs;
-                    }
-                }
-
-                return request;
-            }
-        }
-
-        /// <summary>连不上就尽快换源(毫秒)。</summary>
-        private const int ConnectTimeoutMs = 15000;
     }
 }

@@ -23,6 +23,11 @@ namespace DeepSeekHarnessLauncher
         {
             new AcceleratorSource
             {
+                Id = "backend", Name = "后端服务器加速",
+                Prefix = "https://202.189.21.218:8787/api/download?url=", SupportsRanges = true
+            },
+            new AcceleratorSource
+            {
                 Id = "ghproxy",
                 Name = "ghproxy.net",
                 Prefix = "https://ghproxy.net/"
@@ -52,6 +57,7 @@ namespace DeepSeekHarnessLauncher
         /// <summary>自动模式的默认顺序（没测到延迟时用它）：虚拟机实测 ghproxy 最快、ghfast 总超时。</summary>
         internal static readonly string[] DefaultSourceOrder = new string[]
         {
+            "backend",
             "ghproxy",
             "gh-proxy",
             "ghfast",
@@ -258,6 +264,9 @@ namespace DeepSeekHarnessLauncher
                 return urls;
             }
 
+            if (BackendDownloadSource.IsSelected(settings))
+            { urls.Add(BackendDownloadSource.Wrap(url)); urls.Add(url); return urls; }
+
             if (IsEnabled(settings) && CanAccelerate(url))
             {
                 List<string> order = OrderedSourceIds(settings);
@@ -270,7 +279,7 @@ namespace DeepSeekHarnessLauncher
                         continue;
                     }
 
-                    string candidate = source.Prefix + url;
+                    string candidate = source.Id == "backend" ? BackendDownloadSource.Wrap(url) : source.Prefix + url;
                     if (!urls.Contains(candidate))
                     {
                         urls.Add(candidate);
@@ -314,7 +323,7 @@ namespace DeepSeekHarnessLauncher
                     continue;
                 }
 
-                string candidate = String.IsNullOrWhiteSpace(source.Prefix)
+                string candidate = source.Id == "backend" ? BackendDownloadSource.WrapMetadata(raw) : String.IsNullOrWhiteSpace(source.Prefix)
                     ? "https://cdn.jsdelivr.net/gh/" + repository + "@" + branch + "/" + path
                     : source.Prefix + raw;
                 if (!urls.Contains(candidate))
@@ -355,6 +364,9 @@ namespace DeepSeekHarnessLauncher
                 + "/archive/" + reference2 + ".tar.gz";
             string codeload = "https://codeload.github.com/" + owner + "/" + repository
                 + "/tar.gz/" + reference2;
+
+            if (BackendDownloadSource.IsSelected(settings))
+            { urls.Add(BackendDownloadSource.Wrap(codeload)); urls.Add(codeload); urls.Add(github); return Dedupe(urls); }
 
             string selected = SelectedSourceId(settings);
             bool manual = IsEnabled(settings)
@@ -413,7 +425,7 @@ namespace DeepSeekHarnessLauncher
                     continue;
                 }
 
-                urls.Add(source.Prefix + github);
+                urls.Add(source.Id == "backend" ? BackendDownloadSource.Wrap(github) : source.Prefix + github);
             }
         }
 
@@ -426,6 +438,7 @@ namespace DeepSeekHarnessLauncher
             }
 
             const string path = "CHANGELOG.md";
+            if (source.Id == "backend") return BackendDownloadSource.BaseUrl + "/health/live";
             if (String.IsNullOrWhiteSpace(source.Prefix))
             {
                 return "https://cdn.jsdelivr.net/gh/"

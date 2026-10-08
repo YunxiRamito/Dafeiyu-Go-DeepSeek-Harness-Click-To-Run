@@ -7,6 +7,7 @@
     <Compile Include="../../source/LauncherSettings.cs" Link="LauncherSettings.cs" />
     <Compile Include="../../source/ModelPricing.cs" Link="ModelPricing.cs" />
     <Compile Include="../../source/ProxySupport.cs" Link="ProxySupport.cs" />
+    <Compile Include="../../source/BackendDownloadSource.cs" Link="BackendDownloadSource.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Stubs.cs" />
     <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />

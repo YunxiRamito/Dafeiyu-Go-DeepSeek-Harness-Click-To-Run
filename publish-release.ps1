@@ -11,6 +11,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+throw 'This legacy publisher is disabled: it overwrites release assets and tags. Publish new tags through CI; never upload local verification ZIPs.'
 $OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8
 
 $Root = $PSScriptRoot
@@ -43,10 +44,124 @@ function Ok   ([string]$m) { Write-Host "  [OK]  $m" -ForegroundColor Green }
 function Warn ([string]$m) { Write-Host "  [!!]  $m" -ForegroundColor Yellow }
 function Step ([string]$m) { Write-Host "  [..]  $m" -ForegroundColor Cyan }
 
+# 把 "1.6.0.0" / "1.6" 这类版本串统一成 [version]。
+# 只取开头的数字主体,带前缀后缀的写法(1.6.0-beta)也能认。
+# 解析不了就返回 $null,调用方按“无法比较”处理,不要在这里抛错。
+function ConvertTo-GateVersion([string]$text) {
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    $head = ([regex]::Match($text.Trim(), '^\d+(\.\d+)*')).Value
+    if (-not $head) { return $null }
+    $parts = @($head.Split('.') | ForEach-Object { [int]$_ })
+    while ($parts.Count -lt 4) { $parts += 0 }
+    if ($parts.Count -gt 4) { $parts = $parts[0..3] }
+    try { return [version]::new($parts[0], $parts[1], $parts[2], $parts[3]) } catch { return $null }
+}
+
+# 读 manifest.json 里当前已发布的版本号,读不到返回空串。
+function Get-ManifestPublishedVersion {
+    $path = Join-Path $Root 'manifest.json'
+    if (-not (Test-Path $path)) { return '' }
+    try {
+        $m = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
+        return [string]$m.version
+    } catch {
+        Warn "manifest.json 解析失败,跳过补丁合入检查: $($_.Exception.Message)"
+        return ''
+    }
+}
+
+# 读补丁清单的 patches 数组;没有 patches.json 就返回空数组。
+function Get-PatchFeedEntries([string]$path) {
+    if (-not (Test-Path $path)) { return @() }
+    try {
+        $feed = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        Warn "补丁清单解析失败,按无补丁处理: $path — $($_.Exception.Message)"
+        return @()
+    }
+    if (-not $feed.patches) { return @() }
+    return @($feed.patches)
+}
+
+# 发版门禁(SPEC 4):
+#   X 或 Y 变动 = 大版本,patches.json / patches-preview.json 里只要还有 mergedIn 为空
+#   或 mergedIn 晚于新版本的补丁,就 throw 中止;只变 Z 时仅提示一句,不阻断。
+#   没有补丁清单、或清单里没有补丁时安全跳过。
+function Assert-PatchMergeGate([string]$targetVersion) {
+    $published = Get-ManifestPublishedVersion
+    if (-not $published) {
+        Warn "manifest.json 里没有当前发布版本,跳过补丁合入检查"
+        return
+    }
+
+    $currentVersion = ConvertTo-GateVersion $published
+    $newVersion = ConvertTo-GateVersion $targetVersion
+    $isMajor = $false
+    if ($currentVersion -and $newVersion) {
+        $isMajor = ($currentVersion.Major -ne $newVersion.Major) -or ($currentVersion.Minor -ne $newVersion.Minor)
+    } else {
+        Warn "版本号无法解析(当前 $published → 新 $targetVersion),按大版本处理,继续检查补丁"
+        $isMajor = $true
+    }
+
+    if (-not $isMajor) {
+        Warn "当前发布 $published → 新版本 $targetVersion 只变修订号(X 与 Y 不变),不做补丁合入门禁"
+        return
+    }
+
+    Step "大版本发版($published → $targetVersion):检查补丁合入状态"
+    $pending = @()
+    foreach ($file in @('patches.json', 'patches-preview.json')) {
+        $path = Join-Path $Root $file
+        foreach ($patch in (Get-PatchFeedEntries $path)) {
+            $id = [string]$patch.id
+            $mergedIn = [string]$patch.mergedIn
+            $mergedVersion = ConvertTo-GateVersion $mergedIn
+            $mergedText = '(空)'
+            $isMergedEmpty = $true
+            if ($mergedIn -and $mergedIn.Trim()) {
+                $mergedText = $mergedIn
+                $isMergedEmpty = $false
+            }
+            $unmerged = $isMergedEmpty
+            if (-not $isMergedEmpty -and $mergedVersion -and $newVersion) {
+                $unmerged = ($mergedVersion -gt $newVersion)
+            }
+            if ($unmerged) {
+                $title = [string]$patch.title
+                if (-not $id) { $id = '(无 id)' }
+                if (-not $title) { $title = '(无标题)' }
+                $pending += [pscustomobject]@{
+                    Id       = $id
+                    Title    = $title
+                    MergedIn = $mergedText
+                    File     = $file
+                }
+            }
+        }
+    }
+
+    if ($pending.Count -gt 0) {
+        Say ''
+        Say '  未合入补丁:'
+        foreach ($p in $pending) {
+            Say ("    - {0}  {1}  (mergedIn = {2}, 来自 {3})" -f $p.Id, $p.Title, $p.MergedIn, $p.File)
+        }
+        Say ''
+        throw ("大版本发版中止: $published → $targetVersion 属于 X 或 Y 变动,以下补丁还没合入新版本。" +
+               "把它们的 mergedIn 写成 $targetVersion(或更早已实际合入的版本)、或从清单里移除,再发版。")
+    }
+
+    Ok "补丁合入检查通过:两个补丁清单里没有待合入的补丁"
+}
+
 Say ''
 Say '========================================'
 Say "  发布启动器 $Tag 到 $Repository"
 Say '========================================'
+
+# 发版门禁:大版本变动前必须把未合入补丁处理掉(SPEC 4)
+& (Join-Path $PSScriptRoot 'check-release-gate.ps1') -Version $Version
 
 # 0) token 自检
 Step '校验 token'

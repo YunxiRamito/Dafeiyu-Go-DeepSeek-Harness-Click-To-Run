@@ -198,7 +198,7 @@ namespace DeepSeekHarnessLauncher
                 string url = SearchUrl + "&page=" + page;
                 string json;
                 HttpStatusCode status;
-                if (!TryFetch(url, token, out json, out status, out string error))
+                if (!TryFetch(url, token, out json, out status, out string error, settings: settings))
                 {
                     if (page == 1)
                     {
@@ -241,6 +241,16 @@ namespace DeepSeekHarnessLauncher
         }
 
         private static bool TryFetch(
+            string url, string token, out string json, out HttpStatusCode status, out string error,
+            int timeoutMs = 20000, LauncherSettings settings = null)
+        {
+            if (BackendDownloadSource.IsSelected(settings) && String.IsNullOrWhiteSpace(token)
+                && TryFetchOnce(BackendDownloadSource.WrapMetadata(url), null, out json, out status, out error, timeoutMs))
+                return true;
+            return TryFetchOnce(url, token, out json, out status, out error, timeoutMs);
+        }
+
+        private static bool TryFetchOnce(
             string url,
             string token,
             out string json,
@@ -254,6 +264,7 @@ namespace DeepSeekHarnessLauncher
             try
             {
                 HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+                BackendDownloadSource.Apply(request);
                 request.Method = "GET";
                 request.Accept = "application/json";
                 request.UserAgent = Constants.UserAgent;
@@ -420,11 +431,11 @@ namespace DeepSeekHarnessLauncher
             string error;
             if (!TryFetch(
                 MarketUrl,
-                LauncherSettingsStore.ReadGitHubToken(settings),
+                null,
                 out json,
                 out status,
                 out error,
-                180000))
+                180000, settings))
             {
                 if (log != null)
                 {

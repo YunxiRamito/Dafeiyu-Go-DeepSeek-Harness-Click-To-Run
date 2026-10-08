@@ -41,6 +41,17 @@ namespace DeepSeekHarnessLauncher
             Action<string> log)
         {
             FeaturedPluginResult result = new FeaturedPluginResult();
+            if (PatchResourceResolver.TryReadJson(RemotePath, out string patchJson, log))
+            {
+                var patched = ParseJson(patchJson, out string patchError);
+                if (String.IsNullOrWhiteSpace(patchError))
+                {
+                    result.Items = patched;
+                    result.FromCache = true;
+                    return result;
+                }
+                log?.Invoke("推荐插件补丁资源无效：" + patchError);
+            }
             if (!forceRefresh)
             {
                 List<PluginCatalogItem> cached = ReadFile(LocalFilePath, out string cacheError);

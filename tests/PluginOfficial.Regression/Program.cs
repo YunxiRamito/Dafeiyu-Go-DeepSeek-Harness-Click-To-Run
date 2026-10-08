@@ -212,7 +212,75 @@ try
         DshPluginCliService.Summarize("head" + new string('x', 500)).StartsWith("x"),
         "truncation keeps the tail, where the error message lives");
 
-    Console.WriteLine($"PASS {checks} official-plugin checks; offline, no node, no profile writes.");
+    // 同一 profile 的并发操作需要等外层事务释放，且等待期间可以取消。
+    string operationProfile = Path.Combine(root, "operation-profile");
+    using (var lease = PluginOperationSupport.Acquire(operationProfile))
+    {
+        using var nested = PluginOperationSupport.Acquire(operationProfile);
+        using var notified = new ManualResetEventSlim();
+        using var cancel = new CancellationTokenSource();
+        bool entered = false;
+        var waiter = Task.Run(() =>
+        {
+            try
+            {
+                using var waitingLease = PluginOperationSupport.Acquire(operationProfile,
+                    () => notified.Set(), () => cancel.IsCancellationRequested);
+                entered = true;
+                return false;
+            }
+            catch (OperationCanceledException) { return true; }
+        });
+        Check(notified.Wait(2000), "concurrent same-profile operation reports waiting");
+        nested.Dispose();
+        Check(!waiter.Wait(150) && !entered, "reentrant lease cannot prematurely release the outer transaction");
+        cancel.Cancel();
+        Check(waiter.Wait(2000) && waiter.Result && !entered, "cancel promptly stops a waiting operation without acquiring its lease");
+    }
+    using (var released = PluginOperationSupport.Acquire(operationProfile))
+        Check(true, "released profile lease remains usable");
+    using var ready = new ManualResetEventSlim();
+    using var acquired = new ManualResetEventSlim();
+    var serializationLease = PluginOperationSupport.Acquire(operationProfile);
+    var serialized = Task.Run(() =>
+    {
+        using var next = PluginOperationSupport.Acquire(operationProfile, () => ready.Set());
+        acquired.Set();
+    });
+    try
+    {
+        Check(ready.Wait(2000) && !acquired.IsSet, "second transaction is blocked by the first profile lease");
+    }
+    finally { serializationLease.Dispose(); }
+    Check(serialized.Wait(2000) && acquired.IsSet, "second transaction proceeds after the first releases its lease");
+
+    Check(PluginOperationSupport.IsTransientFailure("ETIMEDOUT fetch https://example.invalid/package"), "network timeout is retryable");
+    Check(PluginOperationSupport.IsTransientFailure("ERR_PNPM_FETCH_503 Service Unavailable"), "temporary registry failure is retryable");
+    Check(PluginOperationSupport.IsTransientFailure("timed out waiting for the writer lock"), "official writer-lock timeout is retryable");
+    Check(!PluginOperationSupport.IsTransientFailure("ERR_PNPM_FETCH_404 package not found"), "missing package is not retried");
+    Check(!PluginOperationSupport.IsTransientFailure("ERR_PNPM_FETCH_401 unauthorized"), "authentication error is not retried");
+    Check(!PluginOperationSupport.IsTransientFailure("ERR_PNPM_IGNORED_BUILDS allowBuilds"), "build authorization error is not retried");
+    Check(!PluginOperationSupport.DescribeFailure("ETIMEDOUT https://example.invalid/private/path", 1).Contains("https://"), "failure text hides URL diagnostics");
+
+    string progressText = null;
+    long progressBytes = -1;
+    using (var transfer = new PluginTransferProgress(value => progressText = value, value => progressBytes = value))
+    {
+        Check(progressBytes == 0 && progressText.StartsWith("缓存中 · "), "official progress starts with cache state and actual zero bytes");
+        Check(transfer.Consume("{\"name\":\"pnpm:fetching-progress\",\"packageId\":\"a\",\"downloaded\":1048576}"), "fetching NDJSON is recognized");
+        Check(progressBytes == 1048576 && progressText.Contains("1.0 MB"), "fetching NDJSON reports actual downloaded bytes");
+        transfer.Consume("{\"name\":\"pnpm:fetching-progress\",\"packageId\":\"a\",\"downloaded\":512}");
+        Check(progressBytes == 1048576, "duplicate lower byte count cannot regress package progress");
+        transfer.Consume("{\"name\":\"pnpm:fetching-progress\",\"packageId\":\"b\",\"status\":\"finished\",\"size\":524288}");
+        Check(progressBytes == 1572864 && progressText.Contains("1.5 MB"), "completed package size is accumulated across packages");
+        transfer.Consume("{\"name\":\"pnpm:progress\",\"packageId\":\"a\",\"status\":\"resolved\"}");
+        transfer.Consume("{\"name\":\"pnpm:progress\",\"packageId\":\"b\",\"status\":\"resolved\"}");
+        transfer.Consume("{\"name\":\"pnpm:progress\",\"packageId\":\"a\",\"status\":\"found_in_store\"}");
+        Check(progressText.Contains("依赖 1/2"), "cache hit and resolved dependency counts are reported");
+        Check(!transfer.Consume("ordinary CLI output") && !transfer.Consume("{\"unrelated\":true}"), "non-PNPM output is not swallowed by the progress parser");
+    }
+
+    Console.WriteLine($"PASS {checks} official-plugin checks; offline, no node, no real profile writes.");
 }
 finally
 {
@@ -226,6 +294,15 @@ finally
 
 namespace DeepSeekHarnessLauncher
 {
+    internal static class PackageDownloadEnvironment
+    {
+        internal static string ResolvePackageSpecifier(string source, bool backend) => source;
+        internal static string OriginalPackageSpecifier(string source) => source;
+        internal static void Apply(System.Diagnostics.ProcessStartInfo process, LauncherSettings settings) =>
+            throw new Exception("Unexpected process launch");
+    }
+    internal static class BackendDownloadSource { internal static bool IsSelected(LauncherSettings settings) => false; }
+
     internal sealed class LauncherSettings
     {
         public string DshRoot { get; set; }

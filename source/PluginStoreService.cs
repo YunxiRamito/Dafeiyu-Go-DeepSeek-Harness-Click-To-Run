@@ -27,12 +27,25 @@ namespace DeepSeekHarnessLauncher
             public bool PnpmMissing { get; set; }
             public bool PnpmFailed { get; set; }
             public string Detail { get; set; } = String.Empty;
+            internal bool Retryable { get; set; }
 
             /// <summary>
             /// 走官方入口装完，但覆盖的是已加载的同名包，官方明确要求重启进程。
             /// 新装包不会置这个位（base bundle 的热加载会直接挂上）。
             /// </summary>
             public bool RestartRequired { get; set; }
+
+            /// <summary>
+            /// 装是装上了，但 peer 区间不覆盖当前 DSH：启动时会被拒绝加载，
+            /// 需要用户确认后做精确版本豁免。界面文案「需要允许不兼容版本」。
+            /// </summary>
+            public bool NeedsVersionExemption { get; set; }
+
+            /// <summary>需要豁免的包，形如 <c>@scope/name@1.2.3</c>；解析不到时为空。</summary>
+            public string ExemptionPackageVersion { get; set; } = String.Empty;
+
+            /// <summary>豁免针对的 DSH 精确版本；解析不到时为空。</summary>
+            public string ExemptionDshVersion { get; set; } = String.Empty;
         }
 
         private const int DownloadTimeoutMs = 180000;
@@ -47,7 +60,8 @@ namespace DeepSeekHarnessLauncher
             string sourceSha,
             Action<string, double> progress,
             Action<string> log,
-            Action<DownloadProgressInfo> detail = null)
+            Action<DownloadProgressInfo> detail = null,
+            bool acceptVersionRisk = false)
         {
             InstallResult result = new InstallResult();
             if (settings == null || String.IsNullOrWhiteSpace(settings.DshRoot))
@@ -75,13 +89,18 @@ namespace DeepSeekHarnessLauncher
                         defaultBranch,
                         sourceSha,
                         progress,
-                        log);
+                        log,
+                        line => Report(progress, line, 20),
+                        acceptVersionRisk);
                     if (official != null)
                     {
                         return official;
                     }
                 }
             }
+
+            CleanupBrokenLinksForProfile(settings, log);
+            FillSourceInfoFromGitHub(settings, spec, log, ref pushedAt, ref defaultBranch, ref sourceSha);
 
             if (!String.IsNullOrWhiteSpace(spec.NpmPackage))
             {
@@ -221,7 +240,8 @@ namespace DeepSeekHarnessLauncher
                     target,
                     "install --reporter=append-only" + RegistryArgument(settings),
                     10 * 60 * 1000,
-                    log);
+                    log,
+                    settings);
             }
 
             Report(progress, "安装中 · 部署到 profile", 88);
@@ -230,7 +250,8 @@ namespace DeepSeekHarnessLauncher
                 profileDirectory,
                 "install --reporter=append-only",
                 10 * 60 * 1000,
-                log);
+                log,
+                settings);
             if (log != null)
             {
                 log("pnpm install 退出码 = " + run.ExitCode
@@ -310,7 +331,8 @@ namespace DeepSeekHarnessLauncher
             string specifier,
             Action<string, double> progress,
             Action<string> log,
-            Action<string> output = null)
+            Action<string> output = null,
+            bool acceptVersionRisk = false)
         {
             InstallResult result = new InstallResult();
             if (settings == null || String.IsNullOrWhiteSpace(settings.DshRoot))
@@ -337,7 +359,8 @@ namespace DeepSeekHarnessLauncher
                     null,
                     progress,
                     log,
-                    output);
+                    output,
+                    acceptVersionRisk);
                 if (official != null)
                 {
                     return official;
@@ -351,7 +374,17 @@ namespace DeepSeekHarnessLauncher
                 PluginSpec spec = PluginSpec.Parse(specifier);
                 if (spec.IsGitHub && String.IsNullOrWhiteSpace(spec.SubDirectory))
                 {
-                    return Install(settings, spec, null, null, null, null, progress, log);
+                    return Install(
+                        settings,
+                        spec,
+                        null,
+                        null,
+                        null,
+                        null,
+                        progress,
+                        log,
+                        null,
+                        acceptVersionRisk);
                 }
             }
             else if (specifier.IndexOf("://", StringComparison.Ordinal) < 0
@@ -360,7 +393,17 @@ namespace DeepSeekHarnessLauncher
                 PluginSpec spec = PluginSpec.Parse(specifier);
                 if (!String.IsNullOrWhiteSpace(spec.NpmPackage))
                 {
-                    return Install(settings, spec, null, null, null, null, progress, log);
+                    return Install(
+                        settings,
+                        spec,
+                        null,
+                        null,
+                        null,
+                        null,
+                        progress,
+                        log,
+                        null,
+                        acceptVersionRisk);
                 }
             }
 
@@ -407,12 +450,60 @@ namespace DeepSeekHarnessLauncher
             string sourceSha,
             Action<string, double> progress,
             Action<string> log,
-            Action<string> output = null)
+            Action<string> output = null,
+            bool acceptVersionRisk = false)
+        {
+            InstallResult result = null;
+            string profile = Path.Combine(DshPluginCliService.ResolveDshHome(settings.DshRoot), "profiles",
+                DshPluginCliService.ResolveProfileName(settings.DshRoot));
+            bool ok = DownloadTaskCenter.Run("插件 · " + (String.IsNullOrWhiteSpace(expectedKey) ? specifier : expectedKey),
+                profile, control =>
+                {
+                    // Hold the lease through verification and install-record updates as well as
+                    // the CLI transaction, so a later operation cannot alter our result midway.
+                    using var operation = PluginOperationSupport.Acquire(profile,
+                        () => Report(progress, "等待其他插件操作完成…", -1), () => control.IsCancelled);
+                    control.Checkpoint();
+                    result = InstallViaOfficialCliCore(settings, spec, specifier, expectedKey,
+                        pushedAt, defaultBranch, sourceSha, progress, log,
+                        line => { Report(progress, line, -1); output?.Invoke(line); }, acceptVersionRisk, control);
+                    control.Checkpoint();
+                    if (result != null && !result.Ok)
+                        throw new OfficialInstallFailure(result.Error ?? "官方插件安装失败。", result.Retryable);
+                    return true;
+                }, out string error, allowPause: false, automaticRetries: 2,
+                retryFilter: exception => exception is OfficialInstallFailure failure && failure.Retryable,
+                stateChanged: text => Report(progress, text, -1));
+            if (ok) return result;
+            result ??= new InstallResult();
+            result.Ok = false;
+            result.Error = error ?? result.Error;
+            return result;
+        }
+
+        private sealed class OfficialInstallFailure : IOException
+        {
+            internal bool Retryable { get; }
+            internal OfficialInstallFailure(string message, bool retryable) : base(message) { Retryable = retryable; }
+        }
+
+        private static InstallResult InstallViaOfficialCliCore(
+            LauncherSettings settings, PluginSpec spec, string specifier, string expectedKey,
+            string pushedAt, string defaultBranch, string sourceSha,
+            Action<string, double> progress, Action<string> log, Action<string> output,
+            bool acceptVersionRisk, DownloadTaskControl control)
         {
             InstallResult result = new InstallResult();
-            List<string> beforeDependencies;
-            List<string> beforeBundles;
-            ReadProfileKeys(settings.DshRoot, out beforeDependencies, out beforeBundles);
+
+            // 粘贴链接安装（InstallFromSpecifier）也走这里：分支型来源补记 HEAD sha，
+            // 这样 PluginUpdateService 才会按 sha 比较出更新。
+            FillSourceInfoFromGitHub(
+                settings,
+                spec,
+                log,
+                ref pushedAt,
+                ref defaultBranch,
+                ref sourceSha);
 
             Report(progress, "安装中 · 调用官方插件管理器", 25);
             if (log != null)
@@ -427,7 +518,10 @@ namespace DeepSeekHarnessLauncher
                 specifier,
                 10 * 60 * 1000,
                 log,
-                output);
+                output,
+                acceptVersionRisk,
+                () => control.IsCancelled,
+                bytes => control.Progress(new DownloadProgressInfo { BytesReceived = bytes, TotalBytes = -1 }));
             if (cli.Unsupported)
             {
                 if (log != null)
@@ -440,10 +534,14 @@ namespace DeepSeekHarnessLauncher
 
             if (cli.Failed)
             {
+                result.Retryable = !cli.Cancelled && (cli.TimedOut || PluginOperationSupport.IsTransientFailure(cli.Output));
                 result.Error = String.IsNullOrWhiteSpace(cli.Error)
                     ? "官方插件命令失败。"
                     : cli.Error;
                 result.Detail = DshPluginCliService.Summarize(cli.Output);
+                result.NeedsVersionExemption = cli.NeedsVersionExemption;
+                result.ExemptionPackageVersion = cli.ExemptionPackageVersion ?? String.Empty;
+                result.ExemptionDshVersion = cli.ExemptionDshVersion ?? String.Empty;
                 return result;
             }
 
@@ -452,31 +550,31 @@ namespace DeepSeekHarnessLauncher
             List<string> afterBundles;
             ReadProfileKeys(settings.DshRoot, out afterDependencies, out afterBundles);
 
-            string key = expectedKey;
-            if (String.IsNullOrWhiteSpace(key) || !afterDependencies.Contains(key))
-            {
-                key = FirstNew(afterDependencies, beforeDependencies);
-            }
+            Dictionary<string, string> dependencies = DshPluginCliService.ReadProfileDependencySpecifiers(settings);
+            string key = DshPluginCliService.ResolveInstalledDependencyKey(
+                specifier, expectedKey, dependencies, settings.DshRoot,
+                DshProfileService.ResolveProfileDirectory(settings.DshRoot));
 
             if (String.IsNullOrWhiteSpace(key) || !afterDependencies.Contains(key))
             {
-                // 命令成功但 profile 里没有新东西：可能装成了普通依赖（没有 dsh.bundle），
-                // 或者 manifest 写的是别的名字。这属于"装了但没生效"，不能算成功。
-                result.Error = "官方命令已执行，但 profile 的依赖里没有看到新插件。"
-                    + "这个包可能不是 DSH bundle（package.json 里缺 dsh.bundle）。";
+                result.Error = "官方命令已执行，但无法在 profile 中确认该安装来源对应的插件依赖。"
+                    + "请检查官方命令输出与 profile 的 package.json。";
                 result.Detail = DshPluginCliService.Summarize(cli.Output);
                 return result;
             }
 
             bool isBundle = afterBundles.Contains(key);
-            bool linked = false;
             string dependency = String.Empty;
             ReadProfileDependency(settings.DshRoot, key, out dependency);
-            linked = dependency.StartsWith("link:", StringComparison.OrdinalIgnoreCase)
-                || dependency.StartsWith("file:", StringComparison.OrdinalIgnoreCase);
 
             string version = ReadInstalledPackageVersion(settings, key);
             string folder = ResolveInstalledPackageDirectory(settings, key, dependency);
+            if (!HasInstalledBundleMetadata(folder))
+            {
+                result.Error = "依赖已安装，但安装目录中的 package.json 没有有效的 dsh.bundle.patch，或声明的 patch 文件不存在。";
+                result.Detail = DshPluginCliService.Summarize(cli.Output);
+                return result;
+            }
 
             PluginInstallStore.Upsert(new PluginInstallRecord
             {
@@ -499,18 +597,146 @@ namespace DeepSeekHarnessLauncher
             result.Directory = folder;
             result.Ok = true;
             result.RestartRequired = cli.RestartRequired;
+            result.NeedsVersionExemption = cli.NeedsVersionExemption;
+            result.ExemptionPackageVersion = cli.ExemptionPackageVersion ?? String.Empty;
+            result.ExemptionDshVersion = cli.ExemptionDshVersion ?? String.Empty;
             Report(progress, "完成", 100);
-            result.Detail = cli.RestartRequired
-                ? "已安装并写入 profile，但覆盖的是同名包，DSH 需要重启才会加载新代码。"
-                : (isBundle
-                    ? "已安装并加入 profile bundles，DSH 会自动热加载，无需重启。"
-                    : "已装进 profile 但没进 bundles，可能需要在 DSH 里手动启用。");
+            if (result.NeedsVersionExemption)
+            {
+                result.Detail = "已安装并写入 profile，但 peer 区间不覆盖当前 DSH，"
+                    + "启动时会被拒绝加载。需要允许不兼容版本"
+                    + (String.IsNullOrWhiteSpace(result.ExemptionPackageVersion)
+                        ? String.Empty
+                        : "（" + result.ExemptionPackageVersion + "）") + "。";
+            }
+            else
+            {
+                result.Detail = cli.RestartRequired
+                    ? "已安装并写入 profile，但覆盖的是同名包，DSH 需要重启才会加载新代码。"
+                    : (isBundle
+                        ? "已安装并加入 profile bundles，DSH 会自动热加载，无需重启。"
+                        : "已安装，当前插件未在 profile bundles 中启用。");
+            }
+
             if (log != null)
             {
                 log("官方插件安装完成：" + key + "（" + result.Detail + "）");
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// 安装前清理 profile 的 node_modules 死链接，复用 <see cref="DshPluginCliService"/> 的实现，
+        /// 不在两处各写一份。
+        /// </summary>
+        private static void CleanupBrokenLinksForProfile(
+            LauncherSettings settings,
+            Action<string> log)
+        {
+            if (settings == null || String.IsNullOrWhiteSpace(settings.DshRoot))
+            {
+                return;
+            }
+
+            try
+            {
+                string profile = DshProfileService.ResolveProfileDirectory(settings.DshRoot);
+                DshPluginCliService.CleanupBrokenSymlinks(profile, log);
+            }
+            catch (Exception exception)
+            {
+                if (log != null)
+                {
+                    log("清理 node_modules 死链接异常（不影响安装）：" + exception.Message);
+                }
+            }
+        }
+
+        /// <summary>
+        /// 分支型安装（<c>github:owner/repo</c>，没有 <c>#sha</c>/tag）也要记录安装当时的 HEAD sha，
+        /// 之后 <see cref="PluginUpdateService"/> 才有 sha 可比。固定 tag / commit 的不动，
+        /// 继续用安装表达式里的 revision。取远端走现成的 GitHub 访问层（FeaturedAdminService），
+        /// 失败只写日志，不阻塞安装。
+        /// </summary>
+        private static void FillSourceInfoFromGitHub(
+            LauncherSettings settings,
+            PluginSpec spec,
+            Action<string> log,
+            ref string pushedAt,
+            ref string defaultBranch,
+            ref string sourceSha)
+        {
+            if (spec == null || !spec.IsGitHub || String.IsNullOrWhiteSpace(settings.DshRoot))
+            {
+                return;
+            }
+
+            // 固定到 tag / commit 的安装不覆盖记录里的 revision。
+            if (!String.IsNullOrWhiteSpace(spec.Revision))
+            {
+                return;
+            }
+
+            if (!String.IsNullOrWhiteSpace(sourceSha)
+                && !String.IsNullOrWhiteSpace(pushedAt)
+                && !String.IsNullOrWhiteSpace(defaultBranch))
+            {
+                return;
+            }
+
+            try
+            {
+                string error;
+                PluginCatalogItem remote = FeaturedAdminService.ImportPlugin(
+                    settings,
+                    spec,
+                    out error);
+                if (remote == null)
+                {
+                    if (log != null)
+                    {
+                        log("取远端默认分支 HEAD sha 失败（不影响安装）："
+                            + (String.IsNullOrWhiteSpace(error) ? "未知原因" : error));
+                    }
+
+                    return;
+                }
+
+                if (String.IsNullOrWhiteSpace(sourceSha))
+                {
+                    sourceSha = remote.SourceSha;
+                }
+
+                if (String.IsNullOrWhiteSpace(pushedAt))
+                {
+                    pushedAt = remote.PushedAt;
+                }
+
+                if (String.IsNullOrWhiteSpace(defaultBranch))
+                {
+                    defaultBranch = remote.DefaultBranch;
+                }
+
+                if (log != null && !String.IsNullOrWhiteSpace(remote.SourceSha))
+                {
+                    log("插件来源提交：" + spec.Owner + "/" + spec.Repository
+                        + "@" + ShortSha(remote.SourceSha));
+                }
+            }
+            catch (Exception exception)
+            {
+                if (log != null)
+                {
+                    log("取远端默认分支 HEAD sha 异常（不影响安装）：" + exception.Message);
+                }
+            }
+        }
+
+        internal static string ShortSha(string value)
+        {
+            string text = (value ?? String.Empty).Trim();
+            return text.Length > 12 ? text.Substring(0, 12) : text;
         }
 
         private static void ReadProfileKeys(
@@ -594,17 +820,28 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        private static string FirstNew(List<string> after, List<string> before)
+        internal static bool HasInstalledBundleMetadata(string directory)
         {
-            for (int index = 0; index < after.Count; index++)
+            try
             {
-                if (!before.Contains(after[index]))
+                var root = System.Text.Json.Nodes.JsonNode.Parse(
+                    File.ReadAllText(Path.Combine(directory, "package.json"), Encoding.UTF8));
+                var patch = root?["dsh"]?["bundle"]?["patch"];
+                if (patch is System.Text.Json.Nodes.JsonValue value)
                 {
-                    return after[index];
+                    string file = value.GetValue<string>();
+                    return !String.IsNullOrWhiteSpace(file) && File.Exists(Path.Combine(directory, file));
                 }
+                var files = patch as System.Text.Json.Nodes.JsonArray;
+                if (files == null) return false;
+                foreach (var file in files)
+                {
+                    string path = file?.GetValue<string>();
+                    if (String.IsNullOrWhiteSpace(path) || !File.Exists(Path.Combine(directory, path))) return false;
+                }
+                return true;
             }
-
-            return null;
+            catch { return false; }
         }
 
         /// <summary>装完从 node_modules 里的 package.json 读实际版本。</summary>
@@ -719,6 +956,9 @@ namespace DeepSeekHarnessLauncher
                 return result;
             }
 
+            // pnpm add 之前先把死链接清掉：非目录 dirent 会让 pnpm 报「拒绝访问 os error 5」。
+            DshPluginCliService.CleanupBrokenSymlinks(profileDirectory, log);
+
             Report(progress, "安装中 · 正在获取 npm 包", 5);
             PackageManagerRunner.RunResult run = PackageManagerRunner.Run(
                 pnpm,
@@ -726,7 +966,8 @@ namespace DeepSeekHarnessLauncher
                 "add \"" + spec.NpmPackage.Replace("\"", "\\\"")
                     + "\" --reporter=append-only",
                 10 * 60 * 1000,
-                log);
+                log,
+                settings);
             if (!run.Started || run.ExitCode != 0)
             {
                 result.PnpmFailed = true;
@@ -971,13 +1212,17 @@ namespace DeepSeekHarnessLauncher
                 return "没找到 pnpm,请先到组件页装上再试。";
             }
 
+            // 修复前也先清死链接，否则 pnpm install 还是会撞「拒绝访问 os error 5」。
+            DshPluginCliService.CleanupBrokenSymlinks(profileDirectory, log);
+
             Report(progress, "修复中 · 正在按 profile 重装依赖", 20);
             PackageManagerRunner.RunResult run = PackageManagerRunner.Run(
                 pnpm,
                 profileDirectory,
                 "install --reporter=append-only",
                 10 * 60 * 1000,
-                log);
+                log,
+                settings);
 
             if (log != null)
             {
@@ -1246,7 +1491,8 @@ namespace DeepSeekHarnessLauncher
                     DshProfileService.ResolveProfileDirectory(settings.DshRoot),
                     "install --reporter=append-only" + RegistryArgument(settings),
                     10 * 60 * 1000,
-                    null);
+                    null,
+                    settings);
             }
 
             return true;

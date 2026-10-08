@@ -25,6 +25,10 @@ namespace DeepSeekHarnessLauncher
         /// <summary>yyyy-MM-dd。只用来显示和排序，不参与时间运算。</summary>
         public string Date { get; set; } = String.Empty;
 
+        public DateTimeOffset? PublishedAt { get; set; }
+
+        public DateTimeOffset? ExpiresAt { get; set; }
+
         /// <summary>置顶的永远排在最前面。</summary>
         public bool Pinned { get; set; }
 
@@ -101,6 +105,17 @@ namespace DeepSeekHarnessLauncher
             Action<string> log)
         {
             AnnouncementResult result = new AnnouncementResult();
+            if (PatchResourceResolver.TryReadJson(RemotePath, out string patchJson, log))
+            {
+                List<AnnouncementItem> patched = Parse(patchJson, out string patchError);
+                if (String.IsNullOrWhiteSpace(patchError))
+                {
+                    result.Items = patched;
+                    result.FromCache = true;
+                    return result;
+                }
+                Log(log, "公告补丁资源无效：" + patchError);
+            }
             List<AnnouncementItem> cached = ReadLocal();
 
             // 第一次（forceRefresh=false）只读缓存，让主页立刻有东西显示。
@@ -324,6 +339,8 @@ namespace DeepSeekHarnessLauncher
                 Body = ReadString(element, "body"),
                 Tag = ReadString(element, "tag"),
                 Date = ReadString(element, "date"),
+                PublishedAt = ReadTimestamp(element, "publishedAt"),
+                ExpiresAt = ReadTimestamp(element, "expiresAt"),
                 Url = ReadString(element, "url"),
                 Pinned = ReadBool(element, "pinned"),
                 Order = ReadInt(element, "order")
@@ -340,6 +357,25 @@ namespace DeepSeekHarnessLauncher
             }
 
             return item;
+        }
+
+        private static DateTimeOffset? ReadTimestamp(JsonElement element, string name)
+        {
+            return element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String
+                && value.TryGetDateTimeOffset(out DateTimeOffset timestamp) ? timestamp : null;
+        }
+
+        internal static ClientNoticeMessage ToNotice(AnnouncementItem item)
+        {
+            if (item == null) return null;
+            DateTimeOffset published = item.PublishedAt ?? (DateTimeOffset.TryParse(item.Date,
+                System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal,
+                out DateTimeOffset date) ? date : DateTimeOffset.UnixEpoch);
+            var message = new ClientNoticeMessage { Id = item.Id, Kind = "announcement", Title = item.Title,
+                Markdown = item.Body, Date = DateOnly.TryParseExact(item.Date, "yyyy-MM-dd",
+                    System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out _) ? item.Date : null,
+                PublishedAt = published, ExpiresAt = item.ExpiresAt };
+            return message.Validate(out _) ? message : null;
         }
 
         /// <summary>缺 id 时按标题和日期凑一个稳定的，够「已读」判断用。</summary>
@@ -389,6 +425,8 @@ namespace DeepSeekHarnessLauncher
                     ["body"] = item.Body,
                     ["tag"] = item.TagOrFallback,
                     ["date"] = item.Date,
+                    ["publishedAt"] = item.PublishedAt?.ToString("o"),
+                    ["expiresAt"] = item.ExpiresAt?.ToString("o"),
                     ["pinned"] = item.Pinned,
                     ["url"] = item.Url,
                     ["order"] = item.Order

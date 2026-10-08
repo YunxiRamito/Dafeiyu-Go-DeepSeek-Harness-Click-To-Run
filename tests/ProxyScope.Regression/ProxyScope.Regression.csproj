@@ -9,6 +9,7 @@
   <ItemGroup>
     <Compile Include="../../source/LauncherSettings.cs" Link="LauncherSettings.cs" />
     <Compile Include="../../source/ProxySupport.cs" Link="ProxySupport.cs" />
+    <Compile Include="../../source/BackendDownloadSource.cs" Link="BackendDownloadSource.cs" />
     <Compile Include="../../source/LauncherSettingsStore.cs" Link="LauncherSettingsStore.cs" />
   </ItemGroup>
 </Project>

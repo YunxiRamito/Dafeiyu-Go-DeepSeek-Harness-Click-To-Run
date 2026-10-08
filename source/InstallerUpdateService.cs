@@ -45,6 +45,7 @@ namespace DeepSeekHarnessLauncher
         /// 又能把 api.github.com 的调用次数从"每次开设置页一次"压到一天两次。
         /// </summary>
         private static readonly TimeSpan CacheLifetime = TimeSpan.FromHours(12);
+        internal static bool HasFreshMetadataCache => ReadCache(true) != null;
 
         /// <summary>
         /// 取安装器仓库的最新 Release。
@@ -548,16 +549,17 @@ namespace DeepSeekHarnessLauncher
             LauncherSettings settings,
             string url)
         {
-            using (TimeoutWebClient client =
-                new TimeoutWebClient(20000))
+            var urls = BackendDownloadSource.IsSelected(settings)
+                ? UpdateMetadataReader.BackendCandidates(url) : new List<string> { url };
+            var result = UpdateMetadataReader.ReadFirstValid(new[] { (IReadOnlyList<string>)urls }, json =>
             {
-                client.Headers[HttpRequestHeader.UserAgent] =
-                    Constants.UserAgent;
-                client.Headers[HttpRequestHeader.Accept] =
-                    "application/vnd.github+json";
-                ProxySupport.Apply(client);
-                return client.DownloadString(url);
-            }
+                using var document = JsonDocument.Parse(json);
+                if (!document.RootElement.TryGetProperty("tag_name", out _))
+                    throw new InvalidDataException("安装器 Release 信息不完整。");
+                return json;
+            }, request => ProxySupport.Apply(request, settings), groupBudgetMilliseconds: 8000);
+            if (result.Value == null) throw new IOException(result.Error);
+            return result.Value;
         }
 
         private static bool ExtractAppendedZip(
@@ -827,6 +829,7 @@ namespace DeepSeekHarnessLauncher
             protected override WebRequest GetWebRequest(Uri address)
             {
                 WebRequest request = base.GetWebRequest(address);
+                if (request is HttpWebRequest backendRequest) BackendDownloadSource.Apply(backendRequest);
                 if (request != null)
                 {
                     request.Timeout = _timeoutMs;

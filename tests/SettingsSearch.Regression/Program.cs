@@ -1,4 +1,6 @@
 using DeepSeekHarnessLauncher;
+using System.Text.RegularExpressions;
+using System.Xml.Linq;
 
 // 设置搜索的纯匹配逻辑：标题/描述/别名、大小写、空白、多词 AND、排序与限量。
 // 离线、无网络、无设置写入。
@@ -155,5 +157,131 @@ var byPageInitials = SettingsSearchMatcher.Search(index, "cg", 0);
 Check(byPageInitials.Count >= 2, "initials of the page name find that page's entries");
 Check(byPageInitials.TrueForAll(e => e.PageTitle == "常规"), "page initials do not leak to other pages");
 Check(SettingsSearchMatcher.Search(index, "zzz").Count == 0, "unknown initials match nothing");
+
+// Read the production registrations so new controls cannot pass using a duplicate fixture index.
+string sourceDirectory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../source"));
+string windowSource = File.ReadAllText(Path.Combine(sourceDirectory, "SettingsWindow.xaml.cs"));
+XDocument windowXaml = XDocument.Load(Path.Combine(sourceDirectory, "SettingsWindow.xaml"));
+XNamespace xamlNamespace = "http://schemas.microsoft.com/winfx/2006/xaml";
+var namedElements = windowXaml.Descendants().Where(element => element.Attribute(xamlNamespace + "Name") != null)
+    .ToDictionary(element => (string)element.Attribute(xamlNamespace + "Name"));
+var registrations = Regex.Matches(windowSource,
+    "CollectSearchEntry\\(\"([^\"]+)\", \"([^\"]+)\", \"([^\"]+)\", \"([^\"]+)\", \"([^\"]+)\", \"([^\"]+)\", (\\w+)\\);");
+var newIndex = new List<SettingsSearchEntry>();
+foreach (Match registration in registrations)
+{
+    string anchorName = registration.Groups[7].Value;
+    Check(namedElements.ContainsKey(anchorName), "search anchor exists in XAML: " + anchorName);
+    var item = Entry(registration.Groups[1].Value, registration.Groups[2].Value,
+        registration.Groups[3].Value, registration.Groups[4].Value, registration.Groups[5].Value,
+        registration.Groups[5].Value, registration.Groups[6].Value);
+    item.Anchor = anchorName;
+    newIndex.Add(item);
+}
+Check(newIndex.Count >= 16 && newIndex.Select(item => item.OptionId).Distinct().Count() == newIndex.Count,
+    "1.7 search registrations are collected without duplicate option IDs");
+Match patchRegistration = Regex.Match(windowSource,
+    "OptionId = \"Updates:PatchSection\"(?<body>[\\s\\S]+?)Enabled = true");
+Check(patchRegistration.Success, "patch strategy registration exists in production");
+string patchBody = patchRegistration.Groups["body"].Value;
+string PatchString(string name) => Regex.Match(patchBody, name + " = \"([^\"]+)\"").Groups[1].Value;
+var patchSearch = Entry("Updates:PatchSection", PatchString("Title"), PatchString("Description"),
+    PatchString("PageTag"), PatchString("Group"), PatchString("PageTitle"), PatchString("Alias"));
+patchSearch.Initials = SettingsSearchInitials.Build(
+    Regex.Match(patchBody, "SettingsSearchInitials.Build\\(\"([^\"]+)\"\\)").Groups[1].Value);
+patchSearch.Anchor = Regex.Match(patchBody, "Anchor = (\\w+)").Groups[1].Value;
+newIndex.Add(patchSearch);
+foreach (string query in new[] { "补丁策略", "bdcl", "已安装补丁", "yazbd", "可用补丁", "kybd" })
+{
+    var hit = SettingsSearchMatcher.Search(newIndex, query, 0).Find(item => item.OptionId == "Updates:PatchSection");
+    Check(hit != null && hit.PageTag == "Patches" && (string)hit.Anchor == "PatchUpdateModeComboBox",
+        "patch Chinese/initials query selects patch strategy: " + query);
+}
+var expectedSearches = new (string Query, string Id, string Page, string Anchor)[]
+{
+    ("我的提交", "Feedback:Mine", "Feedback", "FeedbackScopePivot"),
+    ("wdtj", "Feedback:Mine", "Feedback", "FeedbackScopePivot"),
+    ("后端服务器加速", "General:BackendSource", "General", "UpdateSourceComboBox"),
+    ("hdfwqjs", "General:BackendSource", "General", "UpdateSourceComboBox"),
+    ("反代", "General:BackendSource", "General", "UpdateSourceComboBox"),
+    ("服务器监控", "ServerMetrics:Page", "ServerMetrics", "ServerMetricsPage"),
+    ("fwqjk", "ServerMetrics:Page", "ServerMetrics", "ServerMetricsPage"),
+    ("zxrs", "ServerMetrics:Presence", "ServerMetrics", "ServerPresenceChart"),
+    ("24小时", "ServerMetrics:Presence", "ServerMetrics", "ServerPresenceChart"),
+    ("人数图表", "ServerMetrics:Presence", "ServerMetrics", "ServerPresenceChart"),
+    ("cpu", "ServerMetrics:Cpu", "ServerMetrics", "ServerCpuText"),
+    ("nc", "ServerMetrics:Memory", "ServerMetrics", "ServerMemoryText"),
+    ("yp", "ServerMetrics:Disk", "ServerMetrics", "ServerDiskText"),
+    ("cp", "ServerMetrics:Disk", "ServerMetrics", "ServerDiskText"),
+    ("wl", "ServerMetrics:Network", "ServerMetrics", "ServerNetworkText"),
+    ("上传带宽", "ServerMetrics:Network", "ServerMetrics", "ServerNetworkText"),
+    ("scdk", "ServerMetrics:Network", "ServerMetrics", "ServerNetworkText"),
+    ("网络上传", "ServerMetrics:Network", "ServerMetrics", "ServerNetworkText"),
+    ("wlsc", "ServerMetrics:Network", "ServerMetrics", "ServerNetworkText"),
+    ("上传速率", "ServerMetrics:Network", "ServerMetrics", "ServerNetworkText"),
+    ("scsl", "ServerMetrics:Network", "ServerMetrics", "ServerNetworkText"),
+    ("百分比", "ServerMetrics:Network", "ServerMetrics", "ServerNetworkText"),
+    ("bfb", "ServerMetrics:Network", "ServerMetrics", "ServerNetworkText"),
+    ("yjxx", "ServerMetrics:Hardware", "ServerMetrics", "ServerHardwareText"),
+    ("管理员 Token", "Api:AdminTokenBox", "Api", "AdminTokenBox"),
+    ("gly", "Api:AdminTokenBox", "Api", "AdminTokenBox"),
+    ("gglxjg", "General:NoticePollIntervalBox", "General", "NoticePollIntervalBox"),
+    ("zxtj", "General:NoticeTelemetryToggle", "General", "NoticeTelemetryToggle"),
+    ("公告管理", "Developer:Announcements", "Developer", "DeveloperAnnouncementManagePanel"),
+    ("gggl", "Developer:Announcements", "Developer", "DeveloperAnnouncementManagePanel"),
+    ("推送公告", "Developer:PushAnnouncements", "Developer", "DeveloperAnnouncementPushButton"),
+    ("tsgg", "Developer:PushAnnouncements", "Developer", "DeveloperAnnouncementPushButton"),
+    ("通知管理", "Developer:Notifications", "Developer", "DeveloperNotificationPanel"),
+    ("tzgl", "Developer:Notifications", "Developer", "DeveloperNotificationPanel"),
+    ("反馈处理", "Developer:Feedback", "Developer", "DeveloperFeedbackPanel"),
+    ("fkcl", "Developer:Feedback", "Developer", "DeveloperFeedbackPanel"),
+    ("xxckyl", "Developer:InfoPreview", "Developer", "InfoPreviewEntry")
+};
+foreach (var expected in expectedSearches)
+{
+    var hit = SettingsSearchMatcher.Search(newIndex, expected.Query, 0).Find(item => item.OptionId == expected.Id);
+    Check(hit != null, "1.7 Chinese/initials query finds production item: " + expected.Query);
+    Check(hit.PageTag == expected.Page && (string)hit.Anchor == expected.Anchor,
+        "1.7 result carries correct page and anchor: " + expected.Query);
+    Check(hit.NavigationTarget == (expected.Id == "Feedback:Mine" ? "Feedback:Mine" : expected.Page),
+        "1.7 Chinese/initials result resolves the actual navigation route: " + expected.Query);
+}
+Check(windowSource.Contains("SelectPage(entry.NavigationTarget);"),
+    "production search activation uses the tested route including feedback subview");
+Check(windowSource.Contains("bool feedbackMine = target == \"Feedback\"")
+    && windowSource.Contains("if (feedbackMine && FeedbackScopePivot != null) FeedbackScopePivot.SelectedIndex = 3;"),
+    "feedback mine route selects the actual my submissions pivot");
+Check(Entry("Feedback:Mine", "我的提交", "", "About").NavigationTarget == "About",
+    "feedback subview routing requires the feedback page and does not hijack other page registrations");
+Check(Entry("General:PortBox", "端口", "").NavigationTarget == "General",
+    "ordinary setting rows preserve their page navigation route");
+var feedbackStatus = namedElements["FeedbackStatusFilter"];
+Check((string)feedbackStatus.Attribute("MinWidth") == "0"
+    && (string)feedbackStatus.Attribute("HorizontalAlignment") == "Stretch",
+    "feedback filter respects its column width rather than inheriting the wider global minimum");
+Check(SettingsSearchInitials.Build("硬件信息磁盘轮询频率遥测") == "yjxxcplxplyc", "new Chinese characters keep complete initials");
+Check(SettingsSearchInitials.Build("网络上传带宽上传速率百分比") == "wlscdkscslbfb",
+    "network bandwidth aliases have no missing Chinese initials");
+Check(windowSource.Contains("if (DeveloperNavItem.Visibility == Visibility.Visible)\r\n            {")
+    || windowSource.Contains("if (DeveloperNavItem.Visibility == Visibility.Visible)\n            {"),
+    "developer search registrations require a visible unlocked entry");
+Check(windowSource.Contains("DeveloperMessageViews.SelectedIndex = 1")
+    && windowSource.Contains("DeveloperModuleList.SelectedItem = moduleItem"),
+    "developer result navigation selects its module and notification tab");
+Match developerSearchBlock = Regex.Match(windowSource,
+    "if \\(DeveloperNavItem.Visibility == Visibility.Visible\\)\\s*\\{(?<body>[\\s\\S]*?)\\n\\s*\\}");
+Check(developerSearchBlock.Success && developerSearchBlock.Groups["body"].Value.Contains("CollectSearchEntry(\"Developer:Feedback\""),
+    "feedback processing search registration is restricted to the unlocked developer entry");
+Check(windowSource.Contains("if (entry.PageTag == \"Developer\" && DeveloperNavItem.Visibility != Visibility.Visible)"),
+    "locked developer entry prevents activation of retained feedback search results");
+Match developerFeedbackModule = Regex.Match(windowSource,
+    "string module = ReferenceEquals\\(entry.Anchor, DeveloperFeedbackPanel\\) \\? \"([^\"]+)\"");
+Check(developerFeedbackModule.Success && developerFeedbackModule.Groups[1].Value == "Feedback",
+    "feedback search activation resolves the actual Feedback developer module");
+Check(windowXaml.Descendants().Any(element => element.Name.LocalName == "ListViewItem"
+    && (string)element.Attribute("Tag") == "Feedback" && (string)element.Attribute("Content") == "反馈处理"),
+    "feedback search module target exists in the developer module list");
+Check(windowSource.Contains("if (!IsBuiltinPageHiddenByPatch(\"Patches\"))"),
+    "patch strategy registration follows the patch page override/disable boundary");
 
 Console.WriteLine($"PASS {checks} settings-search checks; offline, no settings writes.");

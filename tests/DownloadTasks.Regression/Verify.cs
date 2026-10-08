@@ -16,6 +16,7 @@ namespace DeepSeekHarnessLauncher
         internal string LauncherChannel { get; set; }
         internal string DshChannel { get; set; }
         internal string UpdateSource { get; set; }
+        internal string MirrorSource { get; set; }
     }
 
     internal static class Program { internal static int PreviousProcessId => 0; }
@@ -32,6 +33,8 @@ namespace DeepSeekHarnessLauncher
     {
         internal static AcceleratorSource[] Sources = { new AcceleratorSource() };
         internal static List<string> Candidates(string url, LauncherSettings settings) => new List<string> { url };
+        internal static List<string> RawCandidates(string repository, string branch, string path, LauncherSettings settings)
+            => new List<string> { "https://raw.githubusercontent.com/" + repository + "/" + branch + "/" + path };
     }
 
     internal static class ProxySupport
@@ -278,7 +281,8 @@ public static class Verification
         byte[] package = new byte[128 * 1024];
         using (var server = new TestHttpServer(package))
         {
-            var dsh = new DshUpdatePackage { Version = "regression-isolation", TarballUrl = server.BaseUrl + "dsh" };
+            var dsh = new DshUpdatePackage { Version = "regression-isolation", TarballUrl = server.BaseUrl + "dsh",
+                Integrity = "sha512-" + Convert.ToBase64String(System.Security.Cryptography.SHA512.HashData(package)) };
             string first = null, second = null, error;
             Assert(DshUpdateService.DownloadPackage(dsh, null, out first, out error), "DSH package stages successfully: " + error);
             Assert(DshUpdateService.DownloadPackage(dsh, null, out second, out error)
@@ -290,7 +294,7 @@ public static class Verification
             File.WriteAllText(marker, "keep");
             try
             {
-                var manifest = new UpdateManifest();
+                var manifest = new UpdateManifest { Sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(package)) };
                 manifest.Urls.Add(server.BaseUrl + "invalid-zip");
                 Assert(UpdateSupport.PrepareStaging(manifest, root, null, out error) == null,
                     "invalid launcher archive fails before installation");
@@ -306,7 +310,7 @@ public static class Verification
                 }
                 using (var zipServer = new TestHttpServer(zip))
                 {
-                    manifest = new UpdateManifest();
+                    manifest = new UpdateManifest { Sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(zip)) };
                     manifest.Urls.Add(zipServer.BaseUrl + "valid-zip");
                     string staging = UpdateSupport.PrepareStaging(manifest, root, null, out error);
                     Assert(staging != null && File.Exists(Path.Combine(staging, "DeepSeek Harness.Core.exe")),

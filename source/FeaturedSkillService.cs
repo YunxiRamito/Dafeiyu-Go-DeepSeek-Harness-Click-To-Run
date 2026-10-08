@@ -88,6 +88,17 @@ namespace DeepSeekHarnessLauncher
             Action<string> log)
         {
             FeaturedSkillResult result = new FeaturedSkillResult();
+            if (PatchResourceResolver.TryReadJson(RemotePath, out string patchJson, log))
+            {
+                var patched = ParseJson(patchJson, out string patchError);
+                if (String.IsNullOrWhiteSpace(patchError))
+                {
+                    result.Items = patched;
+                    result.FromCache = true;
+                    return result;
+                }
+                log?.Invoke("推荐技能补丁资源无效：" + patchError);
+            }
             if (!forceRefresh)
             {
                 List<FeaturedSkillItem> cached = ReadLocal();

@@ -1,7 +1,6 @@
 using Microsoft.UI.Xaml;
 using System;
 using System.IO;
-using System.Text;
 
 namespace DeepSeekHarnessLauncher
 {
@@ -42,24 +41,8 @@ namespace DeepSeekHarnessLauncher
 
         private static void WriteAppLog(string message)
         {
-            try
-            {
-                string directory = Path.Combine(
-                    Environment.GetFolderPath(
-                        Environment.SpecialFolder.LocalApplicationData),
-                    "DeepSeekHarness");
-                Directory.CreateDirectory(directory);
-                File.AppendAllText(
-                    Path.Combine(directory, "launcher-boot.log"),
-                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
-                    + "  "
-                    + message
-                    + Environment.NewLine,
-                    new UTF8Encoding(false));
-            }
-            catch
-            {
-            }
+            LauncherLog.Write(Path.Combine(LauncherSettingsStore.DirectoryPath, "launcher-boot.log"),
+                "[caller=" + LauncherLog.CallerLocation() + "] " + message);
         }
     }
 }

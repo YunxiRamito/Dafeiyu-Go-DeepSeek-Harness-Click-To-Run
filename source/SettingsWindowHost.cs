@@ -30,6 +30,11 @@ namespace DeepSeekHarnessLauncher
         public Action<string> ApplyApiKey { get; set; } = delegate { };
         public Action RefreshBalance { get; set; } = delegate { };
         public Action SynchronizeInstallerPaths { get; set; } = delegate { };
+        public Func<ClientNoticePresence> GetNoticePresence { get; set; } = delegate { return null; };
+        public Action<bool> SetPresencePollingEnabled { get; set; } = delegate { };
+        public Action NoticeSettingsChanged { get; set; } = delegate { };
+        public Action<string, string, double> PatchProgress { get; set; } = delegate { };
+        public Action<bool, string, bool> PatchCompleted { get; set; } = delegate { };
 
         /// <summary>
         /// 「修复安装器」：本机安装器版本读不出来或文件缺失时，用户显式要求重装一次。
@@ -45,6 +50,9 @@ namespace DeepSeekHarnessLauncher
 
         public event Action UpdateStateChanged = delegate { };
         public event Action ServiceStateChanged = delegate { };
+        public event Action NoticePresenceChanged = delegate { };
+
+        public void RaiseNoticePresenceChanged() { NoticePresenceChanged(); }
 
         public void RaiseUpdateStateChanged()
         {

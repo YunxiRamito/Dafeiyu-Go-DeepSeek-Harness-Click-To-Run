@@ -795,15 +795,25 @@
                 <NavigationViewItem
                     x:Name="UpdatesNavItem"
                     Content="更新"
-                    Tag="Updates">
+                    Tag="UpdatesGroup">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE895;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <!-- 补丁提供的动态页面挂在这里；没有补丁页面时整个入口藏着。 -->
+                <NavigationViewItem
+                    x:Name="PatchesNavItem"
+                    Content="补丁"
+                    Tag="Patches"
+                    Visibility="Collapsed">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE90F;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
                 <NavigationViewItem
                     x:Name="AboutNavItem"
                     Content="关于"
-                    Tag="About">
+                    Tag="AboutGroup">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE946;" />
                     </NavigationViewItem.Icon>
@@ -829,8 +839,19 @@
                         <FontIcon Glyph="&#xE713;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <NavigationViewItem x:Name="ServerMetricsFooterEntry" Tag="ServerMetrics" SelectsOnInvoked="True" IsTabStop="False" Margin="0,2,0,8" ToolTipService.ToolTip="服务器监控">
+                    <NavigationViewItem.Content>
+                        <Button x:Name="ServerMetricsFooterButton" Click="NoticePresenceFooterItem_Tapped" HorizontalAlignment="Stretch" Padding="8,4" Background="Transparent" BorderThickness="0">
+                        <StackPanel x:Name="NoticePresenceFooterButtonPanel" Orientation="Horizontal" Spacing="8" Margin="0,2">
+                            <Ellipse x:Name="NoticePresenceDot" Width="8" Height="8" Fill="#8A8A8A" VerticalAlignment="Center" />
+                            <TextBlock x:Name="NoticePresenceText" Text="在线状态未连接" FontSize="12" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                        </StackPanel>
+                        </Button>
+                    </NavigationViewItem.Content>
+                </NavigationViewItem>
             </NavigationView.FooterMenuItems>
 
+            <Grid>
             <ScrollViewer
                 x:Name="SettingsScroller"
                 Padding="20,18,20,38"
@@ -1127,6 +1148,65 @@
                         </Border>
                     </StackPanel>
 
+                    <StackPanel x:Name="ServerMetricsPage" Spacing="16" Visibility="Collapsed">
+                        <TextBlock Style="{StaticResource SettingsPageTitleTextStyle}" Text="服务器" />
+                        <TextBlock x:Name="ServerMetricsStatusText" Style="{StaticResource SettingsPageDescriptionTextStyle}" Text="正在读取服务器状态…" />
+                        <Grid ColumnSpacing="12" RowSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Border Grid.Column="0" Style="{StaticResource SettingsCardStyle}">
+                                <StackPanel Spacing="8">
+                                    <TextBlock FontSize="16" FontWeight="SemiBold" Text="CPU" />
+                                    <ProgressBar x:Name="ServerCpuBar" Maximum="100" />
+                                    <TextBlock x:Name="ServerCpuText" Text="--" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="1" Style="{StaticResource SettingsCardStyle}">
+                                <StackPanel Spacing="8">
+                                    <TextBlock FontSize="16" FontWeight="SemiBold" Text="内存" />
+                                    <ProgressBar x:Name="ServerMemoryBar" Maximum="100" />
+                                    <TextBlock x:Name="ServerMemoryText" Text="--" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource SettingsCardStyle}">
+                                <StackPanel Spacing="8">
+                                    <TextBlock FontSize="16" FontWeight="SemiBold" Text="网络" />
+                                    <ProgressBar x:Name="ServerNetworkBar" Maximum="100" />
+                                    <TextBlock x:Name="ServerNetworkText" Text="--" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource SettingsCardStyle}">
+                                <StackPanel Spacing="8">
+                                    <TextBlock FontSize="16" FontWeight="SemiBold" Text="硬盘" />
+                                    <ProgressBar x:Name="ServerDiskBar" Maximum="100" />
+                                    <TextBlock x:Name="ServerDiskText" Text="--" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                        <StackPanel Spacing="8">
+                            <TextBlock FontSize="16" FontWeight="SemiBold" Text="在线人数 · 近 24 小时" />
+                            <TextBlock x:Name="ServerPresenceSummaryText" Text="正在读取在线人数历史…" TextWrapping="Wrap" />
+                            <Canvas x:Name="ServerPresenceChart" Height="210" HorizontalAlignment="Stretch" SizeChanged="ServerPresenceChart_SizeChanged" />
+                        </StackPanel>
+                        <StackPanel Spacing="8">
+                                <TextBlock FontSize="16" FontWeight="SemiBold" Text="网络上传带宽" />
+                                <TextBlock x:Name="ServerUploadSummaryText" Text="上传带宽上限 30 Mbps · 近 5 分钟" TextWrapping="Wrap" />
+                                <Canvas x:Name="ServerUploadChart" Height="210" HorizontalAlignment="Stretch" SizeChanged="ServerUploadChart_SizeChanged" />
+                        </StackPanel>
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel Spacing="6">
+                                <TextBlock FontWeight="SemiBold" Text="硬件信息" />
+                                <TextBlock x:Name="ServerHardwareText" Style="{StaticResource SettingsPageDescriptionTextStyle}" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
                     <!--
                         分组内容宿主：一级入口选择分组，页内 Pivot 选择页面。
                         保留原有页面实例、字段和事件绑定。
@@ -1150,6 +1230,30 @@
                         Spacing="16"
                         Visibility="Collapsed">
                         <Pivot x:Name="SystemTabs"                                                     HorizontalAlignment="Stretch"  SelectionChanged="SettingsSection_SelectionChanged"/>
+                    </StackPanel>
+
+                    <!-- 更新分组：常规更新与补丁管理共用一级入口。 -->
+                    <StackPanel x:Name="UpdatesGroupPage" Spacing="16" Visibility="Collapsed">
+                        <Pivot x:Name="UpdatesTabs" HorizontalAlignment="Stretch" SelectionChanged="SettingsSection_SelectionChanged"/>
+                    </StackPanel>
+                    <StackPanel x:Name="AboutGroupPage" Spacing="16" Visibility="Collapsed">
+                        <Pivot x:Name="AboutTabs" HorizontalAlignment="Stretch" SelectionChanged="SettingsSection_SelectionChanged"/>
+                    </StackPanel>
+
+                    <!-- 补丁提供的动态页面位于补丁管理子页末尾。 -->
+                    <StackPanel
+                        x:Name="PatchesPage"
+                        Spacing="16"
+                        Visibility="Collapsed">
+                        <TextBlock
+                            Style="{StaticResource SettingsPageTitleTextStyle}"
+                            Text="补丁" />
+                        <TextBlock
+                            x:Name="PatchesEmptyText"
+                            Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                            Text="还没有补丁提供页面。"
+                            Visibility="Collapsed" />
+                        <Pivot x:Name="PatchesTabs" HorizontalAlignment="Stretch" SelectionChanged="SettingsSection_SelectionChanged"/>
                     </StackPanel>
 
                     <!-- 常规 -->
@@ -1335,6 +1439,7 @@
                                             x:Name="UpdateSourceAcceleratedItem"
                                             Content="大陆 CDN 加速"
                                             Tag="Accelerated" />
+                                        <ComboBoxItem Content="后端服务器加速" Tag="backend" />
                                         <ComboBoxItem
                                             x:Name="UpdateSourceCustomItem"
                                             Content="自定义"
@@ -1359,10 +1464,10 @@
                                             x:Name="AcceleratorAutoRadio"
                                             Content="自动（推荐）"
                                             Tag="Auto" />
-                                        <RadioButton x:Name="AcceleratorGhproxyRadio" Tag="ghproxy" />
-                                        <RadioButton x:Name="AcceleratorGhProxyRadio" Tag="gh-proxy" />
-                                        <RadioButton x:Name="AcceleratorGhfastRadio" Tag="ghfast" />
-                                        <RadioButton x:Name="AcceleratorJsdelivrRadio" Tag="jsdelivr" />
+                                        <RadioButton x:Name="AcceleratorGhproxyRadio" Tag="ghproxy" Content="ghproxy.net" />
+                                        <RadioButton x:Name="AcceleratorGhProxyRadio" Tag="gh-proxy" Content="gh-proxy.com" />
+                                        <RadioButton x:Name="AcceleratorGhfastRadio" Tag="ghfast" Content="ghfast.top" />
+                                        <RadioButton x:Name="AcceleratorJsdelivrRadio" Tag="jsdelivr" Content="jsDelivr" />
                                     </RadioButtons>
                                     <Grid ColumnSpacing="8">
                                         <Grid.ColumnDefinitions>
@@ -1406,6 +1511,31 @@
                                     SelectedIndex="0"
                                     MinWidth="200" HorizontalAlignment="Right" VerticalAlignment="Center" />
                             </Grid>
+                        </Border>
+
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel Spacing="12">
+                                <StackPanel Spacing="3">
+                                    <TextBlock Style="{StaticResource SettingsRowTitleTextStyle}" Text="开发者中心公告" />
+                                    <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="公告与通知使用内置安全服务端；这里只调整轮询和匿名在线统计。" />
+                                </StackPanel>
+                                <InfoBar x:Name="NoticeEndpointWarning" IsOpen="True" IsClosable="False" Severity="Informational" Title="服务端连接" Message="公告与通知使用内置安全连接。" />
+                                <Grid ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="3" VerticalAlignment="Center">
+                                        <TextBlock Style="{StaticResource SettingsRowTitleTextStyle}" Text="公告轮询间隔（秒）" />
+                                        <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="建议 60 秒；仅控制公告刷新，不影响服务心跳。" />
+                                    </StackPanel>
+                                    <NumberBox x:Name="NoticePollIntervalBox" Grid.Column="1" Minimum="60" Maximum="86400" SmallChange="60" SpinButtonPlacementMode="Compact" Value="60" Width="140" />
+                                </Grid>
+                                <StackPanel Spacing="2">
+                                    <ToggleSwitch x:Name="NoticeTelemetryToggle" Header="在线统计与交互回执" OffContent="关闭" OnContent="开启" />
+                                    <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="开启后发送随机安装 ID、在线心跳及公告展示/已读/点击统计；不包含账号或设备标识。默认关闭。" />
+                                </StackPanel>
+                            </StackPanel>
                         </Border>
 
                         <Border Style="{StaticResource SettingsCardStyle}">
@@ -2006,6 +2136,20 @@
                         </Border>
 
                         <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel Spacing="12">
+                                <TextBlock Style="{StaticResource SettingsRowTitleTextStyle}" Text="管理员 Token" />
+                                <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="开发者中心发布与管理消息使用，以 DPAPI 加密保存。" />
+                                <PasswordBox x:Name="AdminTokenBox" FontFamily="Consolas" PasswordRevealMode="Hidden" PlaceholderText="管理员 Token" />
+                                <CheckBox x:Name="ShowAdminTokenCheckBox" Content="显示 Token" Checked="ShowAdminTokenCheckBox_Changed" Unchecked="ShowAdminTokenCheckBox_Changed" />
+                                <StackPanel HorizontalAlignment="Right" Orientation="Horizontal" Spacing="8">
+                                    <Button Content="清空" Style="{StaticResource SettingsActionButtonStyle}" Click="ClearAdminToken_Click" />
+                                    <Button Content="保存" Style="{StaticResource SettingsAccentActionButtonStyle}" Click="SaveAdminToken_Click" />
+                                </StackPanel>
+                                <InfoBar x:Name="AdminTokenStatusInfoBar" IsClosable="False" IsOpen="False" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource SettingsCardStyle}">
                             <Grid Style="{StaticResource SettingsRowGridStyle}">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -2090,31 +2234,6 @@
                                 </StackPanel>
                                 <ToggleSwitch
                                     x:Name="PluginUpdateReminderToggle"
-                                    Grid.Column="1"
-                                    HorizontalAlignment="Right"
-                                    IsOn="True"
-                                    VerticalAlignment="Center" />
-                            </Grid>
-                        </Border>
-
-                        <Border Style="{StaticResource SettingsCardStyle}">
-                            <Grid Style="{StaticResource SettingsRowGridStyle}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel
-                                    VerticalAlignment="Center"
-                                    Spacing="3">
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowTitleTextStyle}"
-                                        Text="服务启动提醒" />
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                        Text="服务启动、失败或停止时提醒。" />
-                                </StackPanel>
-                                <ToggleSwitch
-                                    x:Name="ServiceReminderToggle"
                                     Grid.Column="1"
                                     HorizontalAlignment="Right"
                                     IsOn="True"
@@ -2402,6 +2521,10 @@
                             x:Name="PluginActionInfoBar"
                             IsClosable="False"
                             IsOpen="False" />
+                        <StackPanel x:Name="PluginInstallProgressPanel" Spacing="6" Visibility="Collapsed">
+                            <TextBlock x:Name="PluginInstallProgressText" TextWrapping="Wrap" />
+                            <ProgressBar x:Name="PluginInstallProgressBar" Maximum="100" Height="6" IsIndeterminate="True" />
+                        </StackPanel>
                         <!-- 粘贴 GitHub 仓库链接直接装：整仓走官方 dsh plugin add，
                              装完 base bundle 的热加载自动挂上，不用重启；只有覆盖同名包才要重启 -->
                         <StackPanel Spacing="6">
@@ -2869,6 +2992,10 @@
                             x:Name="SkillActionInfoBar"
                             IsClosable="False"
                             IsOpen="False" />
+                        <StackPanel x:Name="SkillInstallProgressPanel" Spacing="6" Visibility="Collapsed">
+                            <TextBlock x:Name="SkillInstallProgressText" TextWrapping="Wrap" />
+                            <ProgressBar x:Name="SkillInstallProgressBar" Maximum="100" Height="6" IsIndeterminate="True" />
+                        </StackPanel>
 
                         <Grid ColumnSpacing="8">
                             <Grid.ColumnDefinitions>
@@ -3751,6 +3878,119 @@
                             </StackPanel>
                         </Border>
 
+                        <!-- 补丁：策略 + 工具按钮，列表在下面两张卡 -->
+                        <Border x:Name="PatchPolicySection" Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel Spacing="10">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel
+                                        VerticalAlignment="Center"
+                                        Spacing="3">
+                                        <TextBlock
+                                            Style="{StaticResource SettingsRowTitleTextStyle}"
+                                            Text="补丁" />
+                                        <TextBlock
+                                            x:Name="PatchUpdateSummaryText"
+                                            Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                            Text="补丁状态读取中…" />
+                                    </StackPanel>
+                                    <ComboBox
+                                        x:Name="PatchUpdateModeComboBox"
+                                        Grid.Column="1"
+                                        SelectedIndex="1"
+                                        MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center" SelectionChanged="PatchUpdateModeComboBox_SelectionChanged">
+                                        <ComboBoxItem Content="自动下载并安装" Tag="Install" />
+                                        <ComboBoxItem Content="仅检查更新" Tag="Check" />
+                                        <ComboBoxItem Content="关闭" Tag="Off" />
+                                    </ComboBox>
+                                </Grid>
+                                <InfoBar
+                                    x:Name="PatchUpdateWarning"
+                                    IsClosable="False"
+                                    IsOpen="False"
+                                    Message="脚本和程序文件类补丁会改启动器本机的文件，装之前都会再问一次。"
+                                    Severity="Informational"
+                                    Title="高危补丁需要确认" />
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <InfoBar
+                                        x:Name="PatchUpdateResultInfoBar"
+                                        VerticalAlignment="Center"
+                                        IsClosable="False"
+                                        IsOpen="False" />
+                                    <StackPanel
+                                        Grid.Column="1"
+                                        Orientation="Horizontal"
+                                        Spacing="8">
+                                        <Button
+                                            x:Name="CheckPatchUpdatesButton"
+                                            Content="检查补丁更新"
+                                            Style="{StaticResource SettingsActionButtonStyle}"
+                                            Click="CheckPatchUpdatesButton_Click" />
+                                        <Button
+                                            x:Name="ApplyAllPatchesButton"
+                                            Content="全部应用"
+                                            Style="{StaticResource SettingsActionButtonStyle}"
+                                            Click="ApplyAllPatchesButton_Click" />
+                                    </StackPanel>
+                                </Grid>
+                                <StackPanel
+                                    x:Name="PatchProgressPanel"
+                                    Spacing="6"
+                                    Visibility="Collapsed">
+                                    <TextBlock
+                                        x:Name="PatchProgressText"
+                                        Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                    <ProgressBar
+                                        x:Name="PatchProgressBar"
+                                        Height="5" />
+                                    <TextBlock
+                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                        Text="请不要关闭软件" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 已安装补丁 -->
+                        <Border x:Name="InstalledPatchSection" Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel Spacing="10">
+                                <TextBlock
+                                    FontSize="16"
+                                    FontWeight="SemiBold"
+                                    Text="已安装补丁" />
+                                <TextBlock
+                                    x:Name="InstalledPatchesEmptyText"
+                                    Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                    Text="还没有装过补丁。" />
+                                <StackPanel
+                                    x:Name="InstalledPatchRows"
+                                    Spacing="0" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 可用补丁 -->
+                        <Border x:Name="AvailablePatchSection" Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel Spacing="10">
+                                <TextBlock
+                                    FontSize="16"
+                                    FontWeight="SemiBold"
+                                    Text="可用补丁" />
+                                <TextBlock
+                                    x:Name="AvailablePatchesEmptyText"
+                                    Style="{StaticResource SettingsRowDescriptionTextStyle}"
+                                    Text="还没检查过。点上面的「检查补丁更新」。" />
+                                <StackPanel
+                                    x:Name="AvailablePatchRows"
+                                    Spacing="0" />
+                            </StackPanel>
+                        </Border>
+
                         <!-- 安装器：和启动器各自独立更新，不要求版本号一致 -->
                         <Border Style="{StaticResource SettingsCardStyle}">
                             <StackPanel Spacing="10">
@@ -3867,7 +4107,7 @@
                                             FontSize="14"
                                             FontWeight="SemiBold"
                                                                        
-                                            Text="v1.6.0"
+                                            Text="v1.7.0"
                                             ToolTipService.ToolTip="连续点击五次可打开开发者管理中心"  Tapped="VersionText_Tapped"/>
                                     </StackPanel>
                                     <StackPanel
@@ -3932,7 +4172,7 @@
                                 <Button
                                     Grid.Column="1"
                                                               
-                                    Content="提交 GitHub Issue"
+                                    Content="反馈与建议"
                                     Style="{StaticResource SettingsActionButtonStyle}"  Click="OpenFeedback_Click"/>
                             </Grid>
                         </Border>
@@ -4059,6 +4299,44 @@
 
 
                     </StackPanel>
+                    <Grid
+                        x:Name="FeedbackPage"
+                        Visibility="Collapsed">
+                        <StackPanel x:Name="FeedbackPageContent" Spacing="10" Padding="0,0,0,66">
+                            <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="查看社区反馈，或提交一条建议和问题报告。" TextWrapping="Wrap" />
+                            <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="170" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <ComboBox x:Name="FeedbackScopePivot" MinWidth="0" HorizontalAlignment="Stretch" SelectionChanged="FeedbackScope_SelectionChanged" SelectedIndex="0" AutomationProperties.Name="反馈范围" Style="{StaticResource SettingsComboBoxStyle}">
+                                <ComboBoxItem Content="全部反馈" Tag="All" />
+                                <ComboBoxItem Content="需求建议" Tag="Suggestion" />
+                                <ComboBoxItem Content="漏洞反馈" Tag="Bug" />
+                                <ComboBoxItem Content="我的提交" Tag="Mine" />
+                            </ComboBox>
+                            <ComboBox x:Name="FeedbackStatusFilter" Grid.Column="1" MinWidth="0" HorizontalAlignment="Stretch" AutomationProperties.Name="反馈状态" SelectedIndex="0" SelectionChanged="FeedbackStatus_SelectionChanged" Style="{StaticResource SettingsComboBoxStyle}">
+                                <ComboBoxItem Content="全部状态" Tag="All" />
+                                <ComboBoxItem Content="已提交" Tag="Submitted" />
+                                <ComboBoxItem Content="处理中" Tag="Processing" />
+                                <ComboBoxItem Content="已完成" Tag="Completed" />
+                                <ComboBoxItem Content="暂不处理" Tag="Deferred" />
+                            </ComboBox>
+                            <Button x:Name="FeedbackRefreshButton" Grid.Column="2" Content="刷新" Click="FeedbackRefresh_Click" Style="{StaticResource SettingsCompactButtonStyle}" />
+                            </Grid>
+                            <Grid ColumnSpacing="10">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <TextBlock x:Name="FeedbackCountText" Text="每页 20 条" Style="{StaticResource SettingsRowDescriptionTextStyle}" VerticalAlignment="Center" />
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                    <Button x:Name="FeedbackPreviousPageButton" Content="上一页" Click="FeedbackPreviousPage_Click" IsEnabled="False" Style="{StaticResource SettingsCompactButtonStyle}" />
+                                    <TextBlock x:Name="FeedbackPageText" Text="第 1 页" VerticalAlignment="Center" FontSize="12" />
+                                    <Button x:Name="FeedbackNextPageButton" Content="下一页" Click="FeedbackNextPage_Click" IsEnabled="False" Style="{StaticResource SettingsCompactButtonStyle}" />
+                                </StackPanel>
+                            </Grid>
+                            <InfoBar x:Name="FeedbackInfoBar" IsOpen="False" IsClosable="True" />
+                            <ProgressRing x:Name="FeedbackLoadingRing" IsActive="False" Visibility="Collapsed" Width="24" Height="24" HorizontalAlignment="Center" />
+                            <TextBlock x:Name="FeedbackEmptyText" Text="暂无反馈" Visibility="Collapsed" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                            <StackPanel x:Name="FeedbackRows" Spacing="10" />
+                            <TextBlock x:Name="FeedbackBanText" Visibility="Collapsed" TextWrapping="Wrap" Style="{StaticResource SettingsRowDescriptionTextStyle}" Loaded="FeedbackBanText_Loaded" Unloaded="FeedbackBanText_Unloaded" />
+                        </StackPanel>
+                    </Grid>
                     <!-- 开发者管理：模块化。加新板块 = 左边 DeveloperModuleList 加一条 +
                          右边加一个同名面板，并在代码的模块表里登记（见 HANDOVER）。 -->
                     <StackPanel
@@ -4109,10 +4387,13 @@
                             x:Name="DeveloperInfoBar"
                             IsClosable="False"
                             IsOpen="False" />
+                        <InfoBar x:Name="DeveloperCredentialsInfoBar" Severity="Error" IsClosable="False" IsOpen="False" Title="Token 未填写">
+                            <InfoBar.ActionButton><Button Content="填写 Token" Click="FillDeveloperTokens_Click" /></InfoBar.ActionButton>
+                        </InfoBar>
 
                         <Grid ColumnSpacing="16">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="200" />
+                                <ColumnDefinition Width="160" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
                             <ListView
@@ -4120,9 +4401,9 @@
                                                                                    
                                 SelectionMode="Single" SelectionChanged="DeveloperModule_SelectionChanged">
                                 <ListViewItem Content="推荐管理" Tag="Featured" />
-                                <ListViewItem Content="下载源（未开放）" Tag="Sources" />
-                                <ListViewItem Content="公告" Tag="Announce" />
-                                <ListViewItem Content="权限（未开放）" Tag="Roles" />
+                                <ListViewItem Content="公告与通知" Tag="Messages" />
+                                <ListViewItem Content="反馈处理" Tag="Feedback" />
+                                <ListViewItem Content="工具" Tag="Tools" />
                             </ListView>
                             <Grid Grid.Column="1">
                                 <!-- 模块：推荐管理 -->
@@ -4230,23 +4511,6 @@
                                     </TabView>
                                 </StackPanel>
 
-                                <!-- 模块：下载源（预留） -->
-                                <StackPanel
-                                    x:Name="DeveloperSourcesPanel"
-                                    Spacing="12"
-                                    Visibility="Collapsed">
-                                    <Border Style="{StaticResource SettingsCardStyle}">
-                                        <StackPanel Spacing="4">
-                                            <TextBlock
-                                                Style="{StaticResource SettingsRowTitleTextStyle}"
-                                                Text="下载源与镜像" />
-                                            <TextBlock
-                                                Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                                Text="以后放下载源与镜像池开关。" />
-                                        </StackPanel>
-                                    </Border>
-                                </StackPanel>
-
                                 <!-- 模块：公告 -->
                                 <StackPanel
                                     x:Name="DeveloperAnnouncePanel"
@@ -4290,28 +4554,210 @@
                                         ItemTemplate="{StaticResource DeveloperEntryTemplate}" />
                                 </StackPanel>
 
-                                <!-- 模块：权限（预留） -->
-                                <StackPanel
-                                    x:Name="DeveloperRolesPanel"
-                                    Spacing="12"
-                                    Visibility="Collapsed">
-                                    <Border Style="{StaticResource SettingsCardStyle}">
-                                        <StackPanel Spacing="4">
-                                            <TextBlock
-                                                Style="{StaticResource SettingsRowTitleTextStyle}"
-                                                Text="权限与角色" />
-                                            <TextBlock
-                                                Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                                Text="以后放能提交推荐的账号名单。" />
+                                <!-- 公告与通知共用同一套 Markdown 编辑器；通知可带两个动作按钮。 -->
+                                <StackPanel x:Name="DeveloperMessagesPanel" Spacing="12" Visibility="Collapsed">
+                                    <InfoBar x:Name="DeveloperMessageConnectionBar"
+                                             IsOpen="True"
+                                             IsClosable="False"
+                                             Severity="Informational"
+                                             Title="服务端连接"
+                                             Message="使用启动器内置的安全服务端连接。地址不会写入公告或通知内容。" />
+                                    <InfoBar x:Name="DeveloperMessageInfoBar" IsOpen="False" IsClosable="False" />
+                                    <Pivot x:Name="DeveloperMessageViews" SelectionChanged="DeveloperMessageManagement_SelectionChanged">
+                                        <Pivot.Resources>
+                                            <Style TargetType="PivotHeaderItem"><Setter Property="FontSize" Value="16" /></Style>
+                                        </Pivot.Resources>
+                                        <PivotItem Header="公告管理" />
+                                        <PivotItem Header="通知管理" />
+                                    </Pivot>
+                                            <StackPanel x:Name="DeveloperSharedMessageEditor" Spacing="12" Visibility="Collapsed">
+                                                <Grid ColumnSpacing="10">
+                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="130" /></Grid.ColumnDefinitions>
+                                                    <TextBox x:Name="DeveloperMessageTitleBox" Header="标题" MaxLength="200" />
+                                                    <TextBox x:Name="DeveloperMessageDateBox" Grid.Column="1" Header="日期" PlaceholderText="yyyy-MM-dd" />
+                                                </Grid>
+                                                <Grid x:Name="DeveloperAnnouncementMetadata" ColumnSpacing="10">
+                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                                    <TextBox x:Name="DeveloperMessageTagBox" Header="标签" MaxLength="30" Text="公告" />
+                                                    <CheckBox x:Name="DeveloperMessagePinnedBox" Grid.Column="1" Content="置顶" VerticalAlignment="Bottom" Margin="0,0,0,8" />
+                                                </Grid>
+                                                <TextBlock x:Name="DeveloperMessageSummaryText" Visibility="Collapsed" Text="正文摘要" TextWrapping="Wrap" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                                <StackPanel x:Name="DeveloperMarkdownEditorParkingHost" Visibility="Collapsed">
+                                                <StackPanel x:Name="DeveloperMarkdownEditor" Spacing="10">
+                                                <StackPanel Orientation="Horizontal" Spacing="4">
+                                                    <Button Tag="Bold" Click="DeveloperMarkdownFormat_Click" ToolTipService.ToolTip="粗体" AutomationProperties.Name="粗体"><TextBlock Text="B" FontWeight="Bold" /></Button>
+                                                    <Button Tag="Italic" Click="DeveloperMarkdownFormat_Click" ToolTipService.ToolTip="斜体" AutomationProperties.Name="斜体"><TextBlock Text="I" FontStyle="Italic" /></Button>
+                                                    <Button Tag="Underline" Click="DeveloperMarkdownFormat_Click" ToolTipService.ToolTip="下划线" AutomationProperties.Name="下划线"><TextBlock Text="U" TextDecorations="Underline" /></Button>
+                                                    <Button Tag="Strike" Click="DeveloperMarkdownFormat_Click" ToolTipService.ToolTip="删除线" AutomationProperties.Name="删除线"><TextBlock Text="S" TextDecorations="Strikethrough" /></Button>
+                                                    <ComboBox x:Name="DeveloperMarkdownHeadingBox" SelectedIndex="0" Width="130" SelectionChanged="DeveloperMarkdownHeading_SelectionChanged">
+                                                        <ComboBoxItem Content="正文" Tag="0" /><ComboBoxItem Content="一级标题" Tag="1" /><ComboBoxItem Content="二级标题" Tag="2" /><ComboBoxItem Content="三级标题" Tag="3" />
+                                                    </ComboBox>
+                                                </StackPanel>
+                                                <ComboBox x:Name="DeveloperMarkdownSizeBox" Header="字号" SelectedIndex="0" Width="130" SelectionChanged="DeveloperMarkdownSize_SelectionChanged">
+                                                    <ComboBoxItem Content="默认" Tag="Default" /><ComboBoxItem Content="12" Tag="12" /><ComboBoxItem Content="14" Tag="14" /><ComboBoxItem Content="16" Tag="16" /><ComboBoxItem Content="18" Tag="18" /><ComboBoxItem Content="20" Tag="20" /><ComboBoxItem Content="24" Tag="24" /><ComboBoxItem Content="28" Tag="28" /><ComboBoxItem Content="32" Tag="32" />
+                                                </ComboBox>
+                                                <TextBox x:Name="DeveloperMessageBodyBox" Header="正文（Markdown）" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="180" MaxHeight="360" MaxLength="32000" />
+                                                </StackPanel>
+                                                </StackPanel>
+                                                <NumberBox x:Name="DeveloperMessageExpiryBox" Header="有效期（小时，0 为长期）" Value="24" Minimum="0" Maximum="8760" SpinButtonPlacementMode="Compact" Width="230" HorizontalAlignment="Left" />
+                                                <StackPanel x:Name="DeveloperMessageButtonsPanel" Spacing="10" Visibility="Collapsed">
+                                                    <Grid ColumnSpacing="10">
+                                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="150" /></Grid.ColumnDefinitions>
+                                                        <TextBox x:Name="DeveloperMessageButton1Label" Header="按钮 1 文本" MaxLength="80" />
+                                                        <ComboBox x:Name="DeveloperMessageButton1Action" Grid.Column="1" Header="动作" SelectedIndex="0" HorizontalAlignment="Stretch" SelectionChanged="DeveloperMessageAction_SelectionChanged">
+                                                            <ComboBoxItem Content="链接" Tag="Url" /><ComboBoxItem Content="设置项" Tag="Settings" /><ComboBoxItem Content="PowerShell" Tag="PowerShell" /><ComboBoxItem Content="关闭" Tag="Dismiss" />
+                                                        </ComboBox>
+                                                    </Grid>
+                                                    <TextBox x:Name="DeveloperMessageButton1Target" Header="HTTPS 链接" MaxLength="8192" />
+                                                    <ComboBox x:Name="DeveloperMessageButton1Page" Header="设置项" Visibility="Collapsed" HorizontalAlignment="Stretch">
+                                                        <ComboBoxItem Content="主页" Tag="Home" /><ComboBoxItem Content="常规" Tag="General" /><ComboBoxItem Content="拓展" Tag="Extensions" /><ComboBoxItem Content="核心" Tag="Core" /><ComboBoxItem Content="更新" Tag="Updates" /><ComboBoxItem Content="补丁" Tag="Patches" /><ComboBoxItem Content="关于" Tag="About" />
+                                                    </ComboBox>
+                                                    <Grid ColumnSpacing="10">
+                                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="150" /></Grid.ColumnDefinitions>
+                                                        <TextBox x:Name="DeveloperMessageButton2Label" Header="按钮 2 文本" MaxLength="80" />
+                                                        <ComboBox x:Name="DeveloperMessageButton2Action" Grid.Column="1" Header="动作" SelectedIndex="0" HorizontalAlignment="Stretch" SelectionChanged="DeveloperMessageAction_SelectionChanged">
+                                                            <ComboBoxItem Content="链接" Tag="Url" /><ComboBoxItem Content="设置项" Tag="Settings" /><ComboBoxItem Content="PowerShell" Tag="PowerShell" /><ComboBoxItem Content="关闭" Tag="Dismiss" />
+                                                        </ComboBox>
+                                                    </Grid>
+                                                    <TextBox x:Name="DeveloperMessageButton2Target" Header="HTTPS 链接" MaxLength="8192" />
+                                                    <ComboBox x:Name="DeveloperMessageButton2Page" Header="设置项" Visibility="Collapsed" HorizontalAlignment="Stretch">
+                                                        <ComboBoxItem Content="主页" Tag="Home" /><ComboBoxItem Content="常规" Tag="General" /><ComboBoxItem Content="拓展" Tag="Extensions" /><ComboBoxItem Content="核心" Tag="Core" /><ComboBoxItem Content="更新" Tag="Updates" /><ComboBoxItem Content="补丁" Tag="Patches" /><ComboBoxItem Content="关于" Tag="About" />
+                                                    </ComboBox>
+                                                </StackPanel>
+                                                <Grid x:Name="DeveloperMessageActionGrid" ColumnSpacing="8" RowSpacing="8">
+                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                                    <Button x:Name="DeveloperMessagePublishButton" Click="DeveloperMessagePublish_Click" Style="{StaticResource SettingsAccentActionButtonStyle}" HorizontalAlignment="Stretch">
+                                                        <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE724;" FontSize="14" /><TextBlock x:Name="DeveloperMessagePublishText" Text="发布 / 更新公告" /></StackPanel>
+                                                    </Button>
+                                                    <Button x:Name="DeveloperMessageDraftButton" Grid.Column="1" Click="DeveloperMessageDraft_Click" HorizontalAlignment="Stretch">
+                                                        <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE74E;" FontSize="14" /><TextBlock Text="保存到列表" /></StackPanel>
+                                                    </Button>
+                                                    <Button x:Name="DeveloperMessagePreviewButton" Grid.Row="1" Click="DeveloperMessagePreview_Click" HorizontalAlignment="Stretch">
+                                                        <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE890;" FontSize="14" /><TextBlock Text="预览" /></StackPanel>
+                                                    </Button>
+                                                    <Button x:Name="DeveloperMessageClearButton" Grid.Row="1" Grid.Column="1" Click="DeveloperMessageClear_Click" HorizontalAlignment="Stretch">
+                                                        <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE710;" FontSize="14" /><TextBlock Text="新增" /></StackPanel>
+                                                    </Button>
+                                                </Grid>
+                                            </StackPanel>
+                                            <StackPanel x:Name="DeveloperAnnouncementManagePanel" Spacing="16" Visibility="Collapsed">
+                                                <Border Style="{StaticResource SettingsCardStyle}">
+                                                    <StackPanel Spacing="12">
+                                                        <StackPanel Spacing="3">
+                                                            <TextBlock FontSize="16" FontWeight="SemiBold" Text="公告管理" />
+                                                            <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="编写公告并维护发布顺序；发布后用户下次打开启动器即可看到。" />
+                                                        </StackPanel>
+                                                        <Grid ColumnSpacing="8">
+                                                            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                                            <Button x:Name="DeveloperAnnouncementComposeButton" Click="DeveloperMessageCompose_Click" HorizontalAlignment="Left" Style="{StaticResource SettingsActionButtonStyle}">
+                                                                <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE122;" FontSize="14" /><TextBlock Text="编写公告" /></StackPanel>
+                                                            </Button>
+                                                            <Button x:Name="DeveloperAnnouncementPushButton" Grid.Column="1" Click="DeveloperMessagePublish_Click" Style="{StaticResource SettingsAccentActionButtonStyle}" ToolTipService.ToolTip="发布已保存的公告修改" AutomationProperties.Name="推送公告">
+                                                                <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE724;" FontSize="14" /><TextBlock Text="推送公告" /></StackPanel>
+                                                            </Button>
+                                                            <Button x:Name="DeveloperMessageRefreshButton" Grid.Column="2" Click="DeveloperMessageRefresh_Click" HorizontalAlignment="Right" Style="{StaticResource SettingsActionButtonStyle}">
+                                                                <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE72C;" FontSize="14" /><TextBlock Text="获取现有公告" /></StackPanel>
+                                                            </Button>
+                                                        </Grid>
+                                                    </StackPanel>
+                                                </Border>
+                                                <StackPanel x:Name="DeveloperAnnouncementListPanel" Spacing="12">
+                                                    <Grid ColumnSpacing="8">
+                                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                                        <StackPanel Spacing="3">
+                                                            <TextBlock FontSize="16" FontWeight="SemiBold" Text="公告列表" />
+                                                            <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="按列表顺序展示，置顶和未发布修改会标记在条目下方。" />
+                                                        </StackPanel>
+                                                        <TextBlock x:Name="DeveloperMessageHistoryCount" Grid.Column="1" VerticalAlignment="Center" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                                    </Grid>
+                                                    <TextBlock x:Name="DeveloperMessageHistoryEmpty" Text="先获取现有公告，再编写和推送列表中的修改。" TextWrapping="Wrap" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                                    <StackPanel x:Name="DeveloperMessageHistoryRows" Spacing="0" />
+                                                </StackPanel>
+                                            </StackPanel>
+                                            <StackPanel x:Name="DeveloperNotificationPanel" Spacing="16" Visibility="Collapsed">
+                                                <Border Style="{StaticResource SettingsCardStyle}">
+                                                    <StackPanel Spacing="12">
+                                                        <StackPanel Spacing="3">
+                                                            <TextBlock FontSize="16" FontWeight="SemiBold" Text="通知管理" />
+                                                            <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="通知只保留一条正在推送的内容，可带最多两个操作按钮。" />
+                                                        </StackPanel>
+                                                        <Button x:Name="DeveloperNotificationComposeButton" Click="DeveloperMessageCompose_Click" HorizontalAlignment="Left" Style="{StaticResource SettingsAccentActionButtonStyle}">
+                                                            <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE122;" FontSize="14" /><TextBlock Text="编写通知" /></StackPanel>
+                                                        </Button>
+                                                        <InfoBar x:Name="DeveloperNotificationStatusBar" IsOpen="True" IsClosable="False" Severity="Informational" Title="当前推送" Message="尚未检测现有通知" />
+                                                        <Grid ColumnSpacing="8">
+                                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                                            <Button x:Name="DeveloperNotificationLoadButton" Content="检测现有通知" Click="DeveloperNotificationLoad_Click" HorizontalAlignment="Stretch" />
+                                                            <Button x:Name="DeveloperNotificationStopButton" Grid.Column="1" Content="关闭推送" Click="DeveloperNotificationStop_Click" HorizontalAlignment="Stretch" />
+                                                        </Grid>
+                                                        <TextBlock x:Name="DeveloperNotificationStatusText" Visibility="Collapsed" Text="尚未检测现有通知" TextWrapping="Wrap" />
+                                                    </StackPanel>
+                                                </Border>
+                                                <Border Style="{StaticResource SettingsCardStyle}">
+                                                    <StackPanel Spacing="10">
+                                                        <StackPanel Spacing="3">
+                                                            <TextBlock FontSize="16" FontWeight="SemiBold" Text="触达指标" />
+                                                            <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="查看送达、展示、已读和按钮点击数据。" />
+                                                        </StackPanel>
+                                                        <Grid ColumnSpacing="8">
+                                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                                            <TextBlock x:Name="DeveloperNotificationMetricsText" VerticalAlignment="Center" Text="收到人数：未加载" TextWrapping="Wrap" />
+                                                            <Button x:Name="DeveloperNotificationMetricsButton" Grid.Column="1" Content="刷新指标" Click="DeveloperNotificationMetrics_Click" Style="{StaticResource SettingsActionButtonStyle}" />
+                                                        </Grid>
+                                                    </StackPanel>
+                                                </Border>
+                                            </StackPanel>
+                                </StackPanel>
+                                <StackPanel x:Name="DeveloperFeedbackPanel" Spacing="10" Visibility="Collapsed">
+                                    <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="查看用户反馈，更新处理结果或删除反馈。" TextWrapping="Wrap" />
+                                    <Grid ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="170" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                        <ComboBox x:Name="DeveloperFeedbackCategoryFilter" MinWidth="0" HorizontalAlignment="Stretch" SelectedIndex="0" SelectionChanged="DeveloperFeedbackFilter_SelectionChanged" AutomationProperties.Name="反馈类别" Style="{StaticResource SettingsComboBoxStyle}">
+                                            <ComboBoxItem Content="全部类别" Tag="All" /><ComboBoxItem Content="需求建议" Tag="Suggestion" /><ComboBoxItem Content="漏洞反馈" Tag="Bug" />
+                                        </ComboBox>
+                                        <ComboBox x:Name="DeveloperFeedbackStatusFilter" Grid.Column="1" MinWidth="0" HorizontalAlignment="Stretch" SelectedIndex="0" SelectionChanged="DeveloperFeedbackFilter_SelectionChanged" AutomationProperties.Name="反馈状态" Style="{StaticResource SettingsComboBoxStyle}">
+                                            <ComboBoxItem Content="全部状态" Tag="All" /><ComboBoxItem Content="已提交" Tag="Submitted" /><ComboBoxItem Content="处理中" Tag="Processing" /><ComboBoxItem Content="已完成" Tag="Completed" /><ComboBoxItem Content="暂不处理" Tag="Deferred" />
+                                        </ComboBox>
+                                        <Button x:Name="DeveloperFeedbackRefreshButton" Grid.Column="2" Content="刷新" Click="DeveloperFeedbackRefresh_Click" Style="{StaticResource SettingsCompactButtonStyle}" />
+                                    </Grid>
+                                    <Grid ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                        <TextBlock x:Name="DeveloperFeedbackCountText" Text="每页 20 条" Style="{StaticResource SettingsRowDescriptionTextStyle}" VerticalAlignment="Center" />
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                            <Button x:Name="DeveloperFeedbackPreviousPageButton" Content="上一页" Click="DeveloperFeedbackPreviousPage_Click" IsEnabled="False" Style="{StaticResource SettingsCompactButtonStyle}" />
+                                            <TextBlock x:Name="DeveloperFeedbackPageText" Text="第 1 页" VerticalAlignment="Center" FontSize="12" />
+                                            <Button x:Name="DeveloperFeedbackNextPageButton" Content="下一页" Click="DeveloperFeedbackNextPage_Click" IsEnabled="False" Style="{StaticResource SettingsCompactButtonStyle}" />
                                         </StackPanel>
-                                    </Border>
+                                    </Grid>
+                                    <InfoBar x:Name="DeveloperFeedbackInfoBar" IsOpen="False" IsClosable="False" />
+                                    <ProgressRing x:Name="DeveloperFeedbackLoadingRing" IsActive="False" Visibility="Collapsed" Width="24" Height="24" HorizontalAlignment="Center" />
+                                    <StackPanel x:Name="DeveloperFeedbackRows" Spacing="10" />
+                                    <Expander x:Name="DeveloperFeedbackBansExpander" Header="封禁列表" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" Expanding="DeveloperFeedbackBans_Expanding" Unloaded="DeveloperFeedbackBans_Unloaded">
+                                        <StackPanel x:Name="DeveloperFeedbackBanRows" Spacing="10" />
+                                    </Expander>
+                                </StackPanel>
+                                <StackPanel x:Name="DeveloperToolsPanel" Spacing="12" Visibility="Collapsed">
+                                    <TextBlock Text="信息窗口" Style="{StaticResource SettingsRowTitleTextStyle}" />
+                                    <Button x:Name="InfoPreviewEntry" Click="InfoPreviewEntry_Click" ToolTipService.ToolTip="信息窗口预览" AutomationProperties.Name="信息窗口预览">
+                                        <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE7F4;" FontSize="16" /><TextBlock Text="信息窗口预览" /></StackPanel>
+                                    </Button>
                                 </StackPanel>
                             </Grid>
                         </Grid>
                     </StackPanel>
                 </StackPanel>
             </ScrollViewer>
+            <Button x:Name="FeedbackAddButton" Width="50" Height="50" Padding="0" Content="+" FontSize="28" CornerRadius="25" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,28,24" Visibility="Collapsed" Click="FeedbackAdd_Click" ToolTipService.ToolTip="提交反馈" AutomationProperties.Name="提交反馈" />
+            </Grid>
         </NavigationView>
+
+        <ContentDialog x:Name="DeveloperMessageEditorDialog" Title="编写公告" PrimaryButtonText="保存到列表" SecondaryButtonText="取消" DefaultButton="Primary" PrimaryButtonClick="DeveloperMessageEditorDialog_PrimaryButtonClick">
+            <ContentDialog.Resources><x:Double x:Key="ContentDialogMaxWidth">900</x:Double></ContentDialog.Resources>
+            <ScrollViewer x:Name="DeveloperMessageEditorDialogScroll" MaxHeight="680" VerticalScrollBarVisibility="Auto">
+                <StackPanel x:Name="DeveloperMessageEditorDialogHost" MaxWidth="860" />
+            </ScrollViewer>
+        </ContentDialog>
 
         <!-- 搜索下拉：从标题栏的搜索框往下垂，输入时实时刷新结果 -->
         <Border

@@ -116,7 +116,11 @@ catch
 
 namespace DeepSeekHarnessLauncher
 {
-    internal sealed class LauncherSettings { }
+    internal sealed class LauncherSettings
+    {
+        public string UpdateSource { get; set; }
+        public string MirrorSource { get; set; }
+    }
     internal static class Constants { internal const string UserAgent = "Regression-Test"; }
     internal static class ProxySupport
     {

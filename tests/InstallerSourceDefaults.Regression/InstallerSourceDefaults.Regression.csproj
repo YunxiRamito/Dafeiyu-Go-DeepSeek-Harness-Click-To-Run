@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <NoWarn>CA1416</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../source/LauncherSettings.cs" Link="LauncherSettings.cs" />
+    <Compile Include="../../source/LauncherSettingsStore.cs" Link="LauncherSettingsStore.cs" />
+    <Compile Include="../../../Dafeiyu-Go-DeepSeek-Harness-Setup/src/DshInstaller.Shared/ConfigStore.cs" Link="ConfigStore.cs" />
+    <Compile Include="../../../Dafeiyu-Go-DeepSeek-Harness-Setup/src/DshInstaller.Shared/WellKnown.cs" Link="WellKnown.cs" />
+    <Compile Include="../../../Dafeiyu-Go-DeepSeek-Harness-Setup/src/DshInstaller.Shared/Install/InstallOptions.cs" Link="InstallOptions.cs" />
+    <Compile Include="../../../Dafeiyu-Go-DeepSeek-Harness-Setup/src/DshInstaller.Shared/Install/InstallPaths.cs" Link="InstallPaths.cs" />
+    <Compile Include="../../../Dafeiyu-Go-DeepSeek-Harness-Setup/src/DshInstaller.Shared/Install/EffectiveInstallPlan.cs" Link="EffectiveInstallPlan.cs" />
+    <Compile Include="../../../Dafeiyu-Go-DeepSeek-Harness-Setup/src/DshInstaller/DevOptions.cs" Link="DevOptions.cs" />
+  </ItemGroup>
+</Project>

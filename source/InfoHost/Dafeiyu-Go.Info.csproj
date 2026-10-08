@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/obj/**;**/obj*/**;**/bin/**;**/bin*/**;**/dist*/**</DefaultItemExcludes>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>false</SelfContained>
+    <RootNamespace>DafeiyuGo.InfoHost</RootNamespace>
+    <AssemblyName>DafeiyuGo.Info</AssemblyName>
+    <TargetName>DafeiyuGo.Info</TargetName>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <DefineConstants>DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\DeepSeekHarness.ico</ApplicationIcon>
+    <Version>1.7.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="obj\**;obj-*\**;bin\**;bin-*\**;dist-*\**" />
+    <Page Remove="obj\**;obj-*\**;bin\**;bin-*\**;dist-*\**" />
+    <ApplicationDefinition Remove="obj\**;obj-*\**;bin\**;bin-*\**;dist-*\**" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260804001" />
+    <PackageReference Include="Markdig" Version="0.37.0" />
+    <Compile Include="..\InfoWindow.cs" Link="InfoWindow.cs" />
+    <Compile Include="..\NoticeMarkdownRenderer.cs" Link="NoticeMarkdownRenderer.cs" />
+    <Compile Include="..\LauncherAppearance.cs" Link="LauncherAppearance.cs" />
+    <Compile Include="..\CornerRadiusHelper.cs" Link="CornerRadiusHelper.cs" />
+    <Content Include="..\assets\sounds\notify_F4_F5_v2.mp3" Link="sounds\notify_F4_F5_v2.mp3" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="PublishInfoResources" AfterTargets="Publish">
+    <Copy SourceFiles="$(OutDir)DafeiyuGo.Info.pri" DestinationFolder="$(PublishDir)" />
+    <Copy SourceFiles="$(OutDir)App.xbf" DestinationFolder="$(PublishDir)" />
+  </Target>
+</Project>

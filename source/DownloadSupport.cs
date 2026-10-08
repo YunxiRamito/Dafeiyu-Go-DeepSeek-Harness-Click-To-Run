@@ -51,19 +51,25 @@ namespace DeepSeekHarnessLauncher
                 {
                     if (urls == null || urls.Count == 0) throw new IOException("没有可用的下载地址。");
                     var candidates = new List<string>();
-                    foreach (var url in urls) if (KnownRangeSource(url) && !candidates.Contains(url)) candidates.Add(url);
+                    foreach (var original in urls)
+                    {
+                        var url = BackendDownloadSource.IsSelected(settings) ? BackendDownloadSource.Wrap(original) : original;
+                        if (KnownRangeSource(url) && !candidates.Contains(url)) candidates.Add(url);
+                    }
                     foreach (var url in urls) if (!candidates.Contains(url)) candidates.Add(url);
                     foreach (var url in candidates)
                     {
                         control.Checkpoint();
                         try
                         {
+                            BackendDownloadSource.EnsureReady(url, control.Checkpoint, control.Register,
+                                bytes => progress?.Invoke(new DownloadProgressInfo { TotalBytes = -1, BytesReceived = bytes }));
                             long total;
                             string identity;
                             if (threads > 1 && KnownRangeSource(url) && ProbeRange(url, settings, control, out total, out identity)
                                 && identity != null && total >= MinSegmentBytes * 2)
                             {
-                                int count = (int)Math.Min(Math.Min(threads, 32), total / MinSegmentBytes);
+                                int count = (int)Math.Min(Math.Min(BackendDownloadSource.IsBackendUrl(url) ? 8 : threads, 8), total / MinSegmentBytes);
                                 string prefix = targetPath + "." + taskId + "." + candidates.IndexOf(url);
                                 DownloadSegments(url, targetPath, prefix, settings, total, identity, count, control, progress, partials);
                             }
@@ -91,6 +97,7 @@ namespace DeepSeekHarnessLauncher
         }
         private static bool KnownRangeSource(string url)
         {
+            if (BackendDownloadSource.IsBackendUrl(url)) return true;
             if (String.IsNullOrWhiteSpace(url)) return false;
             foreach (var source in GitHubAccelerator.Sources)
                 if (source.SupportsRanges && !String.IsNullOrWhiteSpace(source.Prefix)
@@ -105,6 +112,7 @@ namespace DeepSeekHarnessLauncher
             // Byte ranges and Content-Length are defined over the encoded representation.
             request.AutomaticDecompression = DecompressionMethods.None;
             if (settings != null) ProxySupport.Apply(request, settings); else ProxySupport.Apply(request);
+            BackendDownloadSource.Apply(request);
             return request;
         }
         private sealed class RequestWatch : IDisposable
@@ -135,7 +143,8 @@ namespace DeepSeekHarnessLauncher
             {
                 control.Checkpoint(); long epoch = control.Interruption;
                 var request = CreateRequest(url, settings);
-                request.Timeout = 6000; request.ReadWriteTimeout = 6000; request.AddRange(0, 0);
+                if (!BackendDownloadSource.IsBackendUrl(url)) { request.Timeout = 6000; request.ReadWriteTimeout = 6000; }
+                request.AddRange(0, 0);
                 try
                 {
                     using (control.Register(request))

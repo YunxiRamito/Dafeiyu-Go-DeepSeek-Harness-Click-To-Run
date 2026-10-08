@@ -34,6 +34,7 @@ namespace DeepSeekHarnessLauncher
         private bool retry;
         private long interruption;
         internal DownloadTaskRecord Record;
+        internal bool SupportsPause = true;
         public bool IsPaused { get { lock (gate) return paused; } }
         public bool IsCancelled { get { lock (gate) return cancelled; } }
         // Epoch also detects a quick pause/resume that interrupted an in-flight request.
@@ -120,7 +121,7 @@ namespace DeepSeekHarnessLauncher
                 {
                     var copy = Clone(record);
                     bool live = active.ContainsKey(record.Id) && !shuttingDown;
-                    copy.CanPause = live && (record.Status == "Downloading" || record.Status == "Preparing");
+                    copy.CanPause = live && active[record.Id].SupportsPause && (record.Status == "Downloading" || record.Status == "Preparing");
                     copy.CanResume = live && record.Status == "Paused";
                     copy.CanRetry = live && record.Status == "Failed";
                     copy.CanCancel = live && record.Status != "Completed" && record.Status != "Cancelled";
@@ -133,7 +134,7 @@ namespace DeepSeekHarnessLauncher
             lock (gate)
             {
                 DownloadTaskControl control;
-                if (id != null && active.TryGetValue(id, out control) && (control.Record.Status == "Preparing" || control.Record.Status == "Downloading"))
+                if (id != null && active.TryGetValue(id, out control) && control.SupportsPause && (control.Record.Status == "Preparing" || control.Record.Status == "Downloading"))
                 { control.Pause(); SetStatus(control.Record, "Paused", null); }
             }
         }
@@ -169,12 +170,15 @@ namespace DeepSeekHarnessLauncher
             // Keep live rows so a failed/paused call cannot become an invisible waiter.
             lock (gate) { Load(); history.RemoveAll(record => !active.ContainsKey(record.Id)); Save(); }
         }
-        public static bool Run(string name, string targetPath, Func<DownloadTaskControl, bool> transfer, out string error)
+        public static bool Run(string name, string targetPath, Func<DownloadTaskControl, bool> transfer, out string error,
+            bool allowPause = true, int automaticRetries = 0, Func<Exception, bool> retryFilter = null,
+            Action<string> stateChanged = null)
         {
             error = null;
             if (transfer == null) throw new ArgumentNullException(nameof(transfer));
             var record = new DownloadTaskRecord { Id = Guid.NewGuid().ToString("N"), Name = SafeText(name ?? Path.GetFileName(targetPath)), Status = "Preparing", CreatedUtc = DateTime.UtcNow };
-            var control = new DownloadTaskControl { Record = record };
+            var control = new DownloadTaskControl { Record = record, SupportsPause = allowPause };
+            int attempts = 0;
             lock (gate)
             {
                 Load();
@@ -189,6 +193,7 @@ namespace DeepSeekHarnessLauncher
                     lock (gate) { if (record.Status != "Paused" && record.Status != "Cancelled") SetStatus(record, "Downloading", null); }
                     try
                     {
+                        attempts++;
                         if (!transfer(control)) throw new IOException("下载失败，请重试或取消。");
                         // Complete atomically against Pause/Cancel; never finish while paused.
                         while (true)
@@ -217,7 +222,17 @@ namespace DeepSeekHarnessLauncher
                             if (!paused) { error = SafeText(exception.Message); SetStatus(record, "Failed", error); }
                         }
                         if (paused) { control.Checkpoint(); continue; }
+                        if (retryFilter != null && !retryFilter(exception)) return false;
+                        if (attempts <= automaticRetries)
+                        {
+                            stateChanged?.Invoke("下载超时或中断，正在重试 · " + (attempts + 1) + "/" + (automaticRetries + 1));
+                            for (int delay = 0; delay < attempts * 10; delay++)
+                            { control.Checkpoint(); Thread.Sleep(100); }
+                            continue;
+                        }
+                        stateChanged?.Invoke("下载失败 · 可在下载任务中重试或取消");
                         control.WaitForRetry();
+                        attempts = 0;
                     }
                 }
             }
@@ -227,7 +242,7 @@ namespace DeepSeekHarnessLauncher
                 lock (gate) { if (!shuttingDown) SetStatus(record, "Cancelled", error); }
                 return false;
             }
-            finally { lock (gate) { active.Remove(record.Id); Trim(); Save(); } }
+            finally { lock (gate) { active.Remove(record.Id); if (record.Status == "Failed") record.FinishedUtc = DateTime.UtcNow; Trim(); Save(); } }
         }
         internal static void Report(DownloadTaskControl control, DownloadProgressInfo info)
         {

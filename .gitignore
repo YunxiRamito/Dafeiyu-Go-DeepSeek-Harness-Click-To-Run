@@ -1,6 +1,8 @@
 # 构建产物
 source/bin/
 source/obj/
+source/obj-*/
+source/source-obj-*/
 source/dist/
 source/dist-*/
 source/publish/
@@ -12,6 +14,9 @@ DeepSeekHarness-*/
 
 # 早期 WinForms 版的编译产物,只是留个纪念,源码在 legacy\*.cs
 source/legacy/*.exe
+source/InfoHost/bin/
+source/InfoHost/obj/
+source/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/source/obj-launcher-final/
 
 # NuGet
 *.nupkg
@@ -49,3 +54,11 @@ tests/**/obj/
 .update-integrity-tests/
 .plugin-official-tests/
 .translation-store-tests/
+.plugin-regression-temp/
+
+# 回归构建残留 / 本地 ZIP 校验旁文件（不进仓库）
+source/obj-regression-*.xbf
+*.zip.sha256
+
+# InfoHost 的本地发布目录（构建产物，几百 MB，不进仓库）
+source/InfoHost/dist-*/

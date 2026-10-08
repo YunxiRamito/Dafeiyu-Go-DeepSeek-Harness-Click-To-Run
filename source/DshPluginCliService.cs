@@ -47,6 +47,24 @@ namespace DeepSeekHarnessLauncher
 
             /// <summary>走的是桌面自带 shim（而不是 node bin.js）。</summary>
             public bool ViaDesktopShim { get; set; }
+            public bool Cancelled { get; set; }
+            public bool TimedOut { get; set; }
+
+            /// <summary>
+            /// 装是装上了，但 peer 区间不覆盖当前 DSH：DSH 启动时会拒绝加载，
+            /// 需要用户确认后做精确版本豁免（allow-version）。界面据此提示
+            /// 「需要允许不兼容版本」，不要静默当成成功。
+            /// </summary>
+            public bool NeedsVersionExemption { get; set; }
+
+            /// <summary>需要豁免的包，形如 <c>@scope/name@1.2.3</c>；解析不到时为空。</summary>
+            public string ExemptionPackageVersion { get; set; } = String.Empty;
+
+            /// <summary>豁免针对的 DSH 精确版本；解析不到时为空。</summary>
+            public string ExemptionDshVersion { get; set; } = String.Empty;
+
+            /// <summary>这一轮自动改了哪些 allowBuilds 键（给日志和界面用）。</summary>
+            public List<string> AllowBuildsKeys { get; set; } = new List<string>();
 
             /// <summary>实际拼出来的命令行，给日志和离线回归断言用。</summary>
             public string CommandLine { get; set; } = String.Empty;
@@ -72,6 +90,12 @@ namespace DeepSeekHarnessLauncher
 
         /// <summary>桌面安装读不到 profile 名时的兜底（桌面固定用这个名字）。</summary>
         private const string DefaultDesktopProfileName = "desktop";
+
+        /// <summary>pnpm 在 profile 里放 allowBuilds 的文件名。</summary>
+        private const string WorkspaceFileName = "pnpm-workspace.yaml";
+
+        /// <summary>插件真正落地的依赖目录名。</summary>
+        private const string NodeModulesDirectoryName = "node_modules";
 
         // ---------------------------------------------------------------- 形态判定
 
@@ -574,9 +598,20 @@ namespace DeepSeekHarnessLauncher
             string specifier,
             int timeoutMs,
             Action<string> log,
-            Action<string> output = null)
+            Action<string> output = null,
+            bool acceptVersionRisk = false,
+            Func<bool> cancelled = null,
+            Action<long> cacheProgress = null)
         {
-            return Run(settings, new[] { "add", specifier }, timeoutMs, log, output);
+            return RunWithRecovery(
+                settings,
+                new[] { "add", specifier },
+                timeoutMs,
+                log,
+                output,
+                acceptVersionRisk,
+                cancelled,
+                cacheProgress);
         }
 
         internal static CliResult Remove(
@@ -592,16 +627,29 @@ namespace DeepSeekHarnessLauncher
             LauncherSettings settings,
             string specifier,
             int timeoutMs,
-            Action<string> log)
+            Action<string> log,
+            bool acceptVersionRisk = false)
         {
             // 固定到 tag / commit 或来自 GitHub 的来源，靠重新 add 拿新内容；
             // registry 包用 pnpm update 才符合"更新"语义。
             if (specifier.StartsWith("github:", StringComparison.OrdinalIgnoreCase))
             {
-                return Run(settings, new[] { "add", specifier }, timeoutMs, log);
+                return RunWithRecovery(
+                    settings,
+                    new[] { "add", specifier },
+                    timeoutMs,
+                    log,
+                    null,
+                    acceptVersionRisk);
             }
 
-            return Run(settings, new[] { "update", specifier }, timeoutMs, log);
+            return RunWithRecovery(
+                settings,
+                new[] { "update", specifier },
+                timeoutMs,
+                log,
+                null,
+                acceptVersionRisk);
         }
 
         /// <summary>跑 <c>dsh plugin --profile &lt;name&gt; ...</c>（桌面安装自动走 shim）。</summary>
@@ -610,7 +658,9 @@ namespace DeepSeekHarnessLauncher
             IList<string> pluginArguments,
             int timeoutMs,
             Action<string> log,
-            Action<string> output = null)
+            Action<string> output = null,
+            Func<bool> cancelled = null,
+            Action<long> cacheProgress = null)
         {
             CliResult result = new CliResult();
             string dshRoot = settings == null ? null : settings.DshRoot;
@@ -624,6 +674,24 @@ namespace DeepSeekHarnessLauncher
 
             bool desktop = IsDesktopInstall(dshRoot);
             string profileName = ResolveProfileName(dshRoot);
+            using var operation = PluginOperationSupport.Acquire(
+                Path.Combine(ResolveDshHome(dshRoot), ProfilesDirectoryName, profileName),
+                () => output?.Invoke("等待其他插件操作完成…"), cancelled);
+            using var transferProgress = new PluginTransferProgress(output, cacheProgress);
+            if (pluginArguments != null && pluginArguments.Count > 1
+                && (String.Equals(pluginArguments[0], "add", StringComparison.OrdinalIgnoreCase)
+                    || String.Equals(pluginArguments[0], "update", StringComparison.OrdinalIgnoreCase)))
+            {
+                var downloadArguments = new List<string>(pluginArguments);
+                for (int index = 1; index < downloadArguments.Count; index++)
+                    downloadArguments[index] = PackageDownloadEnvironment.ResolvePackageSpecifier(
+                        downloadArguments[index], BackendDownloadSource.IsSelected(settings));
+                downloadArguments.RemoveAll(argument => argument.StartsWith("--reporter=", StringComparison.OrdinalIgnoreCase));
+                downloadArguments.Add("--reporter=ndjson");
+                downloadArguments.Add("--config.fetch-retries=2");
+                downloadArguments.Add("--config.fetch-timeout=30000");
+                pluginArguments = downloadArguments;
+            }
 
             ProcessStartInfo startInfo = new ProcessStartInfo();
             startInfo.UseShellExecute = false;
@@ -663,6 +731,13 @@ namespace DeepSeekHarnessLauncher
 
             result.CommandLine = startInfo.FileName + " " + startInfo.Arguments;
             ProxySupport.ApplyProcessEnvironment(startInfo);
+            try { PackageDownloadEnvironment.Apply(startInfo, settings); }
+            catch (Exception exception)
+            {
+                result.Failed = true;
+                result.Error = "后端下载源证书验证失败：" + exception.Message;
+                return result;
+            }
 
             try
             {
@@ -679,11 +754,14 @@ namespace DeepSeekHarnessLauncher
                                 buffer.AppendLine(args.Data);
                             }
 
-                            if (output != null)
+                            if (!transferProgress.Consume(args.Data) && output != null)
                             {
                                 try
                                 {
-                                    output(args.Data);
+                                    // Detailed diagnostics are kept below; avoid exposing paths,
+                                    // URLs or stack traces as the progress message.
+                                    if (args.Data.IndexOf("ERR_PNPM_", StringComparison.OrdinalIgnoreCase) >= 0)
+                                        output("安装中 · 官方管理器正在处理依赖");
                                 }
                                 catch
                                 {
@@ -698,8 +776,13 @@ namespace DeepSeekHarnessLauncher
                     result.Started = true;
                     process.BeginOutputReadLine();
                     process.BeginErrorReadLine();
-                    if (!process.WaitForExit(timeoutMs))
+                    var elapsed = Stopwatch.StartNew();
+                    while (!process.WaitForExit(100))
                     {
+                        bool stop = cancelled?.Invoke() == true;
+                        if (!stop && elapsed.ElapsedMilliseconds < timeoutMs) continue;
+                        result.Cancelled = stop;
+                        result.TimedOut = !stop;
                         try
                         {
                             process.Kill(true);
@@ -709,7 +792,8 @@ namespace DeepSeekHarnessLauncher
                         }
 
                         result.Failed = true;
-                        result.Error = "插件命令超时（" + (timeoutMs / 1000) + " 秒）已中止。";
+                        result.Error = stop ? "插件操作已取消。" : "插件命令超时，已中止本次操作。";
+                        break;
                     }
 
                     try
@@ -758,10 +842,7 @@ namespace DeepSeekHarnessLauncher
                     }
                     else
                     {
-                        // 原样带上命令输出的尾部：pnpm 的 allowBuilds、git 包 prepare 被拦
-                        // 这些原因全在里面，吞掉用户就没法自己处理。
-                        result.Error = "官方插件命令退出码 " + result.ExitCode
-                            + "。" + Summarize(result.Output, 1200);
+                        result.Error = PluginOperationSupport.DescribeFailure(result.Output, result.ExitCode);
                     }
                 }
             }
@@ -772,10 +853,1310 @@ namespace DeepSeekHarnessLauncher
                     + " → 退出码 " + result.ExitCode
                     + (String.IsNullOrWhiteSpace(result.Output)
                         ? String.Empty
-                        : "｜" + Summarize(result.Output)));
+                        : Environment.NewLine + result.Output));
             }
 
             return result;
+        }
+
+        // ---------------------------------------------------------------- 自动恢复
+
+        internal static Dictionary<string, string> ReadProfileDependencySpecifiers(LauncherSettings settings)
+        {
+            Dictionary<string, string> dependencies = new Dictionary<string, string>(StringComparer.Ordinal);
+            try
+            {
+                string directory = TryResolveProfileDirectory(settings);
+                var root = System.Text.Json.Nodes.JsonNode.Parse(
+                    File.ReadAllText(Path.Combine(directory, "package.json"), Encoding.UTF8));
+                var values = root?["dependencies"] as System.Text.Json.Nodes.JsonObject;
+                if (values != null)
+                    foreach (var pair in values)
+                        dependencies[pair.Key] = pair.Value?.GetValue<string>() ?? String.Empty;
+            }
+            catch { }
+            return dependencies;
+        }
+
+        // Repository titles need not equal package names. Match the requested source even on a no-op add.
+        internal static string ResolveInstalledDependencyKey(
+            string specifier, string expectedKey, IDictionary<string, string> dependencies,
+            string requestDirectory = null, string profileDirectory = null)
+        {
+            if (dependencies == null || String.IsNullOrWhiteSpace(specifier)) return null;
+            string requested = NormalizeDependencySource(specifier, requestDirectory);
+            if (!String.IsNullOrWhiteSpace(expectedKey)
+                && dependencies.TryGetValue(expectedKey, out string expectedSource)
+                && String.Equals(requested, NormalizeDependencySource(expectedSource, profileDirectory), StringComparison.Ordinal))
+                return expectedKey;
+            string match = null;
+            foreach (var pair in dependencies)
+            {
+                if (!String.Equals(requested, NormalizeDependencySource(pair.Value, profileDirectory),
+                    StringComparison.Ordinal)) continue;
+                if (match != null) return null;
+                match = pair.Key;
+            }
+            if (match != null) return match;
+
+            // Registry dependencies store a version range rather than the full name@version input.
+            if (!IsLocalPathSpecifier(specifier)
+                && specifier.IndexOf(':') < 0
+                && !requested.StartsWith("github:", StringComparison.OrdinalIgnoreCase))
+            {
+                string packageName = StripPackageVersion(specifier);
+                if (dependencies.ContainsKey(packageName)) return packageName;
+            }
+            return null;
+        }
+
+        private static string NormalizeDependencySource(string source, string directory)
+        {
+            string value = PackageDownloadEnvironment.OriginalPackageSpecifier((source ?? String.Empty).Trim());
+            if (IsLocalPathSpecifier(value) && !String.IsNullOrWhiteSpace(directory))
+            {
+                try
+                {
+                    if (value.StartsWith("file:", StringComparison.OrdinalIgnoreCase)
+                        || value.StartsWith("link:", StringComparison.OrdinalIgnoreCase))
+                        value = value.Substring(value.IndexOf(':') + 1);
+                    return Path.GetFullPath(Path.Combine(directory, value)).ToUpperInvariant();
+                }
+                catch { return value; }
+            }
+            if (value.StartsWith("git+https://github.com/", StringComparison.OrdinalIgnoreCase))
+                value = value.Substring(4);
+            string normalized = NormalizeInstallSpecifier(value, out string error);
+            if (normalized == null) return value;
+            if (normalized.StartsWith("github:", StringComparison.OrdinalIgnoreCase))
+            {
+                int hash = normalized.IndexOf('#');
+                return hash < 0 ? normalized.ToLowerInvariant()
+                    : normalized.Substring(0, hash).ToLowerInvariant() + normalized.Substring(hash);
+            }
+            return normalized;
+        }
+
+        internal static string SelectInstallCompatibilityOutput(string output, string targetKey, bool failed)
+        {
+            if (failed) return output ?? String.Empty;
+            if (String.IsNullOrWhiteSpace(targetKey)) return String.Empty;
+            StringBuilder selected = new StringBuilder();
+            foreach (string line in (output ?? String.Empty).Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (line.IndexOf("Plugin " + targetKey + "@", StringComparison.OrdinalIgnoreCase) >= 0
+                    || line.IndexOf("allow-version " + targetKey + "@", StringComparison.OrdinalIgnoreCase) >= 0)
+                    selected.AppendLine(line);
+            }
+            return selected.ToString();
+        }
+
+        /// <summary>
+        /// 安装 / 更新统一走这里：先清 node_modules 死链接，再跑同一条命令；失败（或出现
+        /// peer 不兼容）时按 pnpm 的输出做一次最小修复后**只重跑一次**，再失败就如实返回，
+        /// 并在错误尾部说明本轮改过哪些 allowBuilds 键。
+        ///
+        /// 修复分两类，都由 <paramref name="acceptVersionRisk"/> 决定 peer 那类是否动手：
+        ///   * <c>ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED</c> / <c>ERR_PNPM_IGNORED_BUILDS</c>
+        ///     → 往 profile 的 pnpm-workspace.yaml 的 allowBuilds 补键 / 把占位值改成 true；
+        ///   * peer 不兼容 → 仅在调用方传入「用户已确认」时执行
+        ///     <c>allow-version &lt;pkg@ver&gt; --dsh-version &lt;exact&gt; --accept-risk</c>。
+        /// </summary>
+        private static CliResult RunWithRecovery(
+            LauncherSettings settings,
+            IList<string> pluginArguments,
+            int timeoutMs,
+            Action<string> log,
+            Action<string> output,
+            bool acceptVersionRisk,
+            Func<bool> cancelled = null,
+            Action<long> cacheProgress = null)
+        {
+            string profileDirectory = TryResolveProfileDirectory(settings);
+            using var operation = PluginOperationSupport.Acquire(profileDirectory ?? Path.Combine(
+                ResolveDshHome(settings.DshRoot), ProfilesDirectoryName, ResolveProfileName(settings.DshRoot)),
+                () => output?.Invoke("等待其他插件操作完成…"), cancelled);
+            CleanupBrokenSymlinks(profileDirectory, log);
+
+            CliResult first = Run(settings, pluginArguments, timeoutMs, log, output, cancelled, cacheProgress);
+            if (first.Cancelled || first.TimedOut) return first;
+            if (first.Unsupported || !first.Started)
+            {
+                return first;
+            }
+
+            string specifier = pluginArguments.Count > 1 ? pluginArguments[1] : null;
+            string targetKey = ResolveInstalledDependencyKey(specifier, null,
+                ReadProfileDependencySpecifiers(settings), settings.DshRoot, profileDirectory);
+            string text = SelectInstallCompatibilityOutput(first.Output, targetKey, first.Failed);
+            List<string> allowBuildKeys = CollectAllowBuildKeys(first.Output);
+            bool parsedExemption = TryParseVersionExemption(
+                text,
+                out string exemptionPackage,
+                out string exemptionDshVersion);
+            bool peerIncompatible = parsedExemption || LooksPeerIncompatible(text);
+
+            List<string> changedKeys = new List<string>();
+            bool retry = false;
+            bool exemptionGranted = false;
+
+            if (allowBuildKeys.Count > 0 && log != null)
+                log("插件依赖需要构建脚本授权。请在 DSH 插件管理器中明确批准；启动器不会依据命令输出自动添加 allowBuilds。");
+
+            if (peerIncompatible)
+            {
+                first.NeedsVersionExemption = true;
+                first.ExemptionPackageVersion = exemptionPackage ?? String.Empty;
+                first.ExemptionDshVersion = exemptionDshVersion ?? String.Empty;
+
+                if (!acceptVersionRisk)
+                {
+                    if (log != null)
+                    {
+                        log("检测到 peer 不兼容：需要允许不兼容版本（"
+                            + DescribeExemption(first) + "），未自动豁免。");
+                    }
+                }
+                else if (String.IsNullOrWhiteSpace(exemptionPackage)
+                    || String.IsNullOrWhiteSpace(exemptionDshVersion))
+                {
+                    if (log != null)
+                    {
+                        log("用户已确认，但解析不出 allow-version 的包与 DSH 版本，未自动豁免。");
+                    }
+                }
+                else
+                {
+                    CliResult allow = RunAllowVersion(
+                        settings,
+                        exemptionPackage,
+                        exemptionDshVersion,
+                        log,
+                        cancelled);
+                    if (allow.Failed)
+                    {
+                        if (log != null)
+                        {
+                            log("版本豁免失败：" + Summarize(allow.Output));
+                        }
+                    }
+                    else
+                    {
+                        // 豁免已写入 compatibility.json；官方要求再跑一次 add 才会写进 bundles。
+                        exemptionGranted = true;
+                        retry = true;
+                    }
+                }
+            }
+
+            CliResult final;
+            if (retry)
+            {
+                if (changedKeys.Count > 0 && log != null)
+                {
+                    log("已自动修改 " + WorkspaceFileName + " 的 allowBuilds："
+                        + DescribeKeys(changedKeys));
+                }
+
+                final = Run(settings, pluginArguments, timeoutMs, log, output, cancelled, cacheProgress);
+                final.AllowBuildsKeys = changedKeys;
+                targetKey = ResolveInstalledDependencyKey(specifier, null,
+                    ReadProfileDependencySpecifiers(settings), settings.DshRoot, profileDirectory);
+                if (TryParseVersionExemption(
+                    SelectInstallCompatibilityOutput(final.Output, targetKey, final.Failed),
+                    out string secondPackage,
+                    out string secondDshVersion))
+                {
+                    final.NeedsVersionExemption = true;
+                    final.ExemptionPackageVersion = secondPackage ?? String.Empty;
+                    final.ExemptionDshVersion = secondDshVersion ?? String.Empty;
+                }
+            }
+            else
+            {
+                final = first;
+                final.AllowBuildsKeys = changedKeys;
+            }
+
+            if (peerIncompatible
+                && !exemptionGranted
+                && !final.NeedsVersionExemption)
+            {
+                // 重跑后的输出没再打印豁免提示时，别把"需要允许不兼容版本"这个标记丢了。
+                final.NeedsVersionExemption = true;
+                final.ExemptionPackageVersion = exemptionPackage ?? String.Empty;
+                final.ExemptionDshVersion = exemptionDshVersion ?? String.Empty;
+            }
+
+            List<string> notes = new List<string>();
+            if (changedKeys.Count > 0)
+            {
+                notes.Add("本轮已自动修改 " + WorkspaceFileName + " 的 allowBuilds："
+                    + DescribeKeys(changedKeys));
+            }
+
+            if (final.NeedsVersionExemption)
+            {
+                notes.Add("peer 不兼容，需要允许不兼容版本：" + DescribeExemption(final));
+            }
+
+            if (notes.Count > 0)
+            {
+                string noteText = String.Join("；", notes.ToArray());
+                if (final.Failed)
+                {
+                    final.Error = (String.IsNullOrWhiteSpace(final.Error)
+                            ? "官方插件命令失败。"
+                            : final.Error)
+                        + "（" + noteText + "）";
+                }
+                else if (log != null)
+                {
+                    log(noteText);
+                }
+            }
+
+            return final;
+        }
+
+        /// <summary>执行精确版本豁免（官方 <c>dsh plugin ... allow-version ... --accept-risk</c>）。</summary>
+        private static CliResult RunAllowVersion(
+            LauncherSettings settings,
+            string packageVersion,
+            string dshVersion,
+            Action<string> log,
+            Func<bool> cancelled = null)
+        {
+            if (log != null)
+            {
+                log("按用户确认自动执行版本豁免：allow-version " + packageVersion
+                    + " --dsh-version " + dshVersion + " --accept-risk");
+            }
+
+            return Run(
+                settings,
+                new[]
+                {
+                    "allow-version",
+                    packageVersion,
+                    "--dsh-version",
+                    dshVersion,
+                    "--accept-risk"
+                },
+                2 * 60 * 1000,
+                log,
+                null,
+                cancelled);
+        }
+
+        // ---------------------------------------------------------------- 输出解析（离线可断言）
+
+        /// <summary>
+        /// 从 <c>ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED</c> 的帮助块里取出 allowBuilds 示例键。
+        /// pnpm 为了排版会把长键折行，这里把缩进续行拼回去，再剥掉末尾的 <c>: true</c>。
+        /// </summary>
+        internal static List<string> ParseGitPrepareAllowBuilds(string output)
+        {
+            List<string> keys = new List<string>();
+            if (String.IsNullOrWhiteSpace(output))
+            {
+                return keys;
+            }
+
+            string[] lines = output.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            for (int index = 0; index < lines.Length; index++)
+            {
+                string line = lines[index];
+                int marker = line.IndexOf("allowBuilds:", StringComparison.OrdinalIgnoreCase);
+                if (marker < 0)
+                {
+                    continue;
+                }
+
+                // 只认 "        allowBuilds:" 这种示例头；帮助正文里的 "allowBuilds" 带引号，不会命中。
+                if (line.Substring(0, marker).Trim().Length != 0)
+                {
+                    continue;
+                }
+
+                string inline = line.Substring(marker + "allowBuilds:".Length).Trim();
+                if (inline.Length > 0 && inline[0] == '{')
+                {
+                    AddKeys(keys, ExtractBracedKeys(inline));
+                    continue;
+                }
+
+                if (inline.Length > 0 && inline[0] != '#')
+                {
+                    AddKey(keys, inline);
+                    continue;
+                }
+
+                List<string> continuation = new List<string>();
+                for (int inner = index + 1; inner < lines.Length; inner++)
+                {
+                    string next = lines[inner];
+                    string trimmed = next.Trim();
+                    if (trimmed.Length == 0
+                        || next.Length == 0
+                        || !Char.IsWhiteSpace(next[0])
+                        || trimmed.StartsWith("help:", StringComparison.OrdinalIgnoreCase)
+                        || trimmed.StartsWith("Error:", StringComparison.OrdinalIgnoreCase)
+                        || trimmed.StartsWith("×", StringComparison.Ordinal)
+                        || trimmed.StartsWith("╰", StringComparison.Ordinal))
+                    {
+                        break;
+                    }
+
+                    continuation.Add(trimmed);
+                }
+
+                AddKeys(keys, FoldAllowBuildsEntries(continuation));
+            }
+
+            return keys;
+        }
+
+        /// <summary>
+        /// 从 <c>ERR_PNPM_IGNORED_BUILDS</c> 的 <c>Ignored build scripts:</c> 列表里取包名。
+        /// 输出形如 <c>name@1.2.3, @scope/name@1.0.0</c>；allowBuilds 的键是包名，
+        /// 所以这里把版本号剥掉（真实 profile 里就是 <c>esbuild</c> 这种裸名）。
+        /// </summary>
+        internal static List<string> ParseIgnoredBuildPackages(string output)
+        {
+            List<string> packages = new List<string>();
+            if (String.IsNullOrWhiteSpace(output))
+            {
+                return packages;
+            }
+
+            const string markerText = "Ignored build scripts:";
+            int marker = output.IndexOf(markerText, StringComparison.OrdinalIgnoreCase);
+            if (marker < 0)
+            {
+                return packages;
+            }
+
+            string afterMarker = output.Substring(marker + markerText.Length);
+            string[] lines = afterMarker.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            StringBuilder builder = new StringBuilder();
+            builder.Append(lines[0].Trim());
+            for (int index = 1; index < lines.Length; index++)
+            {
+                string line = lines[index];
+                string trimmed = line.Trim();
+                if (trimmed.Length == 0
+                    || line.Length == 0
+                    || !Char.IsWhiteSpace(line[0])
+                    || trimmed.StartsWith("help:", StringComparison.OrdinalIgnoreCase)
+                    || trimmed.StartsWith("Run ", StringComparison.OrdinalIgnoreCase)
+                    || trimmed.StartsWith("To approve", StringComparison.OrdinalIgnoreCase)
+                    || trimmed.StartsWith("Error:", StringComparison.OrdinalIgnoreCase)
+                    || trimmed.StartsWith("×", StringComparison.Ordinal)
+                    || trimmed.StartsWith("╰", StringComparison.Ordinal))
+                {
+                    break;
+                }
+
+                builder.Append(' ').Append(trimmed);
+            }
+
+            string[] entries = builder.ToString().Split(',');
+            for (int index = 0; index < entries.Length; index++)
+            {
+                string name = StripPackageVersion(Unquote(entries[index].Trim()));
+                if (name.Length > 0 && !packages.Contains(name))
+                {
+                    packages.Add(name);
+                }
+            }
+
+            return packages;
+        }
+
+        /// <summary>
+        /// 解析官方给出的版本豁免命令，取出 <c>包@版本</c> 与 DSH 精确版本。
+        /// 典型行：<c>dsh: to accept the risk, run: dsh plugin --profile web
+        /// allow-version name@1.2.3 --dsh-version 0.2.1-alpha.1 --accept-risk</c>。
+        /// </summary>
+        internal static bool TryParseVersionExemption(
+            string output,
+            out string packageVersion,
+            out string dshVersion)
+        {
+            packageVersion = null;
+            dshVersion = null;
+            if (String.IsNullOrWhiteSpace(output))
+            {
+                return false;
+            }
+
+            const string command = "allow-version";
+            int searchFrom = 0;
+            while (true)
+            {
+                int marker = output.IndexOf(command, searchFrom, StringComparison.OrdinalIgnoreCase);
+                if (marker < 0)
+                {
+                    return false;
+                }
+
+                searchFrom = marker + command.Length;
+
+                string rest = output.Substring(searchFrom);
+                string[] tokens = rest.Split(
+                    new[] { ' ', '\t', '\r', '\n' },
+                    StringSplitOptions.RemoveEmptyEntries);
+                string parsedPackage = null;
+                string parsedDsh = null;
+                for (int index = 0; index < tokens.Length; index++)
+                {
+                    string token = tokens[index].Trim();
+                    if (token.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    if (String.Equals(token, "--dsh-version", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (index + 1 < tokens.Length)
+                        {
+                            parsedDsh = tokens[index + 1].Trim();
+                        }
+
+                        break;
+                    }
+
+                    if (token.StartsWith("--dsh-version=", StringComparison.OrdinalIgnoreCase))
+                    {
+                        parsedDsh = token.Substring("--dsh-version=".Length).Trim();
+                        break;
+                    }
+
+                    if (parsedPackage == null
+                        && !token.StartsWith("--", StringComparison.Ordinal)
+                        && token.LastIndexOf('@') > 0)
+                    {
+                        parsedPackage = token;
+                    }
+                }
+
+                if (IsUsablePackageVersion(parsedPackage) && IsUsableVersion(parsedDsh))
+                {
+                    packageVersion = parsedPackage;
+                    dshVersion = parsedDsh;
+                    return true;
+                }
+            }
+        }
+
+        /// <summary>输出里是否出现 peer 不兼容 / 需要版本豁免的信号。</summary>
+        internal static bool LooksPeerIncompatible(string output)
+        {
+            if (String.IsNullOrWhiteSpace(output))
+            {
+                return false;
+            }
+
+            return output.IndexOf("allow-version", StringComparison.OrdinalIgnoreCase) >= 0
+                || output.IndexOf("grant an exemption", StringComparison.OrdinalIgnoreCase) >= 0
+                || output.IndexOf("profile startup denies it", StringComparison.OrdinalIgnoreCase) >= 0
+                || output.IndexOf("incompatible with dsh", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// <summary>把 <c>name@version</c> / <c>@scope/name@version</c> 剥成包名。</summary>
+        internal static string StripPackageVersion(string value)
+        {
+            string text = (value ?? String.Empty).Trim();
+            if (text.Length == 0)
+            {
+                return text;
+            }
+
+            int at = text.StartsWith("@", StringComparison.Ordinal)
+                ? text.IndexOf('@', 1)
+                : text.IndexOf('@');
+            return at > 0 ? text.Substring(0, at).Trim() : text;
+        }
+
+        private static List<string> CollectAllowBuildKeys(string output)
+        {
+            List<string> keys = new List<string>();
+            if (String.IsNullOrWhiteSpace(output))
+            {
+                return keys;
+            }
+
+            AddKeys(keys, ParseGitPrepareAllowBuilds(output));
+            AddKeys(keys, ParseIgnoredBuildPackages(output));
+            return keys;
+        }
+
+        private static List<string> ExtractBracedKeys(string text)
+        {
+            List<string> keys = new List<string>();
+            string body = (text ?? String.Empty).Trim();
+            if (body.StartsWith("{", StringComparison.Ordinal))
+            {
+                body = body.Substring(1);
+            }
+
+            if (body.EndsWith("}", StringComparison.Ordinal))
+            {
+                body = body.Substring(0, body.Length - 1);
+            }
+
+            string[] parts = body.Split(',');
+            for (int index = 0; index < parts.Length; index++)
+            {
+                AddKey(keys, parts[index]);
+            }
+
+            return keys;
+        }
+
+        private static List<string> FoldAllowBuildsEntries(List<string> lines)
+        {
+            List<string> keys = new List<string>();
+            StringBuilder current = new StringBuilder();
+            for (int index = 0; index < lines.Count; index++)
+            {
+                if (current.Length > 0 && EndsWithBoolean(current.ToString()))
+                {
+                    AddKey(keys, current.ToString());
+                    current.Length = 0;
+                }
+
+                current.Append(lines[index]);
+            }
+
+            if (current.Length > 0)
+            {
+                AddKey(keys, current.ToString());
+            }
+
+            return keys;
+        }
+
+        private static bool EndsWithBoolean(string value)
+        {
+            string trimmed = (value ?? String.Empty).TrimEnd();
+            return trimmed.EndsWith(": true", StringComparison.OrdinalIgnoreCase)
+                || trimmed.EndsWith(": false", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string StripAllowBuildsSuffix(string value)
+        {
+            string text = (value ?? String.Empty).Trim();
+            if (text.EndsWith(": true", StringComparison.OrdinalIgnoreCase))
+            {
+                text = text.Substring(0, text.Length - ": true".Length);
+            }
+            else if (text.EndsWith(": false", StringComparison.OrdinalIgnoreCase))
+            {
+                text = text.Substring(0, text.Length - ": false".Length);
+            }
+
+            return Unquote(text.Trim().TrimEnd(','));
+        }
+
+        private static void AddKey(List<string> keys, string value)
+        {
+            string key = StripAllowBuildsSuffix(value);
+            if (key.Length > 0 && !keys.Contains(key))
+            {
+                keys.Add(key);
+            }
+        }
+
+        private static void AddKeys(List<string> target, List<string> keys)
+        {
+            if (keys == null)
+            {
+                return;
+            }
+
+            for (int index = 0; index < keys.Count; index++)
+            {
+                string key = (keys[index] ?? String.Empty).Trim();
+                if (key.Length > 0 && !target.Contains(key))
+                {
+                    target.Add(key);
+                }
+            }
+        }
+
+        private static bool IsUsablePackageVersion(string value)
+        {
+            return !String.IsNullOrWhiteSpace(value)
+                && value.IndexOf('<') < 0
+                && value.IndexOf(' ') < 0
+                && value.LastIndexOf('@') > 0;
+        }
+
+        private static bool IsUsableVersion(string value)
+        {
+            return !String.IsNullOrWhiteSpace(value)
+                && value.IndexOf('<') < 0
+                && value.IndexOf(' ') < 0;
+        }
+
+        private static string Unquote(string value)
+        {
+            string text = (value ?? String.Empty).Trim();
+            if (text.Length >= 2
+                && ((text[0] == '"' && text[text.Length - 1] == '"')
+                    || (text[0] == '\'' && text[text.Length - 1] == '\'')))
+            {
+                text = text.Substring(1, text.Length - 2);
+            }
+
+            return text.Trim();
+        }
+
+        private static string DescribeKeys(IList<string> keys)
+        {
+            if (keys == null || keys.Count == 0)
+            {
+                return "（无）";
+            }
+
+            return String.Join("、", keys);
+        }
+
+        private static string DescribeExemption(CliResult result)
+        {
+            if (result == null)
+            {
+                return "未知包 · 未知 DSH 版本";
+            }
+
+            string package = String.IsNullOrWhiteSpace(result.ExemptionPackageVersion)
+                ? "未知包"
+                : result.ExemptionPackageVersion;
+            string dsh = String.IsNullOrWhiteSpace(result.ExemptionDshVersion)
+                ? "未知 DSH 版本"
+                : result.ExemptionDshVersion;
+            return package + " · DSH " + dsh;
+        }
+
+        // ---------------------------------------------------------------- allowBuilds 最小改动
+
+        /// <summary>profile 目录下的 pnpm-workspace.yaml 路径；定位不到返回 null。</summary>
+        internal static string ResolveWorkspaceFilePath(string dshRoot)
+        {
+            if (String.IsNullOrWhiteSpace(dshRoot))
+            {
+                return null;
+            }
+
+            try
+            {
+                string profile = DshProfileService.ResolveProfileDirectory(dshRoot);
+                return String.IsNullOrWhiteSpace(profile)
+                    ? null
+                    : Path.Combine(profile, WorkspaceFileName);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>按 settings 定位 profile 的 pnpm-workspace.yaml 并应用 allowBuilds 键。</summary>
+        internal static bool ApplyAllowBuildsToWorkspace(
+            LauncherSettings settings,
+            IList<string> keys,
+            out List<string> applied,
+            out string error)
+        {
+            applied = new List<string>();
+            string path = ResolveWorkspaceFilePath(settings == null ? null : settings.DshRoot);
+            if (String.IsNullOrWhiteSpace(path))
+            {
+                error = "找不到插件 profile，无法修改 " + WorkspaceFileName + "。";
+                return false;
+            }
+
+            return ApplyAllowBuilds(path, keys, out applied, out error);
+        }
+
+        /// <summary>
+        /// 往指定 pnpm-workspace.yaml 写 allowBuilds：只补键 / 把非布尔占位改成 true，
+        /// 其它键、注释、缩进保持原样。文件不存在时创建最小的一节。
+        /// </summary>
+        internal static bool ApplyAllowBuilds(
+            string workspacePath,
+            IList<string> keys,
+            out List<string> applied,
+            out string error)
+        {
+            applied = new List<string>();
+            error = null;
+            if (String.IsNullOrWhiteSpace(workspacePath))
+            {
+                error = WorkspaceFileName + " 路径为空。";
+                return false;
+            }
+
+            string yamlText = String.Empty;
+            try
+            {
+                if (File.Exists(workspacePath))
+                {
+                    yamlText = File.ReadAllText(workspacePath, Encoding.UTF8);
+                }
+            }
+            catch (Exception exception)
+            {
+                error = "读 " + WorkspaceFileName + " 失败：" + exception.Message;
+                return false;
+            }
+
+            string updated;
+            List<string> changed;
+            if (!TryMergeAllowBuilds(yamlText, keys, out updated, out changed, out error))
+            {
+                return false;
+            }
+
+            applied = changed;
+            if (changed.Count == 0)
+            {
+                return true;
+            }
+
+            try
+            {
+                string directory = Path.GetDirectoryName(workspacePath);
+                if (!String.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                File.WriteAllText(workspacePath, updated, new UTF8Encoding(false));
+            }
+            catch (Exception exception)
+            {
+                error = "写 " + WorkspaceFileName + " 失败：" + exception.Message;
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// 纯文本最小改动：找到 <c>allowBuilds:</c> 节，缺失的键补一行 <c>key: true</c>，
+        /// 已存在但值不是布尔（pnpm 占位值 <c>set this to true or false</c>）的改成 <c>true</c>；
+        /// 已存在的布尔值（含用户明确的 <c>false</c>）保持原值。
+        /// </summary>
+        internal static bool TryMergeAllowBuilds(
+            string yamlText,
+            IList<string> keys,
+            out string updated,
+            out List<string> changed,
+            out string error)
+        {
+            string source = yamlText ?? String.Empty;
+            updated = source;
+            changed = new List<string>();
+            error = null;
+
+            List<string> requested = new List<string>();
+            if (keys != null)
+            {
+                for (int index = 0; index < keys.Count; index++)
+                {
+                    string key = (keys[index] ?? String.Empty).Trim();
+                    if (key.Length > 0 && !requested.Contains(key))
+                    {
+                        requested.Add(key);
+                    }
+                }
+            }
+
+            if (requested.Count == 0)
+            {
+                return true;
+            }
+
+            bool endedWithNewline = source.EndsWith("\n", StringComparison.Ordinal);
+            string newline = source.IndexOf("\r\n", StringComparison.Ordinal) >= 0 ? "\r\n" : "\n";
+            string normalized = source.Replace("\r\n", "\n").Replace('\r', '\n');
+            List<string> lines = new List<string>(normalized.Split('\n'));
+
+            int headerIndex = -1;
+            int headerIndent = 0;
+            string headerRest = null;
+            for (int index = 0; index < lines.Count; index++)
+            {
+                string line = lines[index];
+                string trimmed = line.TrimStart();
+                if (trimmed.Length == 0 || trimmed[0] == '#')
+                {
+                    continue;
+                }
+
+                int colon = trimmed.IndexOf(':');
+                if (colon <= 0)
+                {
+                    continue;
+                }
+
+                if (!String.Equals(
+                    trimmed.Substring(0, colon).Trim(),
+                    "allowBuilds",
+                    StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                headerIndex = index;
+                headerIndent = line.Length - trimmed.Length;
+                headerRest = trimmed.Substring(colon + 1).Trim();
+                break;
+            }
+
+            if (headerIndex < 0)
+            {
+                while (lines.Count > 0 && lines[lines.Count - 1].Trim().Length == 0)
+                {
+                    lines.RemoveAt(lines.Count - 1);
+                }
+
+                if (lines.Count > 0)
+                {
+                    lines.Add(String.Empty);
+                }
+
+                lines.Add("allowBuilds:");
+                for (int index = 0; index < requested.Count; index++)
+                {
+                    lines.Add("  " + FormatYamlKey(requested[index]) + ": true");
+                    changed.Add(requested[index]);
+                }
+
+                if (endedWithNewline)
+                {
+                    lines.Add(String.Empty);
+                }
+
+                updated = String.Join(newline, lines.ToArray());
+                return true;
+            }
+
+            if (!String.IsNullOrWhiteSpace(headerRest) && headerRest[0] != '#')
+            {
+                if (String.Equals(headerRest, "{}", StringComparison.Ordinal))
+                {
+                    lines[headerIndex] = new string(' ', headerIndent) + "allowBuilds:";
+                }
+                else
+                {
+                    error = "allowBuilds 不是块状映射（" + headerRest + "），不做自动改动。";
+                    return false;
+                }
+            }
+
+            int childStart = headerIndex + 1;
+            int childEnd = childStart;
+            while (childEnd < lines.Count)
+            {
+                string line = lines[childEnd];
+                if (line.Trim().Length == 0)
+                {
+                    childEnd++;
+                    continue;
+                }
+
+                if (line.Length - line.TrimStart().Length <= headerIndent)
+                {
+                    break;
+                }
+
+                childEnd++;
+            }
+
+            string childIndent = new string(' ', headerIndent + 2);
+            for (int index = childStart; index < childEnd; index++)
+            {
+                string line = lines[index];
+                string trimmed = line.Trim();
+                if (trimmed.Length == 0 || trimmed[0] == '#')
+                {
+                    continue;
+                }
+
+                childIndent = new string(' ', line.Length - line.TrimStart().Length);
+                break;
+            }
+
+            List<string> additions = new List<string>();
+            for (int index = 0; index < requested.Count; index++)
+            {
+                string request = requested[index];
+                string existingKey;
+                string existingValue;
+                int matchIndex = FindAllowBuildsEntry(
+                    lines,
+                    childStart,
+                    childEnd,
+                    request,
+                    out existingKey,
+                    out existingValue);
+                if (matchIndex < 0)
+                {
+                    additions.Add(childIndent + FormatYamlKey(request) + ": true");
+                    changed.Add(request);
+                    continue;
+                }
+
+                string valueToken = NormalizeYamlValue(existingValue);
+                if (String.Equals(valueToken, "true", StringComparison.OrdinalIgnoreCase)
+                    || String.Equals(valueToken, "false", StringComparison.OrdinalIgnoreCase))
+                {
+                    // 已有布尔值：保持原值（false 是用户/别人的明确拒绝，不覆盖）。
+                    continue;
+                }
+
+                int colon = lines[matchIndex].LastIndexOf(':');
+                lines[matchIndex] = lines[matchIndex].Substring(0, colon).TrimEnd() + ": true";
+                changed.Add(existingKey);
+            }
+
+            if (additions.Count > 0)
+            {
+                lines.InsertRange(childEnd, additions);
+            }
+
+            if (endedWithNewline && (lines.Count == 0 || lines[lines.Count - 1].Length != 0))
+            {
+                lines.Add(String.Empty);
+            }
+
+            updated = String.Join(newline, lines.ToArray());
+            return true;
+        }
+
+        /// <summary>在 allowBuilds 子行里找目标键；找不到时对 package@version 做一次免版本匹配。</summary>
+        private static int FindAllowBuildsEntry(
+            List<string> lines,
+            int start,
+            int end,
+            string request,
+            out string keyText,
+            out string valueText)
+        {
+            keyText = request;
+            valueText = String.Empty;
+            int fallback = -1;
+            string fallbackKey = null;
+            string fallbackValue = null;
+            for (int index = start; index < end; index++)
+            {
+                string line = lines[index];
+                string trimmed = line.Trim();
+                if (trimmed.Length == 0 || trimmed[0] == '#')
+                {
+                    continue;
+                }
+
+                int colon = line.LastIndexOf(':');
+                if (colon <= 0)
+                {
+                    continue;
+                }
+
+                string key = Unquote(line.Substring(0, colon).Trim());
+                string value = line.Substring(colon + 1).Trim();
+                if (String.Equals(key, request, StringComparison.Ordinal))
+                {
+                    keyText = key;
+                    valueText = value;
+                    return index;
+                }
+
+                if (fallback < 0
+                    && key.IndexOf("://", StringComparison.Ordinal) < 0
+                    && request.IndexOf("://", StringComparison.Ordinal) < 0
+                    && String.Equals(
+                        StripPackageVersion(key),
+                        StripPackageVersion(request),
+                        StringComparison.Ordinal))
+                {
+                    fallback = index;
+                    fallbackKey = key;
+                    fallbackValue = value;
+                }
+            }
+
+            if (fallback >= 0)
+            {
+                keyText = fallbackKey;
+                valueText = fallbackValue;
+            }
+
+            return fallback;
+        }
+
+        private static string NormalizeYamlValue(string value)
+        {
+            string text = (value ?? String.Empty).Trim();
+            int comment = text.IndexOf(" #", StringComparison.Ordinal);
+            if (comment >= 0)
+            {
+                text = text.Substring(0, comment).Trim();
+            }
+
+            return text;
+        }
+
+        /// <summary>YAML 键按需加双引号：<c>@scope/name</c>、含冒号的 git 键必须引起来才合法。</summary>
+        private static string FormatYamlKey(string key)
+        {
+            string text = key ?? String.Empty;
+            bool quote = text.Length == 0
+                || text.StartsWith("@", StringComparison.Ordinal)
+                || text.StartsWith("-", StringComparison.Ordinal)
+                || text.IndexOf(':') >= 0
+                || text.IndexOf('#') >= 0
+                || text.IndexOf('"') >= 0
+                || text.IndexOf('\'') >= 0
+                || text.Trim().Length != text.Length;
+            if (!quote)
+            {
+                return text;
+            }
+
+            return "\"" + text.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+        }
+
+        // ---------------------------------------------------------------- 死链接清理
+
+        /// <summary>
+        /// 扫 profile 的 node_modules（含 <c>@scope</c> 子目录），把「是符号链接但目标已不存在」的
+        /// 死链接删掉。删不掉（拒绝访问）时去掉只读属性再试一次；仍失败只记日志，不阻塞安装。
+        /// 返回删掉的条数。
+        /// </summary>
+        internal static int CleanupBrokenSymlinks(string profileDirectory, Action<string> log)
+        {
+            if (String.IsNullOrWhiteSpace(profileDirectory))
+            {
+                return 0;
+            }
+
+            string nodeModules = Path.Combine(profileDirectory, NodeModulesDirectoryName);
+            List<string> candidates = new List<string>();
+            try
+            {
+                if (!Directory.Exists(nodeModules))
+                {
+                    return 0;
+                }
+
+                DirectoryInfo nodeModulesInfo = new DirectoryInfo(nodeModules);
+                FileSystemInfo[] top = nodeModulesInfo.GetFileSystemInfos();
+                for (int index = 0; index < top.Length; index++)
+                {
+                    FileSystemInfo entry = top[index];
+                    candidates.Add(entry.FullName);
+                    DirectoryInfo directory = entry as DirectoryInfo;
+                    if (directory != null
+                        && entry.Name.StartsWith("@", StringComparison.Ordinal)
+                        && !IsReparsePoint(entry))
+                    {
+                        FileSystemInfo[] scoped = directory.GetFileSystemInfos();
+                        for (int inner = 0; inner < scoped.Length; inner++)
+                        {
+                            candidates.Add(scoped[inner].FullName);
+                        }
+                    }
+                }
+            }
+            catch (Exception exception)
+            {
+                if (log != null)
+                {
+                    log("扫描 node_modules 死链接失败：" + exception.Message);
+                }
+
+                return 0;
+            }
+
+            int removed = 0;
+            for (int index = 0; index < candidates.Count; index++)
+            {
+                string path = candidates[index];
+                if (!IsBrokenLink(path))
+                {
+                    continue;
+                }
+
+                string failure;
+                if (DeleteLink(path, out failure))
+                {
+                    removed++;
+                    if (log != null)
+                    {
+                        log("清理死链接：" + path);
+                    }
+                }
+                else if (log != null)
+                {
+                    log("死链接删不掉（不影响安装）：" + path + "｜" + failure);
+                }
+            }
+
+            return removed;
+        }
+
+        private static bool IsReparsePoint(FileSystemInfo entry)
+        {
+            try
+            {
+                return (entry.Attributes & FileAttributes.ReparsePoint) != 0;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        private static bool IsBrokenLink(string path)
+        {
+            try
+            {
+                FileAttributes attributes = File.GetAttributes(path);
+                if ((attributes & FileAttributes.ReparsePoint) == 0)
+                {
+                    return false;
+                }
+
+                // 链接本身能不能打开不算数（Windows 对断掉的 junction 仍报"存在"），
+                // 要看它指的目标是不是真的在。文件型 / 目录型链接都尽量取到目标。
+                string target = null;
+                try
+                {
+                    target = new FileInfo(path).LinkTarget;
+                }
+                catch
+                {
+                }
+
+                if (String.IsNullOrWhiteSpace(target))
+                {
+                    try
+                    {
+                        target = new DirectoryInfo(path).LinkTarget;
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                if (!String.IsNullOrWhiteSpace(target))
+                {
+                    string resolved = target;
+                    try
+                    {
+                        if (!Path.IsPathRooted(resolved))
+                        {
+                            resolved = Path.Combine(
+                                Path.GetDirectoryName(path),
+                                resolved);
+                        }
+
+                        resolved = Path.GetFullPath(resolved);
+                    }
+                    catch
+                    {
+                        resolved = target;
+                    }
+
+                    return !Directory.Exists(resolved) && !File.Exists(resolved);
+                }
+
+                // 拿不到 LinkTarget（某些 reparse point）：退回"链接本身都打不开"的判定。
+                return !Directory.Exists(path) && !File.Exists(path);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool DeleteLink(string path, out string error)
+        {
+            error = null;
+            try
+            {
+                DeleteLinkCore(path);
+                return true;
+            }
+            catch (Exception first)
+            {
+                // 拒绝访问时去掉只读属性再试一次。
+                try
+                {
+                    ClearReadOnly(path);
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    DeleteLinkCore(path);
+                    return true;
+                }
+                catch (Exception second)
+                {
+                    error = first.Message + "；去只读后重试仍失败：" + second.Message;
+                    return false;
+                }
+            }
+        }
+
+        private static void DeleteLinkCore(string path)
+        {
+            try
+            {
+                Directory.Delete(path, false);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                File.Delete(path);
+            }
+            catch (IOException)
+            {
+                File.Delete(path);
+            }
+        }
+
+        private static void ClearReadOnly(string path)
+        {
+            FileAttributes attributes = File.GetAttributes(path);
+            if ((attributes & FileAttributes.ReadOnly) != 0)
+            {
+                File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
+            }
+        }
+
+        private static string TryResolveProfileDirectory(LauncherSettings settings)
+        {
+            if (settings == null || String.IsNullOrWhiteSpace(settings.DshRoot))
+            {
+                return null;
+            }
+
+            try
+            {
+                return DshProfileService.ResolveProfileDirectory(settings.DshRoot);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         /// <summary>桌面 shim 是 .cmd：必须经由命令解释器执行。</summary>

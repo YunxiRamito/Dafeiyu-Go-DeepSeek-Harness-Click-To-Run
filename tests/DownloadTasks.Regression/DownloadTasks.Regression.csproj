@@ -7,9 +7,12 @@
     <NoWarn>SYSLIB0014</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../source/PackageDownloadEnvironment.cs" Link="PackageDownloadEnvironment.cs" />
     <Compile Include="../../source/DownloadSupport.cs" Link="DownloadSupport.cs" />
+    <Compile Include="../../source/BackendDownloadSource.cs" Link="BackendDownloadSource.cs" />
     <Compile Include="../../source/DownloadTaskCenter.cs" Link="DownloadTaskCenter.cs" />
     <Compile Include="../../source/UpdateSupport.cs" Link="UpdateSupport.cs" />
+    <Compile Include="../../source/UpdateMetadataReader.cs" Link="UpdateMetadataReader.cs" />
     <!-- SemVer 比较已抽到 ProductVersion，UpdateSupport 与安装器独立更新判定共用 -->
     <Compile Include="../../source/ProductVersion.cs" Link="ProductVersion.cs" />
     <Compile Include="../../source/InstallerVersionPolicy.cs" Link="InstallerVersionPolicy.cs" />

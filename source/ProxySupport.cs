@@ -140,6 +140,7 @@ namespace DeepSeekHarnessLauncher
             {
                 return;
             }
+            BackendDownloadSource.Apply(request);
 
             switch (Mode)
             {
@@ -159,7 +160,9 @@ namespace DeepSeekHarnessLauncher
             HttpWebRequest request,
             LauncherSettings settings)
         {
-            if (request == null || settings == null)
+            if (request == null) return;
+            BackendDownloadSource.Apply(request);
+            if (settings == null)
             {
                 return;
             }
@@ -206,6 +209,7 @@ namespace DeepSeekHarnessLauncher
             {
                 return;
             }
+            BackendDownloadSource.Apply(handler);
 
             switch (Mode)
             {

@@ -1026,6 +1026,16 @@ namespace DeepSeekHarnessLauncher
         }
 
         private static bool TryFetchOnce(
+            string url, LauncherSettings settings, string token, out string json,
+            out HttpStatusCode status, out string error, int timeoutMs)
+        {
+            if (BackendDownloadSource.IsSelected(settings) && String.IsNullOrWhiteSpace(token)
+                && TryFetchDirect(BackendDownloadSource.WrapMetadata(url), settings, null,
+                    out json, out status, out error, timeoutMs)) return true;
+            return TryFetchDirect(url, settings, token, out json, out status, out error, timeoutMs);
+        }
+
+        private static bool TryFetchDirect(
             string url,
             LauncherSettings settings,
             string token,
@@ -1040,6 +1050,7 @@ namespace DeepSeekHarnessLauncher
             try
             {
                 HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+                BackendDownloadSource.Apply(request);
                 request.Method = "GET";
                 request.Accept = "application/vnd.github+json";
                 request.UserAgent = Constants.UserAgent;

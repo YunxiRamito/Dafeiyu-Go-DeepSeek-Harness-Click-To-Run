@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>disable</Nullable><NoWarn>SYSLIB0014</NoWarn></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../source/UpdateMetadataReader.cs" Link="UpdateMetadataReader.cs" />
+    <Compile Include="../../source/UpdateSupport.cs" Link="UpdateSupport.cs" />
+    <Compile Include="../../source/DshUpdateService.cs" Link="DshUpdateService.cs" />
+    <Compile Include="../../source/PackageDownloadEnvironment.cs" Link="PackageDownloadEnvironment.cs" />
+    <Compile Include="../../source/InstallerUpdateService.cs" Link="InstallerUpdateService.cs" />
+    <Compile Include="../../source/PatchFeedService.cs" Link="PatchFeedService.cs" />
+    <Compile Include="../../source/PatchModels.cs" Link="PatchModels.cs" />
+    <Compile Include="../../source/ProductVersion.cs" Link="ProductVersion.cs" />
+    <Compile Include="../../source/BackendDownloadSource.cs" Link="BackendDownloadSource.cs" />
+    <Compile Include="../../source/GitHubAccelerator.cs" Link="GitHubAccelerator.cs" />
+    <Compile Include="../../source/StartupUpdatePolicy.cs" Link="StartupUpdatePolicy.cs" />
+  </ItemGroup>
+</Project>

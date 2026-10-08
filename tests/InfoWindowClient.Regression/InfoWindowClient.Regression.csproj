@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>disable</Nullable></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\source\ClientNoticeModels.cs" Link="ClientNoticeModels.cs" />
+    <Compile Include="..\..\source\ClientNoticeStore.cs" Link="ClientNoticeStore.cs" />
+    <Compile Include="..\..\source\InfoWindowClient.cs" Link="InfoWindowClient.cs" />
+  </ItemGroup>
+</Project>

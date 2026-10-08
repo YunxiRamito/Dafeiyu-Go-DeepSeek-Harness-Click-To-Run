@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/obj/**;**/obj*/**;**/bin/**;**/bin*/**;**/dist*/**</DefaultItemExcludes>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
@@ -22,9 +23,9 @@
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <DefineConstants>DISABLE_XAML_GENERATED_MAIN</DefineConstants>
-    <Version>1.6.0</Version>
-    <AssemblyVersion>1.6.0.0</AssemblyVersion>
-    <FileVersion>1.6.0.0</FileVersion>
+    <Version>1.7.0</Version>
+    <AssemblyVersion>1.7.0.0</AssemblyVersion>
+    <FileVersion>1.7.0.0</FileVersion>
     <Product>Dafeiyu-Go</Product>
     <Title>Dafeiyu-Go</Title>
     <AssemblyTitle>Dafeiyu-Go</AssemblyTitle>
@@ -35,9 +36,17 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- 共享源码目录中保留了多次并行构建的生成物；必须排除，否则 SDK 会把旧的 AssemblyInfo/XamlTypeInfo 当作源码再次编译。 -->
+    <Compile Remove="obj\**;obj-*\**;source-obj-*\**;bin\**;bin-*\**;dist-*\**" />
+    <Page Remove="obj\**;obj-*\**;source-obj-*\**;bin\**;bin-*\**;dist-*\**" />
+    <ApplicationDefinition Remove="obj\**;obj-*\**;source-obj-*\**;bin\**;bin-*\**;dist-*\**" />
+    <EmbeddedResource Remove="obj\**;obj-*\**;source-obj-*\**;bin\**;bin-*\**;dist-*\**" />
     <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
     <Compile Remove="Program.cs" />
     <Compile Remove="RuntimeBootstrap.cs" />
+    <Compile Remove="InfoHost\**\*.cs" />
+    <Page Remove="InfoHost\**\*.xaml" />
+    <ApplicationDefinition Remove="InfoHost\**\*.xaml" />
     <EmbeddedResource Include="DeepSeekHarness.ico" LogicalName="AppIcon.ico" />
 
     <!-- .dym 备份包用的是真 7z 格式,所以带上一个 7zr(588 KB,单文件、公开领域) -->
@@ -54,10 +63,20 @@
 
     <!-- 自带的用量统计插件：随包发出去，一键安装就是把它复制到 <dshRoot>\plugins\ -->
     <Content Include="assets\dsh-token-stats\**" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\sounds\notify_F4_F5_v2.mp3" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Restore InfoHost before Publish evaluates its WinUI targets in a clean checkout. -->
+    <ProjectReference Include="InfoHost\Dafeiyu-Go.Info.csproj" ReferenceOutputAssembly="false" BuildReference="false" Private="false"
+                      GlobalPropertiesToRemove="AssemblyName;TargetFramework;TargetPlatformVersion;TargetPlatformMinVersion;DefineConstants;UseWinUI" />
     <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" Version="8.2.251219" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260804001" />
+    <PackageReference Include="Markdig" Version="0.37.0" />
   </ItemGroup>
+  <Target Name="PublishInfoHost" AfterTargets="Publish">
+    <MSBuild Projects="InfoHost\Dafeiyu-Go.Info.csproj" Targets="Publish"
+             Properties="Configuration=$(Configuration);RuntimeIdentifier=win-x64;SelfContained=false;WindowsAppSDKSelfContained=true;PublishDir=$(PublishDir)info-host\"
+             RemoveProperties="AssemblyName;TargetFramework;TargetPlatformVersion;TargetPlatformMinVersion;DefineConstants;UseWinUI" />
+  </Target>
 </Project>

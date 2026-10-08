@@ -15,7 +15,7 @@ $bootstrapManifest = Join-Path $PSScriptRoot 'RuntimeBootstrap.manifest'
 $frameworkCompiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 
 if (-not (Test-Path -LiteralPath $dotnet)) {
-    throw "未找到 .NET 8 SDK：$dotnet"
+    $dotnet = (Get-Command dotnet -ErrorAction Stop).Source
 }
 
 $sourceItem = Get-Item -LiteralPath $sourceImage
@@ -34,7 +34,7 @@ else {
 # 本机有离线 NuGet 缓存就用它(省流量);没有就不设,交给默认缓存。
 # **别写死**:这个脚本本机/CI 都可能跑,写死本机路径会让 CI 上找不到目录。
 $localNuGet = 'G:\DeepSeek DSH\.nuget-packages'
-if (Test-Path -LiteralPath $localNuGet) { $env:NUGET_PACKAGES = $localNuGet }
+if ($localNuGet -and (Test-Path -LiteralPath $localNuGet)) { $env:NUGET_PACKAGES = $localNuGet }
 
 # 本机走代理(仓库里的 NuGet.config 不写这个,那是本机专属的)
 if (-not $env:HTTP_PROXY) { $env:HTTP_PROXY = 'http://127.0.0.1:7890' }
@@ -51,10 +51,20 @@ if (-not $env:HTTPS_PROXY) { $env:HTTPS_PROXY = 'http://127.0.0.1:7890' }
     -p:IncludeNativeLibrariesForSelfExtract=false `
     -p:WindowsAppSDKSelfContained=false `
     -p:DebugType=None `
-    -p:DebugSymbols=false
+    -p:DebugSymbols=false `
+    -m:1 -nodeReuse:false
 
 if ($LASTEXITCODE -ne 0) {
     throw "WinUI 3 发布失败，退出代码：$LASTEXITCODE"
+}
+
+# 主项目的 PublishInfoHost 目标统一发布 helper，本地与 CI 走相同链路。
+$requiredInfoFiles = 'DafeiyuGo.Info.exe','DafeiyuGo.Info.dll','DafeiyuGo.Info.pri','App.xbf','sounds\notify_F4_F5_v2.mp3'
+foreach ($required in $requiredInfoFiles) {
+    $requiredPath = Join-Path (Join-Path $OutputDirectory 'info-host') $required
+    if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+        throw "信息窗口发布文件缺失：$required"
+    }
 }
 
 if (-not (Test-Path -LiteralPath $frameworkCompiler)) {

@@ -49,6 +49,7 @@ namespace DeepSeekHarnessLauncher
 
         private static bool IsChina(LauncherSettings settings)
         {
+            if (BackendDownloadSource.IsSelected(settings)) return false;
             return settings == null
                 || !String.Equals(
                     settings.UpdateSource,

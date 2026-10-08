@@ -94,7 +94,8 @@ namespace DeepSeekHarnessLauncher
             string workingDirectory,
             string arguments,
             int timeoutMs,
-            Action<string> log)
+            Action<string> log,
+            LauncherSettings settings = null)
         {
             RunResult result = new RunResult();
             ProcessStartInfo startInfo = new ProcessStartInfo();
@@ -130,6 +131,7 @@ namespace DeepSeekHarnessLauncher
 
             try
             {
+                PackageDownloadEnvironment.Apply(startInfo, settings);
                 using (Process process = new Process())
                 {
                     process.StartInfo = startInfo;

@@ -72,6 +72,7 @@ namespace DeepSeekHarnessLauncher
                 settings.DshRoot = FirstNonEmpty(
                     settings.DshRoot,
                     detectedDshRoot);
+                ApplyInstallerSourceDefaults(settings, launcherDirectory);
                 settings.NodePath = FirstNonEmpty(
                     settings.NodePath,
                     LauncherLocator.FindNode());
@@ -221,6 +222,84 @@ namespace DeepSeekHarnessLauncher
             Save(settings);
         }
 
+        internal static string ReadAdminToken(LauncherSettings settings)
+        {
+            if (settings == null || String.IsNullOrWhiteSpace(settings.AdminTokenProtected)) return String.Empty;
+            try { return CredentialStore.UnprotectApiKey(settings.AdminTokenProtected); }
+            catch { return String.Empty; }
+        }
+
+        private static void ApplyInstallerSourceDefaults(LauncherSettings settings, string launcherDirectory)
+        {
+            string source = null;
+            if (!String.IsNullOrWhiteSpace(launcherDirectory))
+                source = ReadInstallerSourcePreference(Path.Combine(launcherDirectory, "installer-defaults.json"), settings.DshRoot);
+            if (source == null)
+                source = ReadInstallerSourcePreference(Path.Combine(DirectoryPath, "installer-state.json"), settings.DshRoot);
+            if (source == null) return;
+            settings.UpdateSource = source == "official" ? "Official" : "Accelerated";
+            settings.MirrorSource = source == "backend" ? "backend" : "Auto";
+        }
+
+        private static string ReadInstallerSourcePreference(string path, string dshRoot)
+        {
+            if (String.IsNullOrWhiteSpace(dshRoot) || !Path.IsPathFullyQualified(dshRoot)) return null;
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8));
+                string recordedRoot = null;
+                string source = null;
+                foreach (var property in document.RootElement.EnumerateObject())
+                {
+                    if (property.Value.ValueKind != JsonValueKind.String) continue;
+                    if (String.Equals(property.Name, "DshRoot", StringComparison.OrdinalIgnoreCase)) recordedRoot = property.Value.GetString();
+                    if (String.Equals(property.Name, "SourcePreference", StringComparison.OrdinalIgnoreCase)) source = property.Value.GetString();
+                }
+                if (String.IsNullOrWhiteSpace(recordedRoot)
+                    || !Path.IsPathFullyQualified(recordedRoot)
+                    || !String.Equals(Path.GetFullPath(recordedRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                        Path.GetFullPath(dshRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase)) return null;
+                source = source?.Trim().ToLowerInvariant();
+                return source == "china" || source == "backend" || source == "official" ? source : null;
+            }
+            catch { return null; }
+        }
+
+        internal static void SetAdminToken(LauncherSettings settings, string token)
+        {
+            if (settings == null) return;
+            string previous = settings.AdminTokenProtected;
+            settings.AdminTokenProtected = String.IsNullOrWhiteSpace(token)
+                ? String.Empty : CredentialStore.ProtectApiKey(token.Trim());
+            Save(settings);
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(File.ReadAllText(FilePath, Encoding.UTF8));
+                if (!document.RootElement.TryGetProperty("adminTokenProtected", out JsonElement saved)
+                    || saved.GetString() != settings.AdminTokenProtected)
+                    throw new IOException("Administrator token was not saved.");
+            }
+            catch
+            {
+                settings.AdminTokenProtected = previous;
+                throw new IOException("Administrator token could not be saved.");
+            }
+        }
+
+        internal static string ReadServerMetricsToken(LauncherSettings settings)
+        {
+            if (settings == null || String.IsNullOrWhiteSpace(settings.ServerMetricsTokenProtected)) return String.Empty;
+            try { return CredentialStore.UnprotectApiKey(settings.ServerMetricsTokenProtected); }
+            catch { return String.Empty; }
+        }
+
+        internal static void SetServerMetricsToken(LauncherSettings settings, string token)
+        {
+            if (settings == null) return;
+            settings.ServerMetricsTokenProtected = String.IsNullOrWhiteSpace(token) ? String.Empty : CredentialStore.ProtectApiKey(token.Trim());
+            Save(settings);
+        }
+
         private static void ApplyLegacyLauncherJson(
             LauncherSettings settings,
             string launcherDirectory)
@@ -352,7 +431,8 @@ namespace DeepSeekHarnessLauncher
                 "ghproxy",
                 "gh-proxy",
                 "ghfast",
-                "jsdelivr");
+                "jsdelivr",
+                "backend");
             settings.PluginSource = NormalizeChoice(
                 settings.PluginSource,
                 "Market",

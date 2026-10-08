@@ -41,13 +41,13 @@ Write-Host "  目录: $Dist"
 Write-Host '============================================'
 
 Head '[1] 关键文件'
-foreach ($name in 'DeepSeek Harness.exe', 'DeepSeek Harness.Core.exe') {
+foreach ($name in 'DeepSeek Harness.exe', 'DeepSeek Harness.Core.exe', 'DeepSeek Harness.Core.dll', 'DeepSeek Harness.Core.pri', 'DeepSeek Harness.Core.runtimeconfig.json', 'info-host\DafeiyuGo.Info.exe', 'info-host\DafeiyuGo.Info.dll', 'info-host\DafeiyuGo.Info.deps.json', 'info-host\DafeiyuGo.Info.runtimeconfig.json', 'info-host\DafeiyuGo.Info.pri', 'info-host\App.xbf', 'info-host\sounds\notify_F4_F5_v2.mp3') {
     $path = Join-Path $Dist $name
     if (Test-Path $path) {
         $item = Get-Item $path
         Pass ("{0}  {1}  {2:N0} KB" -f $name, $item.VersionInfo.FileVersion, ($item.Length / 1KB))
         if ($item.VersionInfo.FileVersion -and $item.VersionInfo.FileVersion -notlike "$Version*") {
-            Warn ("版本号对不上: 文件是 $($item.VersionInfo.FileVersion),期望 $Version")
+            Fail ("版本号对不上: 文件是 $($item.VersionInfo.FileVersion),期望 $Version")
         }
     } else {
         Fail "缺少 $name"

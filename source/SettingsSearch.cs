@@ -23,6 +23,10 @@ namespace DeepSeekHarnessLauncher
         /// <summary>目标页标签，直接喂给 SelectPage。</summary>
         public string PageTag { get; set; } = String.Empty;
 
+        // Some results identify a subview inside the page, rather than a setting row.
+        internal string NavigationTarget => String.Equals(OptionId, "Feedback:Mine", StringComparison.Ordinal)
+            && String.Equals(PageTag, "Feedback", StringComparison.Ordinal) ? "Feedback:Mine" : PageTag;
+
         public string PageTitle { get; set; } = String.Empty;
 
         /// <summary>少量实用别名（中英混搜用），可为空。</summary>

@@ -30,6 +30,14 @@ namespace DeepSeekHarnessLauncher
         public string LauncherUpdateMode { get; set; } = "Install";
         public string DshUpdateMode { get; set; } = "Check";
         public string PluginUpdateMode { get; set; } = "Check";
+
+        /// <summary>
+        /// 补丁策略：Install = 自动下载并安装（默认），Check = 仅检查更新，Off = 关闭。
+        /// 只改这里的默认值：已经存在的 LauncherSettings.json 反序列化时会覆盖它，
+        /// 不会强行把用户的旧选择改写掉。
+        /// </summary>
+        public string PatchUpdateMode { get; set; } = "Install";
+
         public string UpdateInterval { get; set; } = "EveryStart";
 
         /// <summary>启动器更新通道。Auto/Stable 都读 manifest.json，Preview 读 manifest-preview.json。</summary>
@@ -65,6 +73,9 @@ namespace DeepSeekHarnessLauncher
 
         public string ApiKeyProtected { get; set; } = String.Empty;
         public string GitHubTokenProtected { get; set; } = String.Empty;
+        public string AdminTokenProtected { get; set; } = String.Empty;
+        public string ServerMetricsTokenProtected { get; set; } = String.Empty;
+        public string DeveloperCenterBaseUrl { get; set; } = "https://202.189.21.218:8787";
 
         /// <summary>
         /// 技能/插件文档中文翻译用的模型。复用 API 页那把 Key，不另设密钥。
@@ -82,7 +93,6 @@ namespace DeepSeekHarnessLauncher
 
         public bool UpdateReminder { get; set; } = true;
         public bool PluginUpdateReminder { get; set; } = true;
-        public bool ServiceStartReminder { get; set; } = true;
         public bool RechargeReminder { get; set; } = true;
 
         public bool SpendAlert5 { get; set; } = true;

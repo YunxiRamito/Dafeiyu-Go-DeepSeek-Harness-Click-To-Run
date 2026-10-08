@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
@@ -38,9 +39,20 @@ namespace DeepSeekHarnessLauncher
         private readonly IntPtr _windowHandle;
         private readonly SettingsWindowHost _host;
         private readonly LauncherSettings _settings;
+        private readonly ClientNoticeStore _clientNoticeStore = ClientNoticeStore.ForLauncher();
+        private ClientNoticeSettings _clientNoticeSettings;
         private bool _authorAvatarLoading;
         private bool _initializing = true;
         private bool _suppressNavigation;
+        private readonly DispatcherQueueTimer _serverMetricsTimer;
+        private readonly DispatcherQueueTimer _presenceRefreshTimer;
+        private readonly DispatcherQueueTimer _presenceHistoryTimer;
+        private readonly ServerMetricsClient _serverMetricsClient = new ServerMetricsClient();
+        private System.Threading.CancellationTokenSource _serverMetricsCancellation;
+        private bool _serverMetricsBusy;
+        private ServerMetricsResponse _serverMetricsResponse;
+        private ClientNoticePresence _serverPresenceHistory;
+        private bool _presenceHistoryBusy;
         private int _versionTapCount;
         private DateTime _lastVersionTapUtc = DateTime.MinValue;
 
@@ -82,8 +94,22 @@ namespace DeepSeekHarnessLauncher
             SettingsWindowHost host)
         {
             InitializeComponent();
+            _serverMetricsTimer = DispatcherQueue.CreateTimer();
+            _serverMetricsTimer.Interval = TimeSpan.FromSeconds(2);
+            _serverMetricsTimer.IsRepeating = true;
+            _serverMetricsTimer.Tick += async delegate { await RefreshServerMetricsAsync(); };
+            _presenceRefreshTimer = DispatcherQueue.CreateTimer();
+            _presenceRefreshTimer.Interval = TimeSpan.FromSeconds(5);
+            _presenceRefreshTimer.IsRepeating = true;
+            _presenceRefreshTimer.Tick += delegate { RefreshNoticePresence(); };
+            _presenceHistoryTimer = DispatcherQueue.CreateTimer();
+            _presenceHistoryTimer.Interval = TimeSpan.FromSeconds(5);
+            _presenceHistoryTimer.IsRepeating = true;
+            _presenceHistoryTimer.Tick += async delegate { await RefreshPresenceHistoryAsync(); };
             _host = host ?? CreatePreviewHost();
             _settings = _host.Settings ?? new LauncherSettings();
+            _host.SetPresencePollingEnabled(true);
+            _presenceRefreshTimer.Start();
             AccentColorPicker.Color = Windows.UI.Color.FromArgb(255, 10, 132, 255);
 
             Title = "Dafeiyu-Go 设置";
@@ -119,8 +145,15 @@ namespace DeepSeekHarnessLauncher
             RefreshComponents();
             WireSettingsEvents();
             InitializeDownloadCenter();
+            InitializeInfoPreview();
+            InitializePreviewPresence();
             BuildSettingsGroups();
+            // 补丁优先：先把补丁页、disable、overrides 落到导航上，再采设置搜索索引，
+            // 被 disable 掉的内置条目就不会进索引。
+            ApplyPatchNavigation();
             BuildSettingsSearchIndex();
+            RefreshPatchInstalledList();
+            RefreshPatchSummary();
 
             SettingsRoot.SizeChanged += SettingsRoot_SizeChanged;
             SettingsRoot.ActualThemeChanged += SettingsRoot_ActualThemeChanged;
@@ -200,20 +233,7 @@ namespace DeepSeekHarnessLauncher
         /// <summary>预览模式没有主进程，日志直接落到 launcher.log，方便排查界面数据。</summary>
         private static void PreviewLog(string message)
         {
-            try
-            {
-                Directory.CreateDirectory(LauncherSettingsStore.DirectoryPath);
-                File.AppendAllText(
-                    Path.Combine(
-                        LauncherSettingsStore.DirectoryPath,
-                        "settings-preview.log"),
-                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
-                    + "  [preview] " + message + Environment.NewLine,
-                    new UTF8Encoding(false));
-            }
-            catch
-            {
-            }
+            LauncherLog.Write(Path.Combine(LauncherSettingsStore.DirectoryPath, "settings-preview.log"), "[preview] " + message);
         }
 
         // Keep original page instances and bindings inside each group's Pivot.
@@ -233,11 +253,28 @@ namespace DeepSeekHarnessLauncher
             AddGroupTab(FeaturesTabs, "Skills", "技能", SkillsPage);
             AddGroupTab(SystemTabs, "Service", "服务", ServicePage);
             AddGroupTab(SystemTabs, "Components", "组件", ComponentsPage);
-            // 更新单拎成一级入口；开发者是左下角的隐藏入口，不是常规设置页。
+            AddGroupTab(UpdatesTabs, "Updates", "更新", UpdatesPage);
+            AddGroupTab(UpdatesTabs, "Patches", "补丁", PatchesPage);
+            AddGroupTab(AboutTabs, "About", "关于", AboutPage);
+            AddGroupTab(AboutTabs, "Feedback", "反馈与建议", FeedbackPage);
+            MovePatchManagementToSubpage();
             SetDeveloperTabVisible(false);
+            _lastGroupTab["UpdatesGroup"] = "Updates";
             _lastGroupTab["Basic"] = "General";
             _lastGroupTab["Features"] = "Plugins";
             _lastGroupTab["System"] = "Service";
+            _lastGroupTab["AboutGroup"] = "About";
+        }
+
+        private void MovePatchManagementToSubpage()
+        {
+            FrameworkElement[] sections = { PatchPolicySection, InstalledPatchSection, AvailablePatchSection };
+            int insert = 0;
+            foreach (FrameworkElement section in sections)
+            {
+                UpdatesPage.Children.Remove(section);
+                PatchesPage.Children.Insert(insert++, section);
+            }
         }
 
         private void AddGroupTab(Pivot pivot, string tag, string header, FrameworkElement page)
@@ -253,6 +290,8 @@ namespace DeepSeekHarnessLauncher
         private void SetDeveloperTabVisible(bool visible)
         {
             DeveloperNavItem.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+            if (visible && _settingsSearchIndex.Count > 0)
+                BuildSettingsSearchIndex();
         }
 
         private void SelectGroupTab(Pivot pivot, string tag)
@@ -288,8 +327,17 @@ namespace DeepSeekHarnessLauncher
                 case "Service":
                 case "Components":
                     return "System";
+                case "Updates":
+                case "Patches":
+                    return "UpdatesGroup";
+                case "About":
+                case "Feedback":
+                    return "AboutGroup";
                 default:
-                    return null;
+                    return tag != null
+                        && tag.StartsWith("Patch_", StringComparison.Ordinal)
+                        ? "UpdatesGroup"
+                        : null;
             }
         }
 
@@ -322,12 +370,56 @@ namespace DeepSeekHarnessLauncher
             CollectSearchEntries(AlertsPage, "Alerts", "提醒", "通用");
             CollectSearchEntries(PluginsPage, "Plugins", "插件", "拓展");
             CollectSearchEntries(SkillsPage, "Skills", "技能", "拓展");
-            CollectSearchEntries(DeveloperPage, "Developer", "开发者", null);
+            if (DeveloperNavItem.Visibility == Visibility.Visible)
+                CollectSearchEntries(DeveloperPage, "Developer", "开发者", null);
             CollectSearchEntries(ServicePage, "Service", "服务", "核心");
             CollectSearchEntries(ComponentsPage, "Components", "组件", "核心");
-            CollectSearchEntries(UpdatesPage, "Updates", "更新", null);
+            CollectSearchEntries(UpdatesPage, "Updates", "更新", "更新");
+            CollectSearchEntries(PatchesPage, "Patches", "补丁", "更新");
             CollectSearchEntries(DownloadsPage, "Downloads", "下载任务", null);
             CollectSearchEntries(AboutPage, "About", "关于", null);
+            CollectSearchEntries(FeedbackPage, "Feedback", "反馈与建议", "关于");
+            CollectSearchEntry("Feedback:Mine", "我的提交", "按本机匿名机器标识筛选自己提交的反馈。", "Feedback", "反馈与建议", "反馈 建议 需求 漏洞 补充 我的提交", FeedbackScopePivot);
+            CollectPatchSearchEntries();
+
+            // 非标准设置行需要显式登记，不能依赖 SettingsRowGridStyle 自动采集。
+            CollectSearchEntry("ServerMetrics:Page", "服务器监控", "查看 CPU、内存、磁盘、网络和硬件信息。", "ServerMetrics", "服务器", "在线人数 服务器状态 monitor", ServerMetricsPage);
+            CollectSearchEntry("ServerMetrics:Presence", "在线人数", "查看近 24 小时在线人数历史图表。", "ServerMetrics", "服务器", "在线统计 人数图表 24小时 presence history", ServerPresenceChart);
+            CollectSearchEntry("ServerMetrics:Cpu", "CPU", "服务器处理器使用率。", "ServerMetrics", "服务器", "处理器 cpu", ServerCpuText);
+            CollectSearchEntry("ServerMetrics:Memory", "内存", "服务器内存占用。", "ServerMetrics", "服务器", "memory", ServerMemoryText);
+            CollectSearchEntry("ServerMetrics:Disk", "硬盘", "服务器磁盘空间。", "ServerMetrics", "服务器", "磁盘 disk", ServerDiskText);
+            CollectSearchEntry("ServerMetrics:Network", "网络", "服务器上传带宽占用，30 Mbps 上限与近 5 分钟上传趋势。", "ServerMetrics", "服务器", "网络上传带宽 上传速率 百分比 network", ServerNetworkText);
+            CollectSearchEntry("ServerMetrics:Hardware", "硬件信息", "服务器处理器、内存和磁盘总量。", "ServerMetrics", "服务器", "hardware", ServerHardwareText);
+            CollectSearchEntry("Api:AdminTokenBox", "管理员 Token", "开发者中心发布与管理消息使用，以 DPAPI 加密保存。", "Api", "API", "管理员密钥 token DPAPI", AdminTokenBox);
+            CollectSearchEntry("General:NoticePollIntervalBox", "公告轮询间隔", "公告拉取频率，单位为秒。", "General", "常规", "刷新间隔", NoticePollIntervalBox);
+            CollectSearchEntry("General:NoticeTelemetryToggle", "在线统计与交互回执", "匿名在线心跳及公告展示、已读与点击统计。", "General", "常规", "在线人数 遥测 心跳", NoticeTelemetryToggle);
+            CollectSearchEntry("General:BackendSource", "后端服务器加速", "安装器、启动器、组件、插件与技能的在线引擎选项。", "General", "常规", "反代 官方源 下载源 clash backend 八线程 缓存", UpdateSourceComboBox);
+            if (DeveloperNavItem.Visibility == Visibility.Visible)
+            {
+                CollectSearchEntry("Developer:Announcements", "公告管理", "获取、新增、编辑、排序、置顶并发布公告。", "Developer", "开发者", "公告 Markdown 编辑正文", DeveloperAnnouncementManagePanel);
+                CollectSearchEntry("Developer:PushAnnouncements", "推送公告", "发布已保存的公告修改，让用户在下次打开启动器时看到。", "Developer", "开发者", "公告发布 tsgg", DeveloperAnnouncementPushButton);
+                CollectSearchEntry("Developer:Notifications", "通知管理", "检测现有通知、修改并重新推送、关闭推送及查看指标。", "Developer", "开发者", "通知 Markdown 按钮", DeveloperNotificationPanel);
+                CollectSearchEntry("Developer:Feedback", "反馈处理", "查看用户反馈、回复、修改类别与处理状态。", "Developer", "开发者", "反馈 建议 漏洞 回复 分类 状态 feedback", DeveloperFeedbackPanel);
+                CollectSearchEntry("Developer:InfoPreview", "信息窗口预览", "预览公告、通知、服务与更新状态的信息窗口。", "Developer", "开发者", "信息窗 工具 preview", InfoPreviewEntry);
+            }
+
+            // 补丁策略不使用标准行布局，保留页面入口和具体策略的定位。
+            if (!IsBuiltinPageHiddenByPatch("Patches"))
+            {
+                _settingsSearchIndex.Add(new SettingsSearchEntry
+                {
+                    OptionId = "Updates:PatchSection",
+                    Title = "补丁",
+                    Description = "补丁策略、已安装补丁与可用补丁。",
+                    Group = "更新",
+                    PageTag = "Patches",
+                    PageTitle = "补丁",
+                    Alias = "补丁策略 已安装补丁 可用补丁 patch",
+                    Initials = SettingsSearchInitials.Build("补丁策略已安装补丁可用补丁更新"),
+                    Anchor = PatchUpdateModeComboBox,
+                    Enabled = true
+                });
+            }
 
             // 下载页不是标准的「行」布局，采不到条目；单独补一条页面级入口，
             // 这样搜「下载」或者首字母 xz 都能找到它（入口本身默认是藏着的）。
@@ -348,6 +440,20 @@ namespace DeepSeekHarnessLauncher
             _host.Log("设置搜索索引：" + _settingsSearchIndex.Count + " 条");
         }
 
+        private void CollectSearchEntry(string optionId, string title, string description,
+            string pageTag, string pageTitle, string alias, FrameworkElement anchor)
+        {
+            if (anchor == null || IsBuiltinPageHiddenByPatch(pageTag)) return;
+            _settingsSearchIndex.Add(new SettingsSearchEntry
+            {
+                OptionId = optionId, Title = title, Description = description,
+                PageTag = pageTag, PageTitle = pageTitle,
+                Group = GroupOf(pageTag) == "Basic" ? "通用" : pageTitle,
+                Alias = alias, Initials = SettingsSearchInitials.Build(title + pageTitle + alias),
+                Anchor = anchor, Enabled = true
+            });
+        }
+
         private void CollectSearchEntries(
             FrameworkElement page,
             string pageTag,
@@ -355,6 +461,13 @@ namespace DeepSeekHarnessLauncher
             string group)
         {
             if (page == null)
+            {
+                return;
+            }
+
+            // 被补丁 disable 或 overrides 的内置页不再进索引：禁用条目"不再出现"，
+            // 被覆盖的内置页由补丁页自己的条目代表。
+            if (IsBuiltinPageHiddenByPatch(pageTag))
             {
                 return;
             }
@@ -600,6 +713,8 @@ namespace DeepSeekHarnessLauncher
                     return "开发者 developer 推荐 公告";
                 case "About":
                     return "关于 版本 开源 许可 about";
+                case "Feedback":
+                    return "反馈 建议 需求 漏洞 补充 我的提交 feedback suggestion bug";
                 default:
                     return String.Empty;
             }
@@ -796,7 +911,23 @@ namespace DeepSeekHarnessLauncher
 
             try
             {
-                SelectPage(entry.PageTag);
+                if (entry.PageTag == "Developer" && DeveloperNavItem.Visibility != Visibility.Visible)
+                    return;
+                SelectPage(entry.NavigationTarget);
+                if (entry.PageTag == "Developer")
+                {
+                    string module = ReferenceEquals(entry.Anchor, DeveloperFeedbackPanel) ? "Feedback"
+                        : ReferenceEquals(entry.Anchor, InfoPreviewEntry) ? "Tools"
+                        : ReferenceEquals(entry.Anchor, DeveloperAnnouncementManagePanel)
+                            || ReferenceEquals(entry.Anchor, DeveloperAnnouncementPushButton)
+                            || ReferenceEquals(entry.Anchor, DeveloperNotificationPanel) ? "Messages" : null;
+                    foreach (object item in DeveloperModuleList.Items)
+                        if (module != null && item is ListViewItem moduleItem && moduleItem.Tag as string == module)
+                            DeveloperModuleList.SelectedItem = moduleItem;
+                    if (ReferenceEquals(entry.Anchor, DeveloperAnnouncementManagePanel)) DeveloperMessageViews.SelectedIndex = 0;
+                    else if (ReferenceEquals(entry.Anchor, DeveloperAnnouncementPushButton)) DeveloperMessageViews.SelectedIndex = 0;
+                    else if (ReferenceEquals(entry.Anchor, DeveloperNotificationPanel)) DeveloperMessageViews.SelectedIndex = 1;
+                }
             }
             catch (Exception exception)
             {
@@ -927,6 +1058,8 @@ namespace DeepSeekHarnessLauncher
 
             // 图用的是主题资源画笔，切主题要重画一遍（不然会停在上一套配色）
             DrawHomeUsageChart();
+            RenderServerUploadChart();
+            RenderServerPresenceChart();
         }
 
         private void LoadSettingsIntoControls()
@@ -959,9 +1092,13 @@ namespace DeepSeekHarnessLauncher
                 _settings.PluginUpdateMode);
             SelectTaggedItem(LauncherChannelComboBox, _settings.LauncherChannel);
             SelectTaggedItem(DshChannelComboBox, _settings.DshChannel);
+            SelectTaggedItem(
+                PatchUpdateModeComboBox,
+                String.IsNullOrWhiteSpace(_settings.PatchUpdateMode)
+                    ? "Check"
+                    : _settings.PatchUpdateMode);
 
             UpdateReminderToggle.IsOn = _settings.UpdateReminder;            PluginUpdateReminderToggle.IsOn = _settings.PluginUpdateReminder;
-            ServiceReminderToggle.IsOn = _settings.ServiceStartReminder;
             RechargeReminderToggle.IsOn = _settings.RechargeReminder;
 
             _proxyUiReady = false;
@@ -1004,12 +1141,80 @@ namespace DeepSeekHarnessLauncher
                 _settings.TranslationBaseUrl);
             GitHubTokenBox.Password =
                 LauncherSettingsStore.ReadGitHubToken(_settings);
+            AdminTokenBox.Password = LauncherSettingsStore.ReadAdminToken(_settings);
             // 开发者入口只在本窗口会话内有效，每次重新打开设置都要重新解锁。
             _settings.DeveloperModeUnlocked = false;
             SetDeveloperTabVisible(false);
             RefreshServiceState();
             UpdateCustomThresholdStates();
             SyncAcceleratorControls();
+            LoadClientNoticeSettings();
+        }
+
+        private void LoadClientNoticeSettings()
+        {
+            try
+            {
+                _clientNoticeSettings = _clientNoticeStore.LoadSettings();
+                NoticePollIntervalBox.Value = Math.Clamp(_clientNoticeSettings.PollIntervalSeconds, 60, 86400);
+                NoticeTelemetryToggle.IsOn = _clientNoticeSettings.TelemetryEnabled;
+            }
+            catch (Exception exception)
+            {
+                NoticePollIntervalBox.IsEnabled = false;
+                NoticeTelemetryToggle.IsEnabled = false;
+                NoticeEndpointWarning.Severity = InfoBarSeverity.Error;
+                NoticeEndpointWarning.Message = "通知设置读取失败，未覆盖已有配置：" + exception.Message;
+                NoticeEndpointWarning.IsOpen = true;
+            }
+        }
+
+        private void SaveClientNoticeSettings()
+        {
+            if (_initializing || _clientNoticeSettings == null) return;
+            double seconds = NoticePollIntervalBox.Value;
+            if (Double.IsNaN(seconds) || Double.IsInfinity(seconds) || seconds < 60 || seconds > 86400 || seconds != Math.Truncate(seconds)) return;
+            try
+            {
+                // Preserve fields not exposed by this UI (e.g. heartbeat interval).
+                ClientNoticeSettings settings = _clientNoticeStore.LoadSettings();
+                settings.BaseUrl = "https://202.189.21.218:8787";
+                settings.PollIntervalSeconds = (int)seconds;
+                settings.TelemetryEnabled = NoticeTelemetryToggle.IsOn;
+                settings.AllowInsecureHttp = false;
+                _clientNoticeStore.SaveSettings(settings);
+                _clientNoticeSettings = settings;
+                _host.NoticeSettingsChanged();
+            }
+            catch (Exception exception)
+            {
+                NoticeEndpointWarning.Severity = InfoBarSeverity.Error;
+                NoticeEndpointWarning.Message = "通知设置保存失败：" + exception.Message;
+                NoticeEndpointWarning.IsOpen = true;
+            }
+        }
+
+        private void SaveClientNoticePrivacySettings()
+        {
+            if (_initializing || _clientNoticeSettings == null) return;
+            try
+            {
+                // Privacy opt-out must still save while the URL edit is incomplete.
+                ClientNoticeSettings settings = _clientNoticeStore.LoadSettings();
+                settings.TelemetryEnabled = NoticeTelemetryToggle.IsOn;
+                settings.AllowInsecureHttp = false;
+                _clientNoticeStore.SaveSettings(settings);
+                _clientNoticeSettings = settings;
+                _host.NoticeSettingsChanged();
+                NoticeEndpointWarning.Severity = InfoBarSeverity.Informational;
+                NoticeEndpointWarning.Message = "使用内置安全连接；服务端地址不在公告或通知编辑界面显示，也不会随消息推送。";
+            }
+            catch (Exception exception)
+            {
+                NoticeEndpointWarning.Severity = InfoBarSeverity.Error;
+                NoticeEndpointWarning.Message = "隐私设置保存失败：" + exception.Message;
+                NoticeEndpointWarning.IsOpen = true;
+            }
         }
 
         private void WireSettingsEvents()
@@ -1025,6 +1230,8 @@ namespace DeepSeekHarnessLauncher
             PluginSourceComboBox.SelectionChanged += SettingComboBox_SelectionChanged;
             UpdateIntervalComboBox.SelectionChanged += SettingComboBox_SelectionChanged;
             FixedPortBox.ValueChanged += FixedPortBox_ValueChanged;
+            NoticePollIntervalBox.ValueChanged += delegate { SaveClientNoticeSettings(); };
+            NoticeTelemetryToggle.Toggled += delegate { SaveClientNoticePrivacySettings(); };
             // 不能在 XAML 里绑定。RadioButtons 在初始化选择时会先触发一次
             // SelectionChanged，此时 SelectedItem 可能还是 null，会把已保存的
             // 代理模式覆盖成 None。等 LoadSettingsIntoControls 完成后再接事件。
@@ -1232,7 +1439,6 @@ namespace DeepSeekHarnessLauncher
 
             UpdateReminderToggle.Toggled += ReminderToggle_Toggled;
             PluginUpdateReminderToggle.Toggled += ReminderToggle_Toggled;
-            ServiceReminderToggle.Toggled += ReminderToggle_Toggled;
             RechargeReminderToggle.Toggled += ReminderToggle_Toggled;
 
             Spend5CheckBox.Checked += ThresholdCheckBox_Changed;
@@ -1301,8 +1507,221 @@ namespace DeepSeekHarnessLauncher
             };
             _host.UpdateStateChanged += Host_UpdateStateChanged;
             _host.ServiceStateChanged += Host_ServiceStateChanged;
+            _host.NoticePresenceChanged += RefreshNoticePresence;
             WireAcceleratorEvents();
             RefreshUpdateStates();
+            RefreshNoticePresence();
+        }
+
+        private void RefreshNoticePresence()
+        {
+            ClientNoticePresence presence = _host.GetNoticePresence();
+            bool online = presence != null;
+            NoticePresenceText.Text = online ? presence.OnlineCount.ToString("N0") + " 人在线" : "在线状态未连接";
+            NoticePresenceDot.Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(255,
+                online ? (byte)40 : (byte)138, online ? (byte)167 : (byte)138, online ? (byte)69 : (byte)138));
+            ApplyPresenceFooterLayout();
+            RenderServerPresenceChart();
+        }
+
+        private void NoticePresenceFooterItem_Tapped(object sender, RoutedEventArgs args)
+        {
+            SelectPage("ServerMetrics");
+        }
+
+        private async System.Threading.Tasks.Task RefreshServerMetricsAsync()
+        {
+            var cancellation = _serverMetricsCancellation;
+            if (cancellation == null || _serverMetricsBusy) return;
+            _serverMetricsBusy = true;
+            string endpoint = (_settings.DeveloperCenterBaseUrl ?? "").Trim().TrimEnd('/');
+            try
+            {
+                ServerMetricsResponse response = await _serverMetricsClient.GetResponseAsync(endpoint, cancellation.Token);
+                if (cancellation != _serverMetricsCancellation) return;
+                ServerMetricsSnapshot data = response.Current;
+                _serverMetricsResponse = response;
+                ServerCpuBar.Value = data.CpuPercent;
+                ServerCpuText.Text = data.CpuPercent.ToString("0.0") + "% · " + data.Hardware.LogicalProcessors + " 个逻辑处理器";
+                ServerMemoryBar.Value = data.Memory.Percent;
+                ServerMemoryText.Text = FormatBytes(data.Memory.UsedBytes) + " / " + FormatBytes(data.Memory.TotalBytes) + " · " + data.Memory.Percent.ToString("0.0") + "%";
+                ServerNetworkBar.Value = data.Network.UploadPercent;
+                ServerNetworkText.Text = data.Network.UploadPercent.ToString("0.0") + "% · 上传 " + data.Network.UploadMbps.ToString("0.00") + " / 30 Mbps";
+                ServerUploadSummaryText.Text = "上传 " + data.Network.UploadMbps.ToString("0.00") + " Mbps · 上限 30 Mbps · 近 5 分钟";
+                RenderServerUploadChart();
+                ServerDiskBar.Value = data.Disk.Percent;
+                ServerDiskText.Text = FormatBytes(data.Disk.UsedBytes) + " / " + FormatBytes(data.Disk.TotalBytes) + " · " + data.Disk.Percent.ToString("0.0") + "%";
+                ServerHardwareText.Text = data.Hardware.Processor + "\n" + data.Hardware.LogicalProcessors + " 个逻辑处理器 · 内存 " + FormatBytes(data.Hardware.MemoryTotalBytes) + " · 磁盘 " + FormatBytes(data.Hardware.DiskTotalBytes);
+                ServerMetricsStatusText.Text = "实时数据 · 每 2 秒更新";
+            }
+            catch (OperationCanceledException) when (cancellation != _serverMetricsCancellation) { }
+            catch (Exception error)
+            {
+                if (cancellation == _serverMetricsCancellation)
+                    ServerMetricsStatusText.Text = "暂时无法读取服务器数据：" + error.Message;
+            }
+            finally { _serverMetricsBusy = false; }
+        }
+
+        private async System.Threading.Tasks.Task RefreshPresenceHistoryAsync()
+        {
+            var cancellation = _serverMetricsCancellation;
+            if (cancellation == null || _presenceHistoryBusy) return;
+            _presenceHistoryBusy = true;
+            try
+            {
+                var presence = await _serverMetricsClient.GetPresenceHistoryAsync(_settings.DeveloperCenterBaseUrl, cancellation.Token);
+                if (cancellation != _serverMetricsCancellation) return;
+                _serverPresenceHistory = presence;
+                RenderServerPresenceChart();
+            }
+            catch (OperationCanceledException) when (cancellation != _serverMetricsCancellation) { }
+            catch (Exception error)
+            {
+                if (cancellation == _serverMetricsCancellation)
+                    ServerPresenceSummaryText.Text = "暂时无法读取在线人数历史：" + error.Message;
+            }
+            finally { _presenceHistoryBusy = false; }
+        }
+
+        private void ServerPresenceChart_SizeChanged(object sender, SizeChangedEventArgs args)
+        {
+            RenderServerPresenceChart();
+        }
+
+        private void RenderServerPresenceChart()
+        {
+            if (ServerPresenceChart == null || _host == null) return;
+            double width = ServerPresenceChart.ActualWidth;
+            if (width <= 100) return;
+            ServerPresenceChart.Children.Clear();
+            ClientNoticePresence presence = _serverPresenceHistory;
+            DateTimeOffset now = presence?.ObservedAt ?? DateTimeOffset.UtcNow;
+            var samples = (presence?.History ?? new List<ClientNoticePresenceSample>())
+                .Where(sample => sample != null && sample.OnlineCount >= 0 && sample.ObservedAt >= now.AddHours(-24) && sample.ObservedAt <= now)
+                .OrderBy(sample => sample.ObservedAt).ToList();
+            ServerPresenceSummaryText.Text = presence == null ? "在线人数暂时无法读取。"
+                : presence.OnlineCount.ToString("N0") + " 人在线 · " + (samples.Count == 0 ? "暂无历史记录。" : "历史记录每分钟采样。");
+            int peak = Math.Max(presence?.OnlineCount ?? 0, samples.Count == 0 ? 0 : samples.Max(sample => sample.OnlineCount));
+            double step = Math.Max(1, Math.Ceiling(peak / 4.0));
+            double maximum = step * 4;
+            double left = 58, right = width - 12, top = 32, bottom = 174;
+            Brush foreground = ResolveChartBrush("TextFillColorSecondaryBrush", "ControlStrokeColorDefaultBrush");
+            for (int tick = 0; tick <= 4; tick++)
+            {
+                double y = bottom - (bottom - top) * tick / 4;
+                ServerPresenceChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Line { X1 = left, X2 = right, Y1 = y, Y2 = y, Stroke = foreground, Opacity = 0.15, StrokeThickness = 1 });
+                var label = new TextBlock { Text = (tick * step).ToString("N0"), FontSize = 11, Foreground = foreground };
+                Canvas.SetLeft(label, 4); Canvas.SetTop(label, y - 8); ServerPresenceChart.Children.Add(label);
+                var time = new TextBlock { Text = now.AddHours(-24 + tick * 6).ToLocalTime().ToString("HH:mm"), FontSize = 11, Foreground = foreground };
+                Canvas.SetLeft(time, Math.Clamp(left + (right - left) * tick / 4 - 16, left, right - 32));
+                Canvas.SetTop(time, bottom + 8); ServerPresenceChart.Children.Add(time);
+            }
+            var unit = new TextBlock { Text = "人数", FontSize = 11, Foreground = foreground };
+            ServerPresenceChart.Children.Add(unit);
+            var timeUnit = new TextBlock { Text = "时间", FontSize = 11, Foreground = foreground };
+            Canvas.SetLeft(timeUnit, right - 24); Canvas.SetTop(timeUnit, 196); ServerPresenceChart.Children.Add(timeUnit);
+            ServerPresenceChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Line { X1 = left, X2 = left, Y1 = top, Y2 = bottom, Stroke = foreground, StrokeThickness = 1 });
+            ServerPresenceChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Line { X1 = left, X2 = right, Y1 = bottom, Y2 = bottom, Stroke = foreground, StrokeThickness = 1 });
+            if (samples.Count == 0) return;
+            Brush accent = ResolveAccentBrush();
+            PointCollection points = new PointCollection();
+            ClientNoticePresenceSample previous = null;
+            foreach (ClientNoticePresenceSample sample in samples)
+            {
+                double x = right - (right - left) * (now - sample.ObservedAt).TotalHours / 24;
+                double y = bottom - (bottom - top) * sample.OnlineCount / maximum;
+                // Leave sampling outages empty instead of joining across unobserved time.
+                if (previous != null && (sample.ObservedAt - previous.ObservedAt).TotalMinutes > 2)
+                {
+                    ServerPresenceChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Polyline { Points = points, Stroke = accent, StrokeThickness = 2 });
+                    points = new PointCollection();
+                }
+                if (points.Count > 0) points.Add(new Point(x, points[points.Count - 1].Y));
+                points.Add(new Point(x, y));
+                previous = sample;
+            }
+            ServerPresenceChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Polyline { Points = points, Stroke = accent, StrokeThickness = 2 });
+            Point last = points[points.Count - 1];
+            var dot = new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 6, Height = 6, Fill = accent };
+            Canvas.SetLeft(dot, last.X - 3); Canvas.SetTop(dot, last.Y - 3); ServerPresenceChart.Children.Add(dot);
+        }
+
+        private void ServerUploadChart_SizeChanged(object sender, SizeChangedEventArgs args)
+        {
+            RenderServerUploadChart();
+        }
+
+        private void RenderServerUploadChart()
+        {
+            if (ServerUploadChart == null) return;
+            double width = ServerUploadChart.ActualWidth;
+            if (width <= 60) return;
+            ServerUploadChart.Children.Clear();
+            double left = 68, right = width - 10, top = 8, bottom = 180;
+            DateTimeOffset now = _serverMetricsResponse?.Current.ObservedAt ?? DateTimeOffset.UtcNow;
+            if (now == default) now = DateTimeOffset.UtcNow;
+            var history = (_serverMetricsResponse?.History ?? new List<ServerMetricsSnapshot>())
+                .Where(sample => sample?.Network != null && sample.ObservedAt >= now.AddMinutes(-5) && sample.ObservedAt <= now)
+                .OrderBy(sample => sample.ObservedAt).ToList();
+            if (_serverMetricsResponse?.Current != null && history.Count == 0) history.Add(_serverMetricsResponse.Current);
+            double maximum = ServerNetwork.ChartMaximum(history.Count == 0 ? 0 : history.Max(sample => sample.Network.UploadMbps));
+            Brush foreground = ResolveChartBrush("TextFillColorSecondaryBrush", "ControlStrokeColorDefaultBrush");
+            for (int tick = 0; tick <= 4; tick++)
+            {
+                double y = bottom - (bottom - top) * tick / 4;
+                var rule = new Microsoft.UI.Xaml.Shapes.Line { X1 = left, X2 = right, Y1 = y, Y2 = y, Stroke = foreground, Opacity = 0.15, StrokeThickness = 1 };
+                ServerUploadChart.Children.Add(rule);
+                var label = new TextBlock { Text = (tick * maximum / 4).ToString("0.###") + " Mbps", FontSize = 11, Foreground = foreground };
+                Canvas.SetTop(label, y - 8); ServerUploadChart.Children.Add(label);
+            }
+            var earlier = new TextBlock { Text = "5 分钟前", FontSize = 11, Foreground = foreground };
+            Canvas.SetLeft(earlier, left); Canvas.SetTop(earlier, bottom + 8); ServerUploadChart.Children.Add(earlier);
+            var nowLabel = new TextBlock { Text = "现在", FontSize = 11, Foreground = foreground };
+            Canvas.SetLeft(nowLabel, right - 24); Canvas.SetTop(nowLabel, bottom + 8); ServerUploadChart.Children.Add(nowLabel);
+            if (_serverMetricsResponse == null) return;
+            var points = new PointCollection();
+            foreach (ServerMetricsSnapshot sample in history)
+            {
+                if (sample?.Network == null) continue;
+                double age = sample.ObservedAt == default ? 0 : (now - sample.ObservedAt).TotalSeconds;
+                if (age > 300 || age < 0) continue;
+                double x = right - (right - left) * Math.Clamp(age / 300, 0, 1);
+                double y = bottom - (bottom - top) * sample.Network.UploadMbps / maximum;
+                points.Add(new Windows.Foundation.Point(x, y));
+            }
+            if (points.Count == 0) return;
+            Brush accent = ResolveAccentBrush();
+            ServerUploadChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Polyline { Points = points, Stroke = accent, StrokeThickness = 2 });
+            Windows.Foundation.Point last = points[points.Count - 1];
+            var dot = new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 6, Height = 6, Fill = accent };
+            Canvas.SetLeft(dot, last.X - 3); Canvas.SetTop(dot, last.Y - 3); ServerUploadChart.Children.Add(dot);
+        }
+
+        private static string FormatBytes(double bytes)
+        {
+            string[] units = { "B", "KB", "MB", "GB", "TB" };
+            int unit = 0;
+            while (bytes >= 1024 && unit < units.Length - 1) { bytes /= 1024; unit++; }
+            return bytes.ToString(unit == 0 ? "0" : "0.0") + " " + units[unit];
+        }
+
+        private void ApplyPresenceFooterLayout()
+        {
+            bool compact = SettingsNavigationView != null && !SettingsNavigationView.IsPaneOpen;
+            NoticePresenceFooterButtonPanel.Orientation = compact ? Orientation.Vertical : Orientation.Horizontal;
+            NoticePresenceFooterButtonPanel.Spacing = compact ? 3 : 8;
+            NoticePresenceFooterButtonPanel.HorizontalAlignment = compact ? HorizontalAlignment.Center : HorizontalAlignment.Left;
+            NoticePresenceFooterButtonPanel.Width = compact ? 40 : double.NaN;
+            ServerMetricsFooterButton.HorizontalContentAlignment = compact ? HorizontalAlignment.Center : HorizontalAlignment.Left;
+            ServerMetricsFooterButton.Padding = compact ? new Thickness(4, 4, 4, 4) : new Thickness(8, 4, 8, 4);
+            NoticePresenceText.TextAlignment = compact ? TextAlignment.Center : TextAlignment.Left;
+            NoticePresenceText.MaxWidth = compact ? 40 : double.PositiveInfinity;
+            NoticePresenceText.TextTrimming = compact ? TextTrimming.CharacterEllipsis : TextTrimming.CharacterEllipsis;
+            NoticePresenceText.FontSize = compact ? 11 : 12;
+            NoticePresenceText.Text = compact
+                ? (_host.GetNoticePresence() is ClientNoticePresence current ? current.OnlineCount.ToString("N0") : "–")
+                : (_host.GetNoticePresence() is ClientNoticePresence expanded ? expanded.OnlineCount.ToString("N0") + " 人在线" : "在线状态未连接");
         }
 
         private string _lastPluginStateSignature = String.Empty;
@@ -1738,6 +2157,9 @@ namespace DeepSeekHarnessLauncher
             string updateSource = GetSelectedTag(
                 UpdateSourceComboBox,
                 "Accelerated");
+            bool backendSource = String.Equals(updateSource, "backend", StringComparison.OrdinalIgnoreCase);
+            bool automaticSource = String.Equals(updateSource, "Accelerated", StringComparison.OrdinalIgnoreCase);
+            if (backendSource) updateSource = "Accelerated";
             if (String.Equals(updateSource, "Custom", StringComparison.OrdinalIgnoreCase))
             {
                 // 「自定义」不是新档位：还是加速，只是源由用户自己钉。
@@ -1749,7 +2171,9 @@ namespace DeepSeekHarnessLauncher
                 && _acceleratorUiReady;
             if (sourceChanged)
             {
-                if (String.Equals(updateSource, "Accelerated", StringComparison.OrdinalIgnoreCase))
+                if (backendSource)
+                    _settings.MirrorSource = BackendDownloadSource.SourceId;
+                else if (automaticSource)
                 {
                     // 选回「大陆 CDN 加速」就等于回到自动挑源。
                     _settings.MirrorSource = GitHubAccelerator.AutoSource;
@@ -1821,7 +2245,6 @@ namespace DeepSeekHarnessLauncher
 
             _settings.UpdateReminder = UpdateReminderToggle.IsOn;
             _settings.PluginUpdateReminder = PluginUpdateReminderToggle.IsOn;
-            _settings.ServiceStartReminder = ServiceReminderToggle.IsOn;
             _settings.RechargeReminder = RechargeReminderToggle.IsOn;
             SaveSettings();
         }
@@ -2399,7 +2822,7 @@ namespace DeepSeekHarnessLauncher
                 : result.Items;
             _catalogFromMarket = result != null && result.FromMarket;
             _pluginRecords = PluginInstallStore.Load();
-            _profilePluginKeys = null;
+            _pluginInstallationState = PluginInstallationState.Load(_settings.DshRoot, _pluginRecords);
             _catalogPage = 0;
             RebuildOnlinePage(result != null && result.FromCache);
             MergeFeaturedWithCatalog();
@@ -2748,92 +3171,14 @@ namespace DeepSeekHarnessLauncher
             return fallback;
         }
 
-        /// <summary>
-        /// 「已安装」以**本机实际状态**为准：只认 `PluginInstalls.json` 的话，
-        /// 记录缺一条（手工装过、或上次安装中途失败）重启后就会显示成没装。
-        /// </summary>
         private bool IsInstalled(PluginCatalogItem item)
         {
-            if (_pluginRecords.ContainsKey(item.Repository)
-                || _pluginRecords.ContainsKey(item.FullName))
-            {
-                return true;
-            }
-
-            HashSet<string> keys = ProfilePluginKeys();
-            if (keys.Contains(item.Repository ?? String.Empty)
-                || keys.Contains(item.FullName ?? String.Empty))
-            {
-                return true;
-            }
-
-            // profile 里的依赖长这样："@xmanrui/dsh-im@link:..." 或 "dsh-meme@link:..."。
-            string scoped = "@" + item.Owner + "/" + item.Repository + "@";
-            string plain = (item.Repository ?? String.Empty) + "@";
-            foreach (string key in keys)
-            {
-                if (key.StartsWith(scoped, StringComparison.OrdinalIgnoreCase)
-                    || key.StartsWith(plain, StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-            }
-
-            return false;
+            if (_pluginInstallationState == null || !_pluginInstallationState.IsForRoot(_settings.DshRoot))
+                _pluginInstallationState = PluginInstallationState.Load(_settings.DshRoot, PluginInstallStore.Load());
+            return item != null && _pluginInstallationState.IsInstalled(item.Owner, item.Repository, ResolveInstallSpecifier(item));
         }
 
-        /// <summary>profile 里实际挂着的插件键，缓存在窗口会话内用。</summary>
-        private HashSet<string> ProfilePluginKeys()
-        {
-            if (_profilePluginKeys != null)
-            {
-                return _profilePluginKeys;
-            }
-
-            HashSet<string> keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            try
-            {
-                List<DshProfilePlugin> plugins = DshProfileService.ReadPlugins(
-                    _settings.DshRoot,
-                    _pluginRecords);
-                for (int index = 0; index < plugins.Count; index++)
-                {
-                    DshProfilePlugin plugin = plugins[index];
-                    if (!String.IsNullOrWhiteSpace(plugin.Key))
-                    {
-                        keys.Add(plugin.Key);
-                    }
-
-                    if (!String.IsNullOrWhiteSpace(plugin.Dependency))
-                    {
-                        keys.Add(plugin.Dependency);
-                    }
-
-                    // **最靠谱的一条**：插件目录名。profile 里的包名常常跟仓库名不一样
-                    // （dsh-whale-widget vs DeepSeek-Balance-Whale-Widget），
-                    // 只比包名的话官方推荐那四个永远显示「没安装」。
-                    try
-                    {
-                        if (!String.IsNullOrWhiteSpace(plugin.LinkedDirectory))
-                        {
-                            keys.Add(Path.GetFileName(
-                                plugin.LinkedDirectory.TrimEnd('\\', '/')));
-                        }
-                    }
-                    catch
-                    {
-                    }
-                }
-            }
-            catch
-            {
-            }
-
-            _profilePluginKeys = keys;
-            return keys;
-        }
-
-        private HashSet<string> _profilePluginKeys;
+        private PluginInstallationState _pluginInstallationState;
 
         /// <summary>本语言判定：简介里含中日韩字符就算本语言内容。</summary>
         private static bool IsLocalLanguage(PluginCatalogItem item)
@@ -2852,13 +3197,13 @@ namespace DeepSeekHarnessLauncher
         }
 
         /// <summary>图标优先级：API 图片 → 仓库自带 icon → GitHub 默认标记。</summary>
-        private static ImageSource ResolveOnlineIcon(PluginCatalogItem item)
+        private ImageSource ResolveOnlineIcon(PluginCatalogItem item)
         {
             if (!String.IsNullOrWhiteSpace(item.ImageUrl))
             {
                 try
                 {
-                    return new BitmapImage(new Uri(item.ImageUrl));
+                    return RemoteIcon(item.ImageUrl);
                 }
                 catch
                 {
@@ -2876,7 +3221,7 @@ namespace DeepSeekHarnessLauncher
         }
 
         /// <summary>按指定分支/提交取仓库根目录里的图标。</summary>
-        private static ImageSource RepositoryIconAtBranch(
+        private ImageSource RepositoryIconAtBranch(
             string owner,
             string repo,
             string reference,
@@ -2890,10 +3235,8 @@ namespace DeepSeekHarnessLauncher
 
             try
             {
-                return new BitmapImage(
-                    new Uri(
-                        "https://cdn.jsdelivr.net/gh/"
-                        + owner + "/" + repo + "@" + reference + "/" + path));
+                string url = RemoteImageSource.RepositoryIconUrl(owner, repo, reference, path, _settings);
+                return RemoteIcon(url);
             }
             catch
             {
@@ -3118,6 +3461,68 @@ namespace DeepSeekHarnessLauncher
             return card ?? element.DataContext as PluginCardItem;
         }
 
+        /// <summary>
+        /// 1.6.1：插件的 peer 区间不覆盖当前 DSH 版本时，DSH 装得上但拒绝加载，
+        /// 必须显式接受风险（官方 <c>allow-version ... --accept-risk</c>）才会进 profile bundles。
+        /// 这个结论只有装完才拿得到，所以在安装之后弹一次确认；确认了就带着
+        /// acceptVersionRisk 重装一遍，让官方流程去记豁免、补 bundles。
+        /// </summary>
+        private bool ConfirmVersionExemption(PluginStoreService.InstallResult result)
+        {
+            if (result == null || !result.NeedsVersionExemption)
+            {
+                return false;
+            }
+
+            string packageVersion = String.IsNullOrWhiteSpace(result.ExemptionPackageVersion)
+                ? "这个插件"
+                : result.ExemptionPackageVersion;
+            string dshVersion = String.IsNullOrWhiteSpace(result.ExemptionDshVersion)
+                ? Constants.Version
+                : result.ExemptionDshVersion;
+
+            ContentDialog dialog = new ContentDialog();
+            dialog.XamlRoot = Content.XamlRoot;
+            dialog.Title = "插件与 DSH 版本不兼容";
+            dialog.Content = packageVersion
+                + " 这个插件可能和你现在的 DeepSeek Harness 服务版本（"
+                + dshVersion + "）不兼容，仍要安装它吗？\n\n"
+                + "同意后启动器会为这个精确版本记一次豁免，插件才会被加载；"
+                + "运行不兼容的插件可能导致崩溃或数据丢失。";
+            dialog.PrimaryButtonText = "仍要安装";
+            dialog.CloseButtonText = "取消";
+            dialog.DefaultButton = ContentDialogButton.Close;
+
+            bool confirmed = false;
+            System.Threading.ManualResetEventSlim gate =
+                new System.Threading.ManualResetEventSlim(false);
+            DispatcherQueue.TryEnqueue(async delegate
+            {
+                try
+                {
+                    ContentDialogResult choice = await dialog.ShowAsync();
+                    confirmed = choice == ContentDialogResult.Primary;
+                }
+                catch (Exception exception)
+                {
+                    _host.Log("插件兼容性确认框失败：" + exception.Message);
+                }
+                finally
+                {
+                    gate.Set();
+                }
+            });
+
+            // 后台安装线程在等这个结果，给个上限，别把线程挂死。
+            if (!gate.Wait(TimeSpan.FromMinutes(2)))
+            {
+                _host.Log("插件兼容性确认超时，按未确认处理。");
+                return false;
+            }
+
+            return confirmed;
+        }
+
         private void StartPluginInstall(PluginCardItem card)
         {
             if (card.IsOnline && !PackageManagerRunner.IsAvailable(_settings))
@@ -3138,12 +3543,13 @@ namespace DeepSeekHarnessLauncher
             card.Busy = true;
             card.ProgressValue = 0;
             card.PrimaryEnabled = false;
+            ShowInstallProgress(true, card.Name, "准备安装");
 
             PluginSpec spec = PluginSpec.Parse(card.Spec);
             string name = card.Name;
             _ = System.Threading.Tasks.Task.Run(delegate
             {
-                PluginStoreService.InstallResult result = PluginStoreService.Install(
+                PluginStoreService.InstallResult result = TryPluginInstallation(() => PluginStoreService.Install(
                     _settings,
                     spec,
                     card.ExpectedKey,
@@ -3156,11 +3562,13 @@ namespace DeepSeekHarnessLauncher
                         {
                             card.PrimaryAction = PluginProgressAction(text);
                             card.ProgressValue = Math.Max(0, Math.Min(100, fraction));
+                            ShowInstallProgress(true, card.Name, text);
                         });
                     },
                     _host.Log,
                     delegate(DownloadProgressInfo info)
                     {
+                        DispatcherQueue.TryEnqueue(() => ShowInstallProgress(true, card.Name, "下载中", info));
                         // 顶部只写汇总：多个插件同时下时各写各的会来回抢（看着就是抽搐）。
                         string summary = _pluginDownloadSession.Update(card.Name, info);
                         if (summary != null)
@@ -3170,9 +3578,27 @@ namespace DeepSeekHarnessLauncher
                                 PluginActionInfoBar.Message = summary;
                             });
                         }
-                    });
+                    }));
 
                 _pluginDownloadSession.Remove(card.Name);
+
+                // 1.6.1：peer 不兼容的插件 DSH 会拒绝加载，用户确认后再走一次带豁免的安装。
+                if (result.NeedsVersionExemption && ConfirmVersionExemption(result))
+                {
+                    _host.Log("插件 " + name + " 与当前 DSH 版本不兼容，"
+                        + "已按用户确认记一次精确版本豁免后重装。");
+                    result = PluginStoreService.Install(
+                        _settings,
+                        spec,
+                        card.ExpectedKey,
+                        card.PushedAt,
+                        card.DefaultBranch,
+                        card.SourceSha,
+                        delegate(string text, double fraction) { },
+                        _host.Log,
+                        null,
+                        true);
+                }
 
                 DispatcherQueue.TryEnqueue(delegate
                 {
@@ -3183,7 +3609,7 @@ namespace DeepSeekHarnessLauncher
                         + (result.Ok
                             ? (result.PnpmFailed ? "（pnpm install 没成功）" : String.Empty)
                             : " · " + (result.Error ?? "未知错误")));
-                    _profilePluginKeys = null;
+                    _pluginInstallationState = null;
                     if (result.Ok)
                     {
                         PluginActionInfoBar.Severity = result.PnpmMissing
@@ -3213,6 +3639,7 @@ namespace DeepSeekHarnessLauncher
 
                     PluginActionInfoBar.IsOpen = true;
                     card.Busy = false;
+                    FinishInstallProgress(true, card.Name);
                     card.PrimaryAction = result.Ok ? "已安装" : "重试";
                     card.PrimaryEnabled = !result.Ok;
                     LoadLocalPlugins();
@@ -3250,6 +3677,7 @@ namespace DeepSeekHarnessLauncher
             }
 
             InstallPluginFromLinkButton.IsEnabled = false;
+            ShowInstallProgress(true, specifier, "准备安装");
             RestartDshFromPluginButton.Visibility = Visibility.Collapsed;
             PluginActionInfoBar.Severity = InfoBarSeverity.Informational;
             PluginActionInfoBar.Title = "正在安装 " + specifier;
@@ -3258,7 +3686,7 @@ namespace DeepSeekHarnessLauncher
 
             _ = System.Threading.Tasks.Task.Run(delegate
             {
-                PluginStoreService.InstallResult result = PluginStoreService.InstallFromSpecifier(
+                PluginStoreService.InstallResult result = TryPluginInstallation(() => PluginStoreService.InstallFromSpecifier(
                     _settings,
                     specifier,
                     delegate(string text, double fraction)
@@ -3271,6 +3699,7 @@ namespace DeepSeekHarnessLauncher
                         DispatcherQueue.TryEnqueue(delegate
                         {
                             PluginActionInfoBar.Message = "安装中 · " + text;
+                            ShowInstallProgress(true, specifier, text);
                         });
                     },
                     _host.Log,
@@ -3290,19 +3719,35 @@ namespace DeepSeekHarnessLauncher
                         DispatcherQueue.TryEnqueue(delegate
                         {
                             PluginActionInfoBar.Message = tail;
+                            ShowInstallProgress(true, specifier, tail);
                         });
-                    });
+                    }));
+
+                // 1.6.1：peer 不兼容的插件 DSH 会拒绝加载，用户确认后再走一次带豁免的安装。
+                if (result.NeedsVersionExemption && ConfirmVersionExemption(result))
+                {
+                    _host.Log("插件 " + specifier + " 与当前 DSH 版本不兼容，"
+                        + "已按用户确认记一次精确版本豁免后重装。");
+                    result = PluginStoreService.InstallFromSpecifier(
+                        _settings,
+                        specifier,
+                        delegate(string text, double fraction) { },
+                        _host.Log,
+                        null,
+                        true);
+                }
 
                 DispatcherQueue.TryEnqueue(delegate
                 {
                     InstallPluginFromLinkButton.IsEnabled = true;
+                    FinishInstallProgress(true, specifier);
                     _host.Log(
                         (result.Ok ? "插件链接安装完成：" : "插件链接安装失败：")
                         + specifier
                         + (result.Ok
                             ? String.Empty
                             : " · " + (result.Error ?? "未知错误")));
-                    _profilePluginKeys = null;
+                    _pluginInstallationState = null;
 
                     if (result.Ok)
                     {
@@ -3415,7 +3860,7 @@ namespace DeepSeekHarnessLauncher
                 {
                     PluginRepairButton.IsEnabled = true;
                     PluginSelfCheckButton.IsEnabled = true;
-                    _profilePluginKeys = null;
+                    _pluginInstallationState = null;
                     LoadLocalPlugins();
 
                     if (String.IsNullOrEmpty(error))
@@ -3697,6 +4142,8 @@ namespace DeepSeekHarnessLauncher
             {
                 Dictionary<string, PluginInstallRecord> records =
                     PluginInstallStore.Load();
+                _pluginRecords = records;
+                _pluginInstallationState = PluginInstallationState.Load(_settings.DshRoot, records);
                 List<DshProfilePlugin> plugins = DshProfileService.ReadPlugins(
                     _settings.DshRoot,
                     records);
@@ -3776,6 +4223,8 @@ namespace DeepSeekHarnessLauncher
             LocalPluginRepeater.ItemsSource = cards;
             _localPlugins = cards;
             RebuildLocalPage();
+            RebuildOnlinePage(false);
+            RebuildFeaturedPage();
             _host.Log("本地插件列表：" + cards.Count + " 个（profile="
                 + DshProfileService.ResolveProfileFilePath(_settings.DshRoot) + "）");
         }
@@ -3952,7 +4401,7 @@ namespace DeepSeekHarnessLauncher
         /// 仓库没放 icon 时这里返回 null，卡片上会显示 GitHub 默认标记。
         /// 接上在线引擎后，这里的主机名要按"大陆 CDN 加速 / 官方源"切换。
         /// </summary>
-        private static ImageSource RepositoryIcon(
+        private ImageSource RepositoryIcon(
             string owner,
             string repo,
             string path)
@@ -3966,10 +4415,7 @@ namespace DeepSeekHarnessLauncher
 
             try
             {
-                return new BitmapImage(
-                    new Uri(
-                        "https://cdn.jsdelivr.net/gh/"
-                        + owner + "/" + repo + "@main/" + path));
+                return RepositoryIconAtBranch(owner, repo, "main", path);
             }
             catch
             {
@@ -4010,6 +4456,7 @@ namespace DeepSeekHarnessLauncher
             LauncherSettingsStore.SetGitHubToken(
                 _settings,
                 GitHubTokenBox.Password);
+            RefreshDeveloperCredentialStatus();
             ShowGitHubTokenStatus(
                 InfoBarSeverity.Success,
                 "已保存",
@@ -4024,6 +4471,7 @@ namespace DeepSeekHarnessLauncher
         {
             GitHubTokenBox.Password = String.Empty;
             LauncherSettingsStore.SetGitHubToken(_settings, String.Empty);
+            RefreshDeveloperCredentialStatus();
             ShowGitHubTokenStatus(
                 InfoBarSeverity.Success,
                 "已清空",
@@ -4237,46 +4685,87 @@ namespace DeepSeekHarnessLauncher
                 skillTab = pluginTab;
                 target = target.Substring(0, tabSeparator);
             }
+            bool feedbackMine = target == "Feedback"
+                && String.Equals(pluginTab, "Mine", StringComparison.OrdinalIgnoreCase);
 
             // Selecting a category resumes its last child; explicit links select that child.
-            if (target == "Basic" || target == "Features" || target == "System")
+            if (target == "Basic" || target == "Features" || target == "System" || target == "UpdatesGroup" || target == "AboutGroup")
                 target = _lastGroupTab.TryGetValue(target, out string last) ? last : "General";
+            bool dynamicPatchPage = target.StartsWith("Patch_", StringComparison.Ordinal);
             string group = GroupOf(target);
             string navTag = group ?? target;
             bool known = navTag == "Home" || navTag == "Basic" || navTag == "Features"
-                || navTag == "System" || navTag == "Updates" || navTag == "About"
-                || navTag == "Downloads" || navTag == "Developer";
+                || navTag == "System" || navTag == "UpdatesGroup"
+                || navTag == "AboutGroup" || navTag == "Downloads" || navTag == "Developer" || navTag == "ServerMetrics";
             if (!known) { target = "General"; group = "Basic"; navTag = "Basic"; }
+
+            // 被补丁 disable 的内置条目不再出现：落点被禁就换一个还能用的页。
+            while (_disabledBuiltinPages.Contains(target)
+                || _disabledBuiltinPages.Contains(navTag))
+            {
+                string fallback = ResolveFallbackPageTag();
+                if (String.Equals(fallback, target, StringComparison.Ordinal))
+                {
+                    break;
+                }
+
+                target = fallback;
+                group = GroupOf(target);
+                navTag = group ?? target;
+            }
 
             HomePage.Visibility = navTag == "Home" ? Visibility.Visible : Visibility.Collapsed;
             BasicPage.Visibility = navTag == "Basic" ? Visibility.Visible : Visibility.Collapsed;
             FeaturesPage.Visibility = navTag == "Features" ? Visibility.Visible : Visibility.Collapsed;
             SystemPage.Visibility = navTag == "System" ? Visibility.Visible : Visibility.Collapsed;
-            UpdatesPage.Visibility = navTag == "Updates" ? Visibility.Visible : Visibility.Collapsed;
-            AboutPage.Visibility = navTag == "About" ? Visibility.Visible : Visibility.Collapsed;
+            UpdatesGroupPage.Visibility = navTag == "UpdatesGroup" ? Visibility.Visible : Visibility.Collapsed;
+            AboutGroupPage.Visibility = navTag == "AboutGroup" ? Visibility.Visible : Visibility.Collapsed;
+            FeedbackAddButton.Visibility = target == "Feedback" ? Visibility.Visible : Visibility.Collapsed;
             DownloadsPage.Visibility = navTag == "Downloads" ? Visibility.Visible : Visibility.Collapsed;
             DeveloperPage.Visibility = navTag == "Developer" ? Visibility.Visible : Visibility.Collapsed;
+            ServerMetricsPage.Visibility = navTag == "ServerMetrics" ? Visibility.Visible : Visibility.Collapsed;
+            if (navTag == "ServerMetrics" && _serverMetricsCancellation == null)
+            {
+                _serverMetricsCancellation = new System.Threading.CancellationTokenSource();
+                _serverMetricsTimer.Start();
+                _presenceHistoryTimer.Start();
+                _ = RefreshServerMetricsAsync();
+                _ = RefreshPresenceHistoryAsync();
+            }
+            else if (navTag != "ServerMetrics")
+            {
+                StopServerMetrics();
+            }
+            if (target == "Feedback")
+            {
+                if (feedbackMine && FeedbackScopePivot != null) FeedbackScopePivot.SelectedIndex = 3;
+                LoadFeedbackAsync();
+            }
             if (group != null)
             {
                 _lastGroupTab[group] = target;
                 Pivot host = group == "Basic" ? BasicTabs
-                    : group == "Features" ? FeaturesTabs : SystemTabs;
-                SelectGroupTab(host, target);
+                    : group == "Features" ? FeaturesTabs
+                    : group == "UpdatesGroup" ? UpdatesTabs
+                    : group == "AboutGroup" ? AboutTabs
+                    : SystemTabs;
+                SelectGroupTab(host, dynamicPatchPage ? "Patches" : target);
+                if (dynamicPatchPage) SelectGroupTab(PatchesTabs, target);
             }
 
             FrameworkElement page = navTag switch
             {
                 "Home" => HomePage, "Features" => FeaturesPage, "System" => SystemPage,
-                "Updates" => UpdatesPage, "About" => AboutPage,
+                "UpdatesGroup" => UpdatesGroupPage, "AboutGroup" => AboutGroupPage,
                 "Downloads" => DownloadsPage,
-                "Developer" => DeveloperPage, _ => BasicPage
+                "Developer" => DeveloperPage, "ServerMetrics" => ServerMetricsPage, _ => BasicPage
             };
             NavigationViewItem item = navTag switch
             {
                 "Home" => HomeNavItem, "Basic" => BasicNavItem,
                 "Features" => FeaturesNavItem, "System" => SystemNavItem,
-                "Updates" => UpdatesNavItem, "About" => AboutNavItem,
-                "Developer" => DeveloperNavItem, _ => DownloadsNavItem
+                "UpdatesGroup" => UpdatesNavItem, "AboutGroup" => AboutNavItem,
+                "Developer" => DeveloperNavItem, "ServerMetrics" => ServerMetricsFooterEntry, _ => DownloadsNavItem
             };
             _suppressNavigation = true;
             try
@@ -4308,14 +4797,15 @@ namespace DeepSeekHarnessLauncher
                 LoadHomePage();
             }
 
-            if (target == "Plugins" && !String.IsNullOrEmpty(pluginTab))
+            if (target == "Plugins")
             {
-                SelectPluginTab(pluginTab);
+                if (_pluginInstallationState != null && !_pluginInstallationState.IsForRoot(_settings.DshRoot)) LoadLocalPlugins();
+                if (!String.IsNullOrEmpty(pluginTab)) SelectPluginTab(pluginTab);
             }
 
             if (target == "Skills")
             {
-                SelectSkillTab(skillTab);
+                if (!String.IsNullOrEmpty(skillTab)) SelectSkillTab(skillTab);
                 LoadLocalSkills();
                 if (!_skillsLoaded)
                 {
@@ -4333,6 +4823,16 @@ namespace DeepSeekHarnessLauncher
             {
                 ApplyPreviewUpdatePhase(skillTab);
                 RefreshInstallerVersion();
+                RefreshPatchInstalledList();
+                RefreshPatchSummary();
+                LoadPatchAvailable(false);
+            }
+
+            if (target == "Patches")
+            {
+                // 补丁页只读磁盘上的页面描述，不联网。
+                RefreshPatchInstalledList();
+                RefreshPatchSummary();
             }
 
             if (target == "About")
@@ -4391,7 +4891,7 @@ namespace DeepSeekHarnessLauncher
             PluginViewTabs.SelectedItem = FeaturedPluginsTab;
         }
 
-        /// <summary>预览用：允许 --settings-preview=Skills:Local 直接落在指定分页。</summary>
+        /// <summary>显式分页链接选择目标；普通技能导航保留当前分页，首次默认官方精选。</summary>
         private void SelectSkillTab(string tab)
         {
             if (String.Equals(tab, "Local", StringComparison.OrdinalIgnoreCase))
@@ -4400,13 +4900,14 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
-            if (String.Equals(tab, "Featured", StringComparison.OrdinalIgnoreCase))
+            if (String.Equals(tab, "Online", StringComparison.OrdinalIgnoreCase)
+                || String.Equals(tab, "Market", StringComparison.OrdinalIgnoreCase))
             {
-                SkillViewTabs.SelectedItem = FeaturedSkillsTab;
+                SkillViewTabs.SelectedItem = MarketSkillsTab;
                 return;
             }
 
-            SkillViewTabs.SelectedItem = MarketSkillsTab;
+            SkillViewTabs.SelectedItem = FeaturedSkillsTab;
         }
 
         private void AnimatePage(FrameworkElement page)
@@ -4702,6 +5203,7 @@ namespace DeepSeekHarnessLauncher
                 ? NavigationViewPaneDisplayMode.LeftCompact
                 : NavigationViewPaneDisplayMode.Left;
             SettingsNavigationView.IsPaneOpen = !compact;
+            ApplyPresenceFooterLayout();
 
             double measuredWidth = SettingsScroller.ActualWidth > 0
                 ? SettingsScroller.ActualWidth
@@ -5265,9 +5767,12 @@ namespace DeepSeekHarnessLauncher
                 GetSelectedTag(DshUpdateModeComboBox, "Off") != "Off";
             bool pluginUpdatesEnabled =
                 GetSelectedTag(PluginUpdateModeComboBox, "Off") != "Off";
+            bool patchUpdatesEnabled =
+                GetSelectedTag(PatchUpdateModeComboBox, "Check") != "Off";
             bool anyUpdatesEnabled = launcherUpdatesEnabled
                 || dshUpdatesEnabled
-                || pluginUpdatesEnabled;
+                || pluginUpdatesEnabled
+                || patchUpdatesEnabled;
 
             UpdateIntervalComboBox.IsEnabled = anyUpdatesEnabled;
             UpdateReminderToggle.IsEnabled = anyUpdatesEnabled;
@@ -5392,7 +5897,7 @@ namespace DeepSeekHarnessLauncher
 
         private void OpenFeedback_Click(object sender, RoutedEventArgs args)
         {
-            OpenUrl("https://github.com/" + Constants.Repository + "/issues/new");
+            SelectPage("Feedback");
         }
 
         private void OpenBilibili_Click(object sender, RoutedEventArgs args)
@@ -5533,15 +6038,39 @@ namespace DeepSeekHarnessLauncher
 
         private void SettingsWindow_Closed(object sender, WindowEventArgs args)
         {
+            _feedbackCancellation?.Cancel();
+            _feedbackCancellation?.Dispose();
+            _feedbackCancellation = null;
+            _developerFeedbackCancellation?.Cancel();
+            _developerFeedbackCancellation?.Dispose();
+            _developerFeedbackCancellation = null;
+            _remoteIconCancellation.Cancel();
+            StopServerMetrics();
+            _presenceRefreshTimer.Stop();
+            _host.SetPresencePollingEnabled(false);
+            _serverMetricsClient.Dispose();
             _downloadCenterTimer?.Stop();
             SettingsRoot.SizeChanged -= SettingsRoot_SizeChanged;
             SettingsRoot.RemoveHandler(
                 UIElement.PointerPressedEvent,
                 new PointerEventHandler(SettingsRoot_PointerPressed));
             _host.UpdateStateChanged -= Host_UpdateStateChanged;
+            _host.ServiceStateChanged -= Host_ServiceStateChanged;
+            _host.NoticePresenceChanged -= RefreshNoticePresence;
             AcceleratorLatencyService.Changed -= AcceleratorLatency_Changed;
             LauncherAppearance.Unregister(this);
             Destroyed();
+        }
+
+        private void StopServerMetrics()
+        {
+            _serverMetricsTimer.Stop();
+            _presenceHistoryTimer.Stop();
+            var cancellation = _serverMetricsCancellation;
+            _serverMetricsCancellation = null;
+            if (cancellation == null) return;
+            cancellation.Cancel();
+            cancellation.Dispose();
         }
 
         private void SettingsRoot_PointerPressed(
@@ -5564,7 +6093,7 @@ namespace DeepSeekHarnessLauncher
                     || current is TextBox
                     || current is PasswordBox
                     || current is ComboBox
-                    || current is Microsoft.UI.Xaml.Controls.Button
+                    || current is Microsoft.UI.Xaml.Controls.Primitives.ButtonBase
                     || current is CheckBox
                     || current is RadioButton
                     || current is ToggleSwitch
@@ -6098,8 +6627,7 @@ namespace DeepSeekHarnessLauncher
         }
 
         /// <summary>
-        /// 仓库头像。走加速档位：`github.com/&lt;owner&gt;.png` 在国内直连经常超时，
-        /// 套一层加速前缀才看得见（插件页的头像用的是市场图床，所以一直正常）。
+        /// 仓库头像沿用图片专用的公共 CDN/镜像候选，不经过包下载后端。
         /// </summary>
         private ImageSource SkillAvatar(string owner)
         {
@@ -6111,16 +6639,7 @@ namespace DeepSeekHarnessLauncher
             string url = "https://github.com/" + owner.Trim() + ".png?size=64";
             try
             {
-                if (GitHubAccelerator.IsEnabled(_settings))
-                {
-                    List<string> candidates = GitHubAccelerator.Candidates(url, _settings);
-                    if (candidates.Count > 0)
-                    {
-                        url = candidates[0];
-                    }
-                }
-
-                return new BitmapImage(new Uri(url));
+                return RemoteIcon(url);
             }
             catch
             {
@@ -6802,6 +7321,7 @@ namespace DeepSeekHarnessLauncher
             card.PrimaryEnabled = false;
             card.PrimaryAction = "安装中";
             card.ProgressValue = 0;
+            ShowInstallProgress(false, card.Name, "准备安装");
             SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
             SkillActionInfoBar.Title = "正在安装 " + card.Name;
             SkillActionInfoBar.Message = card.Repository
@@ -6813,7 +7333,7 @@ namespace DeepSeekHarnessLauncher
             _ = System.Threading.Tasks.Task.Run(delegate
             {
                 SkillInstallService.InstallResult installed =
-                    SkillInstallService.Install(
+                    TrySkillInstallation(() => SkillInstallService.Install(
                         _settings,
                         item,
                         delegate(string text, double value)
@@ -6822,11 +7342,13 @@ namespace DeepSeekHarnessLauncher
                             {
                                 card.PrimaryAction = ProgressActionLabel(text);
                                 card.ProgressValue = value;
+                                ShowInstallProgress(false, card.Name, text);
                             });
                         },
                         _host.Log,
                         delegate(DownloadProgressInfo info)
                         {
+                            DispatcherQueue.TryEnqueue(() => ShowInstallProgress(false, card.Name, "下载中", info));
                             // 顶部只写汇总，多个技能同时下时不会互相抢那一句话。
                             string summary = _skillDownloadSession.Update(card.Name, info);
                             if (summary != null)
@@ -6836,7 +7358,7 @@ namespace DeepSeekHarnessLauncher
                                     SkillActionInfoBar.Message = summary;
                                 });
                             }
-                        });
+                        }));
 
                 _skillDownloadSession.Remove(card.Name);
 
@@ -6844,6 +7366,7 @@ namespace DeepSeekHarnessLauncher
                 {
                     card.Busy = false;
                     card.PrimaryEnabled = true;
+                    FinishInstallProgress(false, card.Name);
                     card.PrimaryAction = installed.Ok ? "重新安装" : "安装";
                     SkillActionInfoBar.Severity = installed.Ok
                         ? InfoBarSeverity.Success
@@ -7022,6 +7545,7 @@ namespace DeepSeekHarnessLauncher
         {
             SkillActionInfoBar.Severity = InfoBarSeverity.Informational;
             SkillActionInfoBar.Title = "正在应用 " + set.RepositorySlug;
+            ShowInstallProgress(false, set.RepositorySlug, "准备应用技能集");
             SkillActionInfoBar.Message = "安装 " + diff.Install.Count
                 + " 个，卸载 " + diff.Uninstall.Count + " 个。";
             SkillActionInfoBar.IsOpen = true;
@@ -7032,6 +7556,8 @@ namespace DeepSeekHarnessLauncher
 
             SkillMarketService.SkillMarketItem template = TemplateFor(set);
 
+            try
+            {
             await System.Threading.Tasks.Task.Run(delegate
             {
                 if (diff.Install.Count > 0)
@@ -7053,9 +7579,11 @@ namespace DeepSeekHarnessLauncher
                                     {
                                         SkillActionInfoBar.Message = ProgressActionLabel(text)
                                             + "（" + (int)value + "%）";
+                                        ShowInstallProgress(false, set.RepositorySlug, text);
                                     });
                                 },
-                                _host.Log);
+                                _host.Log,
+                                info => DispatcherQueue.TryEnqueue(() => ShowInstallProgress(false, set.RepositorySlug, "下载中", info)));
                         for (int index = 0; index < results.Count; index++)
                         {
                             if (results[index].Ok)
@@ -7085,7 +7613,13 @@ namespace DeepSeekHarnessLauncher
                     }
                 }
             });
-
+            }
+            catch (Exception exception)
+            {
+                failures.Add(exception.Message);
+                _host.Log("技能集安装异常：" + exception);
+            }
+            finally { FinishInstallProgress(false, set.RepositorySlug); }
             // 重新扫描本地状态，卡片数量与按钮以实际结果为准。
             RebuildSkillSetCards();
             RebuildSkillMarketPage();
@@ -8480,22 +9014,21 @@ namespace DeepSeekHarnessLauncher
                     GitHubAccelerator.AutoSource,
                     StringComparison.OrdinalIgnoreCase);
 
-                UpdateSourceCustomItem.Visibility = auto
-                    ? Visibility.Collapsed
-                    : Visibility.Visible;
+                bool backend = String.Equals(selectedSource, BackendDownloadSource.SourceId, StringComparison.OrdinalIgnoreCase);
+                UpdateSourceCustomItem.Visibility = Visibility.Visible;
                 if (!official)
                 {
                     SelectTaggedItem(
                         UpdateSourceComboBox,
-                        auto ? "Accelerated" : "Custom");
+                        backend ? "backend" : auto ? "Accelerated" : "Custom");
                 }
 
                 SelectAcceleratorSource(selectedSource);
 
-                AcceleratorAdvancedToggle.Visibility = official
+                AcceleratorAdvancedToggle.Visibility = official || backend
                     ? Visibility.Collapsed
                     : Visibility.Visible;
-                if (official && _acceleratorAdvancedOpen)
+                if ((official || backend) && _acceleratorAdvancedOpen)
                 {
                     _acceleratorAdvancedOpen = false;
                     AcceleratorAdvancedPanel.Visibility = Visibility.Collapsed;
@@ -9761,9 +10294,9 @@ namespace DeepSeekHarnessLauncher
                     StringComparer.OrdinalIgnoreCase)
                 {
                     { "Featured", DeveloperFeaturedPanel },
-                    { "Sources", DeveloperSourcesPanel },
-                    { "Announce", DeveloperAnnouncePanel },
-                    { "Roles", DeveloperRolesPanel }
+                    { "Messages", DeveloperMessagesPanel },
+                    { "Feedback", DeveloperFeedbackPanel },
+                    { "Tools", DeveloperToolsPanel }
                 };
             }
 
@@ -9774,7 +10307,7 @@ namespace DeepSeekHarnessLauncher
             object sender,
             SelectionChangedEventArgs args)
         {
-            if (DeveloperModuleList == null)
+            if (DeveloperModuleList == null || _initializing)
             {
                 return;
             }
@@ -9797,15 +10330,21 @@ namespace DeepSeekHarnessLauncher
                     ? Visibility.Visible
                     : Visibility.Collapsed;
             }
+            if (String.Equals(tag, "Feedback", StringComparison.OrdinalIgnoreCase))
+            {
+                _ = LoadDeveloperFeedbackCoreAsync();
+            }
         }
 
         /// <summary>进入开发者页。第一次进入时从仓库把两份推荐列表读回来。</summary>
         private void LoadDeveloperCenter()
         {
+            RefreshDeveloperCredentialStatus();
             if (DeveloperModuleList != null && DeveloperModuleList.SelectedItem == null)
             {
                 DeveloperModuleList.SelectedIndex = 0;
             }
+            DeveloperModule_SelectionChanged(DeveloperModuleList, null);
 
             if (_developerLoaded)
             {
@@ -9813,9 +10352,9 @@ namespace DeepSeekHarnessLauncher
             }
 
             _developerLoaded = true;
+            InitializeDeveloperMessages();
             LoadDeveloperPluginsFromRepo();
             LoadDeveloperSkillsFromRepo();
-            LoadDeveloperAnnouncementsFromRepo();
         }
 
         private void ReportDeveloper(bool ok, string title, string message)
@@ -11268,6 +11807,1722 @@ namespace DeepSeekHarnessLauncher
             BackupInfoBar.Severity = severity;
             BackupInfoBar.Message = message;
             BackupInfoBar.IsOpen = true;
+        }
+
+        // ================================================================ 补丁页
+        //
+        // 规格 1.7：更新页「补丁」子栏 + 补丁策略 + 补丁提供的动态页面。
+        // 一律补丁优先：overrides 命中的内置页改渲染补丁页，disable 的内置条目直接不出现，
+        // 内置逻辑不得反向覆盖补丁页。
+
+        private List<PatchFeedEntry> _availablePatches = new List<PatchFeedEntry>();
+        private int _installedPatchCount;
+        private bool _patchAvailableLoading;
+        private bool _patchBusy;
+
+        /// <summary>补丁提供的页面（非覆盖型），挂进「补丁」分组。</summary>
+        private readonly List<PatchPageDefinition> _patchPages =
+            new List<PatchPageDefinition>();
+
+        /// <summary>动态补丁分页的标签，重来时要从 _groupTabs 里摘掉。</summary>
+        private readonly List<string> _patchTabTags = new List<string>();
+
+        /// <summary>被补丁 disable 掉的内置页标签（Home / Service 这种）。</summary>
+        private readonly HashSet<string> _disabledBuiltinPages =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>overrides 命中的内置页 key → 补丁页定义。</summary>
+        private readonly Dictionary<string, PatchPageDefinition> _patchPageOverrides =
+            new Dictionary<string, PatchPageDefinition>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>已经插进内置页里的补丁视图，重新应用时要能摘掉。</summary>
+        private readonly Dictionary<string, FrameworkElement> _appliedPatchPageViews =
+            new Dictionary<string, FrameworkElement>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>内置页原有子元素的可见性，卸载 / 重新应用后放回。</summary>
+        private readonly Dictionary<string, List<Visibility>> _patchPageOriginalVisibility =
+            new Dictionary<string, List<Visibility>>(StringComparer.OrdinalIgnoreCase);
+
+        // ---------------------------------------------------------------- 文案与格式
+
+        /// <summary>kind → 中文名，四种固定：resource / page / script / binary。</summary>
+        private static string DescribePatchKind(string kind)
+        {
+            switch ((kind ?? String.Empty).Trim().ToLowerInvariant())
+            {
+                case "resource":
+                    return "资源";
+                case "page":
+                    return "页面";
+                case "script":
+                    return "脚本";
+                case "binary":
+                    return "程序文件";
+                default:
+                    return String.IsNullOrWhiteSpace(kind) ? "未知" : kind;
+            }
+        }
+
+        /// <summary>高危 = risk:high，或者 kind 是 script / binary。</summary>
+        private static bool IsPatchHighRisk(string kind, string risk)
+        {
+            if (String.Equals(risk, "high", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            string normalized = (kind ?? String.Empty).Trim();
+            return String.Equals(normalized, "script", StringComparison.OrdinalIgnoreCase)
+                || String.Equals(normalized, "binary", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string DescribePatchRisk(string kind, string risk)
+        {
+            return IsPatchHighRisk(kind, risk) ? "高风险" : "低风险";
+        }
+
+        private static string FormatPatchSize(long size)
+        {
+            if (size <= 0)
+            {
+                return "大小未知";
+            }
+
+            if (size < 1024)
+            {
+                return size + " B";
+            }
+
+            if (size < 1024 * 1024)
+            {
+                return (size / 1024.0).ToString("0.0") + " KB";
+            }
+
+            return (size / (1024.0 * 1024.0)).ToString("0.0") + " MB";
+        }
+
+        /// <summary>installed.json 里存的是 UTC 字符串，界面上换成本地时间。</summary>
+        private static string FormatPatchTime(string appliedAtUtc)
+        {
+            if (String.IsNullOrWhiteSpace(appliedAtUtc))
+            {
+                return "时间未知";
+            }
+
+            DateTime parsed;
+            if (DateTime.TryParse(
+                appliedAtUtc,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AdjustToUniversal
+                    | System.Globalization.DateTimeStyles.AssumeUniversal,
+                out parsed))
+            {
+                return parsed.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+            }
+
+            return appliedAtUtc;
+        }
+
+        /// <summary>已安装补丁没有独立来源字段，用落盘记录拼一句来源说明。</summary>
+        private static string DescribePatchSource(PatchInstallRecord record)
+        {
+            StringBuilder text = new StringBuilder();
+            if (!String.IsNullOrWhiteSpace(record.Script))
+            {
+                text.Append("脚本 ");
+                text.Append(record.Script);
+            }
+
+            if (record.Files != null && record.Files.Count > 0)
+            {
+                if (text.Length > 0)
+                {
+                    text.Append(" · ");
+                }
+
+                text.Append("落地 ");
+                text.Append(record.Files.Count);
+                text.Append(" 个文件");
+            }
+
+            if (record.Overrides != null && record.Overrides.Count > 0)
+            {
+                if (text.Length > 0)
+                {
+                    text.Append(" · ");
+                }
+
+                text.Append("覆盖 ");
+                text.Append(String.Join("、", record.Overrides));
+            }
+
+            if (record.Disable != null && record.Disable.Count > 0)
+            {
+                if (text.Length > 0)
+                {
+                    text.Append(" · ");
+                }
+
+                text.Append("禁用 ");
+                text.Append(String.Join("、", record.Disable));
+            }
+
+            if (!String.IsNullOrWhiteSpace(record.Sha256))
+            {
+                if (text.Length > 0)
+                {
+                    text.Append(" · ");
+                }
+
+                text.Append("sha256 ");
+                text.Append(record.Sha256.Length > 12
+                    ? record.Sha256.Substring(0, 12)
+                    : record.Sha256);
+            }
+
+            return text.Length == 0 ? "来源未记录" : text.ToString();
+        }
+
+        // ---------------------------------------------------------------- 导航：补丁优先
+
+        /// <summary>内置页 key（补丁清单里的 page:xxx）→ 现有页标签。</summary>
+        private static string BuiltinPageTag(string key)
+        {
+            switch ((key ?? String.Empty).Trim().ToLowerInvariant())
+            {
+                case "home":
+                    return "Home";
+                case "updates":
+                    return "Updates";
+                case "about":
+                    return "About";
+                case "downloads":
+                    return "Downloads";
+                case "developer":
+                    return "Developer";
+                case "general":
+                    return "General";
+                case "alerts":
+                    return "Alerts";
+                case "theme":
+                    return "Theme";
+                case "api":
+                    return "Api";
+                case "plugins":
+                    return "Plugins";
+                case "skills":
+                    return "Skills";
+                case "service":
+                    return "Service";
+                case "components":
+                    return "Components";
+                default:
+                    return null;
+            }
+        }
+
+        /// <summary>页标签 → 内置页 key，用来查 overrides。</summary>
+        private static string BuiltinPageKey(string tag)
+        {
+            switch (tag)
+            {
+                case "Home":
+                    return "home";
+                case "Updates":
+                    return "updates";
+                case "About":
+                    return "about";
+                case "Downloads":
+                    return "downloads";
+                case "Developer":
+                    return "developer";
+                case "General":
+                    return "general";
+                case "Alerts":
+                    return "alerts";
+                case "Theme":
+                    return "theme";
+                case "Api":
+                    return "api";
+                case "Plugins":
+                    return "plugins";
+                case "Skills":
+                    return "skills";
+                case "Service":
+                    return "service";
+                case "Components":
+                    return "components";
+                default:
+                    return null;
+            }
+        }
+
+        private FrameworkElement ResolveBuiltinPage(string tag)
+        {
+            switch (tag)
+            {
+                case "Home":
+                    return HomePage;
+                case "Updates":
+                    return UpdatesPage;
+                case "About":
+                    return AboutPage;
+                case "Downloads":
+                    return DownloadsPage;
+                case "Developer":
+                    return DeveloperPage;
+                case "General":
+                    return GeneralPage;
+                case "Alerts":
+                    return AlertsPage;
+                case "Theme":
+                    return ThemePage;
+                case "Api":
+                    return ApiPage;
+                case "Plugins":
+                    return PluginsPage;
+                case "Skills":
+                    return SkillsPage;
+                case "Service":
+                    return ServicePage;
+                case "Components":
+                    return ComponentsPage;
+                default:
+                    return null;
+            }
+        }
+
+        /// <summary>补丁 disable / overrides 命中的内置页：导航不出现、搜索索引不收。</summary>
+        private bool IsBuiltinPageHiddenByPatch(string pageTag)
+        {
+            if (String.IsNullOrWhiteSpace(pageTag))
+            {
+                return false;
+            }
+
+            if (_disabledBuiltinPages.Contains(pageTag))
+            {
+                return true;
+            }
+
+            string key = BuiltinPageKey(pageTag);
+            return !String.IsNullOrWhiteSpace(key) && _patchPageOverrides.ContainsKey(key);
+        }
+
+        /// <summary>被补丁禁用的内置页不能当落点，按固定顺序挑一个还能用的。</summary>
+        private string ResolveFallbackPageTag()
+        {
+            string[] candidates = { "Home", "General", "Updates", "About" };
+            for (int index = 0; index < candidates.Length; index++)
+            {
+                if (!_disabledBuiltinPages.Contains(candidates[index]))
+                {
+                    return candidates[index];
+                }
+            }
+
+            return "General";
+        }
+
+        /// <summary>
+        /// 把补丁对导航的影响整份落下来。可重复调用：先恢复没有补丁时的样子，再按当前
+        /// overrides / disable / 页面清单重建。
+        /// </summary>
+        private void ApplyPatchNavigation()
+        {
+            Dictionary<string, PatchPageDefinition> overrides = null;
+            HashSet<string> disabled = null;
+            List<PatchPageDefinition> pages = null;
+            try
+            {
+                overrides = PatchPageRenderer.PageOverrides();
+                disabled = PatchPageRenderer.DisabledNavKeys();
+                pages = PatchPageRenderer.LoadPages();
+            }
+            catch (Exception exception)
+            {
+                _host.Log("补丁页面读取失败: " + exception.Message);
+            }
+
+            _patchPageOverrides.Clear();
+            if (overrides != null)
+            {
+                foreach (KeyValuePair<string, PatchPageDefinition> pair in overrides)
+                {
+                    if (!String.IsNullOrWhiteSpace(pair.Key) && pair.Value != null)
+                    {
+                        _patchPageOverrides[pair.Key.Trim()] = pair.Value;
+                    }
+                }
+            }
+
+            _disabledBuiltinPages.Clear();
+            if (disabled != null)
+            {
+                foreach (string key in disabled)
+                {
+                    string tag = BuiltinPageTag(key);
+                    if (!String.IsNullOrWhiteSpace(tag))
+                    {
+                        _disabledBuiltinPages.Add(tag);
+                    }
+                }
+            }
+
+            _patchPages.Clear();
+            if (pages != null)
+            {
+                for (int index = 0; index < pages.Count; index++)
+                {
+                    PatchPageDefinition page = pages[index];
+                    if (page == null || String.IsNullOrWhiteSpace(page.PageKey))
+                    {
+                        continue;
+                    }
+
+                    if (_patchPageOverrides.ContainsKey(page.PageKey.Trim()))
+                    {
+                        // 覆盖型不单独挂导航，走被覆盖的那个内置页。
+                        continue;
+                    }
+
+                    _patchPages.Add(page);
+                }
+            }
+
+            HideDisabledBuiltinEntries();
+            ApplyPatchPageOverrides();
+            BuildPatchPageTabs();
+        }
+
+        /// <summary>补丁可能带来页面也可能撤掉页面，导航 + 搜索索引整份重来。</summary>
+        private void RebuildPatchNavigationAndSearch()
+        {
+            ApplyPatchNavigation();
+            BuildSettingsSearchIndex();
+        }
+
+        private void HideDisabledBuiltinEntries()
+        {
+            // 先恢复"没有补丁"时的可见性，卸载补丁后条目要回来。
+            ResetBuiltinNavVisibility();
+
+            HideBuiltinEntry("home", HomeNavItem);
+            HideBuiltinEntry("updates", UpdatesNavItem);
+            HideBuiltinEntry("about", AboutNavItem);
+            HideBuiltinEntry("downloads", DownloadsNavItem);
+            HideBuiltinEntry("developer", DeveloperNavItem);
+            HideBuiltinEntry("general", null);
+            HideBuiltinEntry("alerts", null);
+            HideBuiltinEntry("theme", null);
+            HideBuiltinEntry("api", null);
+            HideBuiltinEntry("plugins", null);
+            HideBuiltinEntry("skills", null);
+            HideBuiltinEntry("service", null);
+            HideBuiltinEntry("components", null);
+
+            // 组内子页被禁完就把一级入口收起来，免得点进去是个空 Pivot。
+            CollapseGroupWhenEmpty(BasicTabs, BasicNavItem);
+            CollapseGroupWhenEmpty(FeaturesTabs, FeaturesNavItem);
+            CollapseGroupWhenEmpty(SystemTabs, SystemNavItem);
+        }
+
+        /// <summary>
+        /// 只恢复补丁能禁用的那些条目；下载任务是"有任务才出现"、开发者是隐藏入口，
+        /// 这两个的可见性有自己的规则，不在这里动。
+        /// </summary>
+        private void ResetBuiltinNavVisibility()
+        {
+            HomeNavItem.Visibility = Visibility.Visible;
+            BasicNavItem.Visibility = Visibility.Visible;
+            FeaturesNavItem.Visibility = Visibility.Visible;
+            SystemNavItem.Visibility = Visibility.Visible;
+            UpdatesNavItem.Visibility = Visibility.Visible;
+            AboutNavItem.Visibility = Visibility.Visible;
+            ShowAllPivotTabs(BasicTabs);
+            ShowAllPivotTabs(FeaturesTabs);
+            ShowAllPivotTabs(SystemTabs);
+            ShowAllPivotTabs(AboutTabs);
+        }
+
+        private static void ShowAllPivotTabs(Pivot pivot)
+        {
+            if (pivot == null)
+            {
+                return;
+            }
+
+            for (int index = 0; index < pivot.Items.Count; index++)
+            {
+                if (pivot.Items[index] is PivotItem item)
+                {
+                    item.Visibility = Visibility.Visible;
+                }
+            }
+        }
+
+        private void HideBuiltinEntry(string key, NavigationViewItem navItem)
+        {
+            string tag = BuiltinPageTag(key);
+            if (String.IsNullOrWhiteSpace(tag) || !_disabledBuiltinPages.Contains(tag))
+            {
+                return;
+            }
+
+            if (navItem != null)
+            {
+                navItem.Visibility = Visibility.Collapsed;
+            }
+
+            PivotItem tab;
+            if (_groupTabs.TryGetValue(tag, out tab))
+            {
+                tab.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        private static void CollapseGroupWhenEmpty(
+            Pivot pivot,
+            NavigationViewItem navItem)
+        {
+            if (pivot == null || navItem == null || pivot.Items.Count == 0)
+            {
+                return;
+            }
+
+            for (int index = 0; index < pivot.Items.Count; index++)
+            {
+                if (pivot.Items[index] is PivotItem item
+                    && item.Visibility == Visibility.Visible)
+                {
+                    return;
+                }
+            }
+
+            navItem.Visibility = Visibility.Collapsed;
+        }
+
+        // ---------------------------------------------------------------- overrides
+
+        /// <summary>
+        /// overrides 命中的内置页：内置内容整体收起来，在最前面插一块补丁页视图。
+        /// 内置内容不删也不改，补丁撤掉后原样放回 —— 补丁优先。
+        /// </summary>
+        private void ApplyPatchPageOverrides()
+        {
+            RemovePatchPageOverrides();
+            foreach (KeyValuePair<string, PatchPageDefinition> pair in _patchPageOverrides)
+            {
+                string tag = BuiltinPageTag(pair.Key);
+                Panel host = ResolveBuiltinPage(tag) as Panel;
+                if (host == null)
+                {
+                    _host.Log("补丁覆盖的页找不到落点：page:" + pair.Key);
+                    continue;
+                }
+
+                FrameworkElement view = BuildPatchPageView(pair.Value);
+                host.Children.Insert(0, view);
+
+                List<Visibility> previous = new List<Visibility>();
+                for (int index = 1; index < host.Children.Count; index++)
+                {
+                    FrameworkElement child = host.Children[index] as FrameworkElement;
+                    previous.Add(child == null ? Visibility.Visible : child.Visibility);
+                    if (child != null)
+                    {
+                        child.Visibility = Visibility.Collapsed;
+                    }
+                }
+
+                _appliedPatchPageViews[pair.Key] = view;
+                _patchPageOriginalVisibility[pair.Key] = previous;
+            }
+        }
+
+        private void RemovePatchPageOverrides()
+        {
+            foreach (KeyValuePair<string, FrameworkElement> pair in _appliedPatchPageViews)
+            {
+                Panel parent = pair.Value.Parent as Panel;
+                if (parent != null)
+                {
+                    parent.Children.Remove(pair.Value);
+                }
+
+                List<Visibility> previous;
+                Panel page = ResolveBuiltinPage(BuiltinPageTag(pair.Key)) as Panel;
+                if (page == null
+                    || !_patchPageOriginalVisibility.TryGetValue(pair.Key, out previous))
+                {
+                    continue;
+                }
+
+                for (int index = 0;
+                    index < page.Children.Count && index < previous.Count;
+                    index++)
+                {
+                    FrameworkElement child = page.Children[index] as FrameworkElement;
+                    if (child != null)
+                    {
+                        child.Visibility = previous[index];
+                    }
+                }
+            }
+
+            _appliedPatchPageViews.Clear();
+            _patchPageOriginalVisibility.Clear();
+        }
+
+        // ---------------------------------------------------------------- 补丁页渲染
+
+        /// <summary>把补丁页描述渲染成能直接塞进设置页的一块内容。</summary>
+        private FrameworkElement BuildPatchPageView(PatchPageDefinition page)
+        {
+            var root = new StackPanel { Spacing = 16 };
+            var card = new Border();
+            Style cardStyle = SettingsRoot.Resources["SettingsCardStyle"] as Style;
+            if (cardStyle != null)
+            {
+                card.Style = cardStyle;
+            }
+
+            var body = new StackPanel { Spacing = 12 };
+            card.Child = body;
+
+            if (page.Sections != null)
+            {
+                for (int index = 0; index < page.Sections.Count; index++)
+                {
+                    AddPatchSection(body, page.Sections[index]);
+                }
+            }
+
+            if (body.Children.Count == 0)
+            {
+                body.Children.Add(new TextBlock
+                {
+                    FontSize = 13,
+                    Text = "这个补丁页没有内容。",
+                    TextWrapping = TextWrapping.Wrap
+                });
+            }
+
+            root.Children.Add(card);
+
+            // 页脚来源说明：内置页被覆盖时不报错，只在这里说明是谁提供的。
+            var footer = new TextBlock { TextWrapping = TextWrapping.Wrap };
+            ApplyPatchDescriptionStyle(footer);
+            footer.Text = String.IsNullOrWhiteSpace(page.Summary)
+                ? "由补丁 " + (String.IsNullOrWhiteSpace(page.Id) ? page.PageKey : page.Id) + " 提供。"
+                : page.Summary;
+            root.Children.Add(footer);
+            return root;
+        }
+
+        private void AddPatchSection(Panel body, PatchPageSection section)
+        {
+            if (section == null)
+            {
+                return;
+            }
+
+            switch ((section.Type ?? String.Empty).Trim().ToLowerInvariant())
+            {
+                case "heading":
+                {
+                    body.Children.Add(new TextBlock
+                    {
+                        FontSize = 16,
+                        FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                        Text = section.Label ?? String.Empty,
+                        TextWrapping = TextWrapping.Wrap
+                    });
+                    break;
+                }
+
+                case "text":
+                {
+                    if (!String.IsNullOrWhiteSpace(section.Label))
+                    {
+                        body.Children.Add(CreatePatchLabel(section.Label));
+                    }
+
+                    body.Children.Add(new TextBlock
+                    {
+                        FontSize = 13,
+                        Text = section.Value ?? String.Empty,
+                        TextWrapping = TextWrapping.Wrap
+                    });
+                    break;
+                }
+
+                case "list":
+                {
+                    if (!String.IsNullOrWhiteSpace(section.Label))
+                    {
+                        body.Children.Add(CreatePatchLabel(section.Label));
+                    }
+
+                    var list = new StackPanel { Spacing = 4 };
+                    if (section.Items != null)
+                    {
+                        for (int index = 0; index < section.Items.Count; index++)
+                        {
+                            list.Children.Add(new TextBlock
+                            {
+                                FontSize = 13,
+                                Text = "· " + (section.Items[index] ?? String.Empty),
+                                TextWrapping = TextWrapping.Wrap
+                            });
+                        }
+                    }
+
+                    if (list.Children.Count == 0)
+                    {
+                        list.Children.Add(CreatePatchEmptyLine());
+                    }
+
+                    body.Children.Add(list);
+                    break;
+                }
+
+                case "keyvalue":
+                {
+                    if (!String.IsNullOrWhiteSpace(section.Label))
+                    {
+                        body.Children.Add(CreatePatchLabel(section.Label));
+                    }
+
+                    var rows = new StackPanel { Spacing = 6 };
+                    if (section.Items != null)
+                    {
+                        for (int index = 0; index < section.Items.Count; index++)
+                        {
+                            rows.Children.Add(CreatePatchKeyValueRow(section.Items[index]));
+                        }
+                    }
+
+                    if (rows.Children.Count == 0)
+                    {
+                        rows.Children.Add(CreatePatchEmptyLine());
+                    }
+
+                    body.Children.Add(rows);
+                    break;
+                }
+
+                case "link":
+                {
+                    string url = section.Url;
+                    var link = new HyperlinkButton
+                    {
+                        Content = String.IsNullOrWhiteSpace(section.Label)
+                            ? (url ?? String.Empty)
+                            : section.Label
+                    };
+                    if (!String.IsNullOrWhiteSpace(url))
+                    {
+                        try
+                        {
+                            link.NavigateUri = new Uri(url);
+                        }
+                        catch
+                        {
+                        }
+                    }
+
+                    link.Click += delegate
+                    {
+                        if (String.IsNullOrWhiteSpace(url))
+                        {
+                            return;
+                        }
+
+                        string openError;
+                        if (!UrlLauncher.TryOpen(url, out openError))
+                        {
+                            ShowPatchInfo(InfoBarSeverity.Error, "打不开这个链接", openError);
+                        }
+                    };
+                    body.Children.Add(link);
+                    break;
+                }
+
+                case "action":
+                {
+                    string action = section.Action;
+                    var button = new Button
+                    {
+                        Content = String.IsNullOrWhiteSpace(section.Label)
+                            ? "执行"
+                            : section.Label,
+                        HorizontalAlignment = HorizontalAlignment.Left
+                    };
+                    Style actionStyle =
+                        SettingsRoot.Resources["SettingsActionButtonStyle"] as Style;
+                    if (actionStyle != null)
+                    {
+                        button.Style = actionStyle;
+                    }
+
+                    button.Click += delegate { RunPatchPageAction(action); };
+                    body.Children.Add(button);
+                    break;
+                }
+
+                default:
+                {
+                    if (!String.IsNullOrWhiteSpace(section.Value))
+                    {
+                        body.Children.Add(new TextBlock
+                        {
+                            FontSize = 13,
+                            Text = section.Value,
+                            TextWrapping = TextWrapping.Wrap
+                        });
+                    }
+
+                    break;
+                }
+            }
+        }
+
+        private TextBlock CreatePatchLabel(string label)
+        {
+            var block = new TextBlock { Text = label };
+            Style titleStyle = SettingsRoot.Resources["SettingsRowTitleTextStyle"] as Style;
+            if (titleStyle != null)
+            {
+                block.Style = titleStyle;
+            }
+            else
+            {
+                block.FontSize = 14;
+            }
+
+            return block;
+        }
+
+        private static TextBlock CreatePatchEmptyLine()
+        {
+            return new TextBlock
+            {
+                FontSize = 12,
+                Text = "这块是空的。",
+                TextWrapping = TextWrapping.Wrap
+            };
+        }
+
+        private Grid CreatePatchKeyValueRow(string item)
+        {
+            string text = item ?? String.Empty;
+            int separator = text.IndexOf('=');
+            string key = separator >= 0 ? text.Substring(0, separator) : text;
+            string value = separator >= 0 ? text.Substring(separator + 1) : String.Empty;
+
+            var row = new Grid { ColumnSpacing = 12, MinHeight = 28 };
+            row.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = new GridLength(1, GridUnitType.Star)
+            });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var keyBlock = new TextBlock { FontSize = 13, Text = key, TextWrapping = TextWrapping.Wrap };
+            ApplyPatchDescriptionStyle(keyBlock);
+            var valueBlock = new TextBlock
+            {
+                FontSize = 13,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Text = value,
+                TextWrapping = TextWrapping.Wrap
+            };
+            Grid.SetColumn(valueBlock, 1);
+            row.Children.Add(keyBlock);
+            row.Children.Add(valueBlock);
+            return row;
+        }
+
+        private void ApplyPatchDescriptionStyle(TextBlock block)
+        {
+            Style style = SettingsRoot.Resources["SettingsRowDescriptionTextStyle"] as Style;
+            if (style != null)
+            {
+                block.Style = style;
+                return;
+            }
+
+            block.FontSize = 12;
+            block.TextWrapping = TextWrapping.Wrap;
+        }
+
+        /// <summary>补丁页上的 action 按钮：只认现有的那几个动作。</summary>
+        private void RunPatchPageAction(string action)
+        {
+            if (String.Equals(action, "check-updates", StringComparison.OrdinalIgnoreCase))
+            {
+                SelectPage("Updates");
+                LoadPatchAvailable(true);
+                return;
+            }
+
+            SelectPage("Updates");
+            ShowPatchInfo(
+                InfoBarSeverity.Warning,
+                "这个操作启动器还不支持",
+                "补丁请求的动作「" + (action ?? String.Empty) + "」没有对应实现。");
+        }
+
+        /// <summary>补丁提供的新页面挂进「补丁」分组（Pivot），并登记搜索入口。</summary>
+        private void BuildPatchPageTabs()
+        {
+            // 重来时先把上一批动态分页从标签表里摘掉，免得选到已经删掉的 PivotItem。
+            for (int index = 0; index < _patchTabTags.Count; index++)
+            {
+                _groupTabs.Remove(_patchTabTags[index]);
+            }
+
+            _patchTabTags.Clear();
+            PatchesTabs.Items.Clear();
+            for (int index = 0; index < _patchPages.Count; index++)
+            {
+                PatchPageDefinition definition = _patchPages[index];
+                string tag = "Patch_" + definition.PageKey;
+                var item = new PivotItem
+                {
+                    Header = String.IsNullOrWhiteSpace(definition.Title)
+                        ? definition.PageKey
+                        : definition.Title,
+                    Tag = tag,
+                    Content = BuildPatchPageView(definition),
+                    Margin = new Thickness(0, 20, 0, 0)
+                };
+                PatchesTabs.Items.Add(item);
+                _groupTabs[tag] = item;
+                _patchTabTags.Add(tag);
+            }
+
+            bool hasPages = _patchPages.Count > 0;
+            PatchesNavItem.Visibility = Visibility.Collapsed;
+            PatchesTabs.Visibility = hasPages ? Visibility.Visible : Visibility.Collapsed;
+            PatchesEmptyText.Visibility = hasPages
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+            if (hasPages)
+            {
+                _lastGroupTab["Patches"] = _patchTabTags[0];
+            }
+        }
+
+        /// <summary>补丁页的搜索入口：覆盖型指回被覆盖的内置页，新页指向「补丁」分组的那个分页。</summary>
+        private void CollectPatchSearchEntries()
+        {
+            foreach (KeyValuePair<string, PatchPageDefinition> pair in _patchPageOverrides)
+            {
+                string tag = BuiltinPageTag(pair.Key);
+                if (String.IsNullOrWhiteSpace(tag) || _disabledBuiltinPages.Contains(tag))
+                {
+                    continue;
+                }
+
+                AddPatchPageSearchEntry(pair.Value, tag, pair.Key, ResolveBuiltinPage(tag));
+            }
+
+            for (int index = 0; index < _patchPages.Count; index++)
+            {
+                PatchPageDefinition page = _patchPages[index];
+                AddPatchPageSearchEntry(
+                    page,
+                    "Patch_" + page.PageKey,
+                    page.PageKey,
+                    PatchesTabs);
+            }
+        }
+
+        private void AddPatchPageSearchEntry(
+            PatchPageDefinition page,
+            string pageTag,
+            string pageKey,
+            object anchor)
+        {
+            if (page == null)
+            {
+                return;
+            }
+
+            string title = String.IsNullOrWhiteSpace(page.Title) ? pageKey : page.Title;
+            _settingsSearchIndex.Add(new SettingsSearchEntry
+            {
+                OptionId = "Patch:" + pageKey,
+                Title = title,
+                Description = String.IsNullOrWhiteSpace(page.Summary)
+                    ? "由补丁提供的页面。"
+                    : page.Summary,
+                Group = "补丁",
+                PageTag = pageTag,
+                PageTitle = title,
+                Alias = "补丁 " + pageKey,
+                Initials = SettingsSearchInitials.Build(title + "补丁"),
+                Anchor = anchor,
+                Enabled = true
+            });
+        }
+
+        // ---------------------------------------------------------------- 更新页「补丁」子栏
+
+        private void RefreshPatchSummary()
+        {
+            if (PatchUpdateSummaryText == null)
+            {
+                return;
+            }
+
+            string mode = GetSelectedTag(PatchUpdateModeComboBox, "Check");
+            string modeText = mode == "Install"
+                ? "自动下载并安装"
+                : mode == "Off" ? "关闭" : "仅检查更新";
+            PatchUpdateSummaryText.Text = "策略 " + modeText
+                + " · 已装 " + _installedPatchCount
+                + " 个 · 可用 " + _availablePatches.Count + " 个";
+            PatchUpdateWarning.IsOpen = mode == "Install";
+        }
+
+        private void RefreshPatchInstalledList()
+        {
+            if (InstalledPatchRows == null)
+            {
+                return;
+            }
+
+            List<PatchInstallRecord> installed = null;
+            try
+            {
+                installed = PatchApplyService.Installed();
+            }
+            catch (Exception exception)
+            {
+                _host.Log("读取已安装补丁失败: " + exception.Message);
+            }
+
+            InstalledPatchRows.Children.Clear();
+            if (installed == null || installed.Count == 0)
+            {
+                _installedPatchCount = 0;
+                InstalledPatchesEmptyText.Text = "还没有装过补丁。";
+                InstalledPatchesEmptyText.Visibility = Visibility.Visible;
+                return;
+            }
+
+            _installedPatchCount = installed.Count;
+            InstalledPatchesEmptyText.Visibility = Visibility.Collapsed;
+            for (int index = 0; index < installed.Count; index++)
+            {
+                InstalledPatchRows.Children.Add(BuildInstalledPatchRow(installed[index]));
+            }
+        }
+
+        private Grid BuildInstalledPatchRow(PatchInstallRecord record)
+        {
+            var row = new Grid
+            {
+                Padding = new Thickness(0, 14, 0, 14),
+                ColumnSpacing = 16
+            };
+            row.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = new GridLength(1, GridUnitType.Star)
+            });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var texts = new StackPanel
+            {
+                Spacing = 4,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            texts.Children.Add(new TextBlock
+            {
+                FontSize = 14,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Text = String.IsNullOrWhiteSpace(record.Title) ? record.Id : record.Title,
+                TextWrapping = TextWrapping.Wrap
+            });
+
+            var description = new TextBlock { MaxLines = 3, TextWrapping = TextWrapping.Wrap };
+            ApplyPatchDescriptionStyle(description);
+            description.Text = String.IsNullOrWhiteSpace(record.Description)
+                ? "没有说明。"
+                : record.Description;
+            texts.Children.Add(description);
+
+            var meta = new TextBlock { TextWrapping = TextWrapping.Wrap };
+            ApplyPatchDescriptionStyle(meta);
+            meta.Text = "v" + (String.IsNullOrWhiteSpace(record.Version) ? "?" : record.Version)
+                + " · " + DescribePatchKind(record.Kind)
+                + " · " + DescribePatchRisk(record.Kind, record.Risk)
+                + " · 装于 " + FormatPatchTime(record.AppliedAtUtc);
+            texts.Children.Add(meta);
+
+            var source = new TextBlock { TextWrapping = TextWrapping.Wrap };
+            ApplyPatchDescriptionStyle(source);
+            source.Text = "来源：" + DescribePatchSource(record);
+            texts.Children.Add(source);
+
+            row.Children.Add(texts);
+
+            var remove = new Button { Content = "移除", Tag = record.Id };
+            Style actionStyle = SettingsRoot.Resources["SettingsActionButtonStyle"] as Style;
+            if (actionStyle != null)
+            {
+                remove.Style = actionStyle;
+            }
+
+            remove.Click += PatchRemoveButton_Click;
+            Grid.SetColumn(remove, 1);
+            row.Children.Add(remove);
+            return row;
+        }
+
+        private void RefreshPatchAvailableList(bool checkedNow)
+        {
+            if (AvailablePatchRows == null)
+            {
+                return;
+            }
+
+            AvailablePatchRows.Children.Clear();
+            if (_availablePatches.Count == 0)
+            {
+                string mode = GetSelectedTag(PatchUpdateModeComboBox, "Check");
+                AvailablePatchesEmptyText.Text = mode == "Off"
+                    ? "补丁策略是「关闭」，不会联网检查。改成「仅检查更新」再看。"
+                    : checkedNow
+                        ? "没发现可用补丁，已经是最新的。"
+                        : "还没检查过。点上面的「检查补丁更新」。";
+                AvailablePatchesEmptyText.Visibility = Visibility.Visible;
+                UpdatePatchButtons();
+                return;
+            }
+
+            AvailablePatchesEmptyText.Visibility = Visibility.Collapsed;
+            for (int index = 0; index < _availablePatches.Count; index++)
+            {
+                AvailablePatchRows.Children.Add(
+                    BuildAvailablePatchRow(_availablePatches[index]));
+            }
+
+            UpdatePatchButtons();
+        }
+
+        private Grid BuildAvailablePatchRow(PatchFeedEntry entry)
+        {
+            bool highRisk = IsPatchHighRisk(entry.Kind, entry.Risk);
+            var row = new Grid
+            {
+                Padding = new Thickness(0, 14, 0, 14),
+                ColumnSpacing = 16
+            };
+            row.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = new GridLength(1, GridUnitType.Star)
+            });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var texts = new StackPanel
+            {
+                Spacing = 4,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            texts.Children.Add(new TextBlock
+            {
+                FontSize = 14,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Text = String.IsNullOrWhiteSpace(entry.Title) ? entry.Id : entry.Title,
+                TextWrapping = TextWrapping.Wrap
+            });
+
+            var description = new TextBlock { MaxLines = 3, TextWrapping = TextWrapping.Wrap };
+            ApplyPatchDescriptionStyle(description);
+            description.Text = String.IsNullOrWhiteSpace(entry.Description)
+                ? "没有说明。"
+                : entry.Description;
+            texts.Children.Add(description);
+
+            var meta = new TextBlock { TextWrapping = TextWrapping.Wrap };
+            ApplyPatchDescriptionStyle(meta);
+            meta.Text = "v" + (String.IsNullOrWhiteSpace(entry.Version) ? "?" : entry.Version)
+                + " · " + DescribePatchKind(entry.Kind)
+                + " · " + DescribePatchRisk(entry.Kind, entry.Risk)
+                + " · " + FormatPatchSize(entry.Size);
+            texts.Children.Add(meta);
+
+            row.Children.Add(texts);
+
+            var install = new Button
+            {
+                Content = highRisk ? "安装（需确认）" : "安装",
+                Tag = entry.Id
+            };
+            Style actionStyle = SettingsRoot.Resources["SettingsActionButtonStyle"] as Style;
+            if (actionStyle != null)
+            {
+                install.Style = actionStyle;
+            }
+
+            install.Click += PatchInstallButton_Click;
+            Grid.SetColumn(install, 1);
+            row.Children.Add(install);
+            return row;
+        }
+
+        private void UpdatePatchButtons()
+        {
+            bool modeOff = GetSelectedTag(PatchUpdateModeComboBox, "Check") == "Off";
+            if (CheckPatchUpdatesButton != null)
+            {
+                CheckPatchUpdatesButton.IsEnabled = !_patchBusy && !modeOff;
+            }
+
+            if (ApplyAllPatchesButton != null)
+            {
+                ApplyAllPatchesButton.IsEnabled =
+                    !_patchBusy && !modeOff && _availablePatches.Count > 0;
+            }
+        }
+
+        private void SetPatchBusy(bool busy, string text)
+        {
+            _patchBusy = busy;
+            if (PatchProgressPanel != null)
+            {
+                PatchProgressPanel.Visibility = busy
+                    ? Visibility.Visible
+                    : Visibility.Collapsed;
+                PatchProgressBar.IsIndeterminate = busy;
+                if (!String.IsNullOrWhiteSpace(text))
+                {
+                    PatchProgressText.Text = text;
+                }
+            }
+
+            UpdatePatchButtons();
+        }
+
+        /// <summary>补丁服务的进度回调：切回 UI 线程写进度条（0-100）。</summary>
+        private Action<string, double> PatchProgressReporter()
+        {
+            return delegate(string message, double percent)
+            {
+                try
+                {
+                    _host?.PatchProgress?.Invoke("正在安装补丁", message ?? String.Empty, percent * 100.0);
+                }
+                catch
+                {
+                }
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    if (PatchProgressPanel == null)
+                    {
+                        return;
+                    }
+
+                    if (!String.IsNullOrWhiteSpace(message))
+                    {
+                        PatchProgressText.Text = message;
+                    }
+
+                    PatchProgressBar.IsIndeterminate = false;
+                    PatchProgressBar.Value = Math.Max(0, Math.Min(100, percent));
+                });
+            };
+        }
+
+        private void ShowPatchInfo(InfoBarSeverity severity, string title, string message)
+        {
+            if (PatchUpdateResultInfoBar == null)
+            {
+                return;
+            }
+
+            PatchUpdateResultInfoBar.Severity = severity;
+            PatchUpdateResultInfoBar.Title = title;
+            PatchUpdateResultInfoBar.Message = message ?? String.Empty;
+            PatchUpdateResultInfoBar.IsOpen = true;
+        }
+
+        /// <summary>策略改完立刻落盘，跟启动器 / DSH / 插件那几条一样。</summary>
+        private void PatchUpdateModeComboBox_SelectionChanged(
+            object sender,
+            SelectionChangedEventArgs args)
+        {
+            if (_initializing)
+            {
+                return;
+            }
+
+            _settings.PatchUpdateMode = GetSelectedTag(PatchUpdateModeComboBox, "Check");
+            SaveSettings();
+            RefreshPatchSummary();
+            if (String.Equals(
+                _settings.PatchUpdateMode,
+                "Off",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                _availablePatches = new List<PatchFeedEntry>();
+                RefreshPatchAvailableList(false);
+                return;
+            }
+
+            UpdatePatchButtons();
+            LoadPatchAvailable(false);
+        }
+
+        private void CheckPatchUpdatesButton_Click(object sender, RoutedEventArgs args)
+        {
+            if (_patchBusy)
+            {
+                return;
+            }
+
+            PatchUpdateResultInfoBar.IsOpen = false;
+            LoadPatchAvailable(true);
+        }
+
+        /// <summary>
+        /// 拉清单。Off 策略下完全不联网；否则丢到后台线程，回来后只动 UI。
+        /// </summary>
+        private void LoadPatchAvailable(bool forceRefresh)
+        {
+            if (_patchAvailableLoading)
+            {
+                return;
+            }
+
+            if (GetSelectedTag(PatchUpdateModeComboBox, "Check") == "Off")
+            {
+                _availablePatches = new List<PatchFeedEntry>();
+                RefreshPatchAvailableList(false);
+                RefreshPatchSummary();
+                return;
+            }
+
+            _patchAvailableLoading = true;
+            SetPatchBusy(true, forceRefresh ? "正在检查补丁更新…" : "正在读取补丁清单…");
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                List<PatchFeedEntry> entries = null;
+                string error = null;
+                try
+                {
+                    entries = PatchApplyService.Available(_settings, forceRefresh, _host.Log);
+                }
+                catch (Exception exception)
+                {
+                    error = exception.Message;
+                    _host.Log("补丁清单读取失败: " + exception);
+                }
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    _patchAvailableLoading = false;
+                    SetPatchBusy(false, null);
+                    _availablePatches = entries ?? new List<PatchFeedEntry>();
+                    if (!String.IsNullOrWhiteSpace(error))
+                    {
+                        ShowPatchInfo(InfoBarSeverity.Error, "补丁检查失败", error);
+                    }
+
+                    RefreshPatchAvailableList(forceRefresh);
+                    RefreshPatchSummary();
+                });
+            });
+        }
+
+        private PatchFeedEntry FindAvailablePatch(string id)
+        {
+            if (String.IsNullOrWhiteSpace(id))
+            {
+                return null;
+            }
+
+            for (int index = 0; index < _availablePatches.Count; index++)
+            {
+                PatchFeedEntry entry = _availablePatches[index];
+                if (entry != null
+                    && String.Equals(entry.Id, id, StringComparison.OrdinalIgnoreCase))
+                {
+                    return entry;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>装完 / 卸完把列表、导航、搜索索引一起刷新。</summary>
+        private void RefreshPatchAfterChange()
+        {
+            RefreshPatchInstalledList();
+            RefreshPatchSummary();
+            RebuildPatchNavigationAndSearch();
+            LoadPatchAvailable(false);
+        }
+
+        private async void PatchInstallButton_Click(object sender, RoutedEventArgs args)
+        {
+            if (_patchBusy)
+            {
+                return;
+            }
+
+            PatchFeedEntry entry = FindAvailablePatch(GetTag(sender as FrameworkElement));
+            if (entry == null)
+            {
+                ShowPatchInfo(
+                    InfoBarSeverity.Warning,
+                    "找不到这个补丁",
+                    "列表可能刚刷新过，重新检查一次。");
+                return;
+            }
+
+            bool confirmed = false;
+            if (IsPatchHighRisk(entry.Kind, entry.Risk))
+            {
+                if (!await ConfirmHighRiskPatchAsync(entry))
+                {
+                    return;
+                }
+
+                confirmed = true;
+            }
+
+            ApplySinglePatch(entry, confirmed);
+        }
+
+        private void ApplySinglePatch(PatchFeedEntry entry, bool confirmed)
+        {
+            _host?.PatchProgress?.Invoke(
+                "正在安装补丁",
+                "正在应用 " + (String.IsNullOrWhiteSpace(entry.Title) ? entry.Id : entry.Title),
+                0);
+            SetPatchBusy(true, "正在应用补丁…");
+            PatchUpdateResultInfoBar.IsOpen = false;
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                PatchApplyResult result = null;
+                string error = null;
+                try
+                {
+                    result = PatchApplyService.Apply(
+                        _settings,
+                        entry,
+                        confirmed,
+                        PatchProgressReporter(),
+                        _host.Log);
+                }
+                catch (Exception exception)
+                {
+                    error = exception.Message;
+                    _host.Log("补丁应用失败 " + entry.Id + ": " + exception);
+                }
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    SetPatchBusy(false, null);
+                    if (error == null && result != null && result.Applied)
+                    {
+                        _host?.PatchCompleted?.Invoke(
+                            true,
+                            String.IsNullOrWhiteSpace(entry.Title) ? entry.Id : entry.Title,
+                            result.RestartRequired);
+                        ShowPatchInfo(
+                            InfoBarSeverity.Success,
+                            "补丁已安装",
+                            (String.IsNullOrWhiteSpace(entry.Title) ? entry.Id : entry.Title)
+                                + (result.RestartRequired
+                                    ? "。需要重启启动器才生效。"
+                                    : "。"));
+                    }
+                    else
+                    {
+                        string reason = error
+                            ?? (result == null
+                                ? "没有返回结果"
+                                : result.NeedsConfirmation
+                                    ? "高危补丁需要确认。"
+                                    : (result.Error ?? "未知错误"));
+                        _host?.PatchCompleted?.Invoke(
+                            false,
+                            (String.IsNullOrWhiteSpace(entry.Title) ? entry.Id : entry.Title)
+                                + "：" + reason,
+                            false);
+                        ShowPatchInfo(InfoBarSeverity.Error, "补丁没装上", reason);
+                    }
+
+                    RefreshPatchAfterChange();
+                });
+            });
+        }
+
+        private async void ApplyAllPatchesButton_Click(object sender, RoutedEventArgs args)
+        {
+            if (_patchBusy)
+            {
+                return;
+            }
+
+            if (_availablePatches.Count == 0)
+            {
+                ShowPatchInfo(
+                    InfoBarSeverity.Informational,
+                    "没有可用补丁",
+                    "先点「检查补丁更新」。");
+                return;
+            }
+
+            var batch = new List<PatchFeedEntry>(_availablePatches);
+            int highRisk = 0;
+            for (int index = 0; index < batch.Count; index++)
+            {
+                if (IsPatchHighRisk(batch[index].Kind, batch[index].Risk))
+                {
+                    highRisk++;
+                }
+            }
+
+            bool confirmed = highRisk == 0;
+            if (highRisk > 0 && !await ConfirmBatchHighRiskAsync(batch, highRisk))
+            {
+                return;
+            }
+
+            ApplyPatchBatch(batch, confirmed);
+        }
+
+        private void ApplyPatchBatch(List<PatchFeedEntry> batch, bool confirmed)
+        {
+            _host?.PatchProgress?.Invoke("正在安装补丁", "正在应用补丁（" + batch.Count.ToString() + " 个）", 0);
+            SetPatchBusy(true, "正在应用补丁…");
+            PatchUpdateResultInfoBar.IsOpen = false;
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                int ok = 0;
+                int failed = 0;
+                bool restart = false;
+                var detail = new StringBuilder();
+                var completedTitles = new List<string>();
+                for (int index = 0; index < batch.Count; index++)
+                {
+                    PatchFeedEntry entry = batch[index];
+                    PatchApplyResult result = null;
+                    try
+                    {
+                        int patchIndex = index;
+                        result = PatchApplyService.Apply(
+                            _settings,
+                            entry,
+                            confirmed,
+                            delegate(string message, double percent)
+                            {
+                                PatchProgressReporter()("补丁 " + (patchIndex + 1).ToString() + "/" + batch.Count.ToString()
+                                    + " · " + (String.IsNullOrWhiteSpace(entry.Title) ? entry.Id : entry.Title)
+                                    + " · " + message, percent);
+                            },
+                            _host.Log);
+                    }
+                    catch (Exception exception)
+                    {
+                        _host.Log("补丁应用失败 " + entry.Id + ": " + exception);
+                        failed++;
+                        detail.Append(String.IsNullOrWhiteSpace(entry.Title)
+                            ? entry.Id
+                            : entry.Title).Append("：").Append(exception.Message).Append('\n');
+                        continue;
+                    }
+
+                    if (result != null && result.Applied)
+                    {
+                        ok++;
+                        completedTitles.Add(String.IsNullOrWhiteSpace(entry.Title) ? entry.Id : entry.Title);
+                        if (result.RestartRequired)
+                        {
+                            restart = true;
+                        }
+
+                        continue;
+                    }
+
+                    failed++;
+                    detail.Append(String.IsNullOrWhiteSpace(entry.Title)
+                        ? entry.Id
+                        : entry.Title).Append("：");
+                    if (result == null)
+                    {
+                        detail.Append("没有返回结果");
+                    }
+                    else if (result.NeedsConfirmation)
+                    {
+                        detail.Append("需要确认");
+                    }
+                    else
+                    {
+                        detail.Append(result.Error ?? "未知错误");
+                    }
+
+                    detail.Append('\n');
+                }
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    SetPatchBusy(false, null);
+                    _host?.PatchCompleted?.Invoke(
+                        failed == 0,
+                        failed == 0
+                            ? String.Join("、", completedTitles)
+                            : "已完成 " + ok.ToString() + " 个，失败 " + failed.ToString() + " 个",
+                        restart);
+                    if (failed == 0)
+                    {
+                        ShowPatchInfo(
+                            InfoBarSeverity.Success,
+                            "全部应用完成",
+                            ok + " 个补丁已装上"
+                                + (restart ? "。需要重启启动器才生效。" : "。"));
+                    }
+                    else
+                    {
+                        ShowPatchInfo(
+                            InfoBarSeverity.Warning,
+                            "装完 " + ok + " 个，失败 " + failed + " 个",
+                            detail.Length == 0 ? "失败原因没有记录。" : detail.ToString());
+                    }
+
+                    RefreshPatchAfterChange();
+                });
+            });
+        }
+
+        private async void PatchRemoveButton_Click(object sender, RoutedEventArgs args)
+        {
+            if (_patchBusy)
+            {
+                return;
+            }
+
+            string id = GetTag(sender as FrameworkElement);
+            if (String.IsNullOrWhiteSpace(id))
+            {
+                return;
+            }
+
+            ContentDialog confirm = new ContentDialog
+            {
+                XamlRoot = SettingsRoot.XamlRoot,
+                Title = "移除补丁",
+                Content = "会还原这个补丁改过的文件，并删掉它落地的目录。确定移除？",
+                PrimaryButtonText = "移除",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Close
+            };
+            if (await confirm.ShowAsync() != ContentDialogResult.Primary)
+            {
+                return;
+            }
+
+            SetPatchBusy(true, "正在移除补丁…");
+            _ = System.Threading.Tasks.Task.Run(delegate
+            {
+                PatchApplyResult result = null;
+                string error = null;
+                try
+                {
+                    result = PatchApplyService.Remove(_settings, id, _host.Log);
+                }
+                catch (Exception exception)
+                {
+                    error = exception.Message;
+                    _host.Log("补丁移除失败 " + id + ": " + exception);
+                }
+
+                DispatcherQueue.TryEnqueue(delegate
+                {
+                    SetPatchBusy(false, null);
+                    if (error == null && result != null && result.Applied)
+                    {
+                        ShowPatchInfo(InfoBarSeverity.Success, "补丁已移除", id + " 已经卸掉。");
+                    }
+                    else
+                    {
+                        ShowPatchInfo(
+                            InfoBarSeverity.Error,
+                            "没能移除",
+                            error ?? (result == null ? "没有返回结果" : (result.Error ?? "未知错误")));
+                    }
+
+                    RefreshPatchAfterChange();
+                });
+            });
+        }
+
+        // ---------------------------------------------------------------- 高危确认
+
+        /// <summary>高危补丁（script / binary / risk:high）装之前必须问一次。</summary>
+        private async System.Threading.Tasks.Task<bool> ConfirmHighRiskPatchAsync(
+            PatchFeedEntry entry)
+        {
+            string kind = (entry.Kind ?? String.Empty).Trim();
+            string reason = String.Equals(kind, "script", StringComparison.OrdinalIgnoreCase)
+                ? "脚本会在启动器进程外执行。"
+                : String.Equals(kind, "binary", StringComparison.OrdinalIgnoreCase)
+                    ? "启动器目录里的程序文件会被替换，装完要重启。"
+                    : "它自己声明风险是高的。";
+            ContentDialog dialog = new ContentDialog
+            {
+                XamlRoot = SettingsRoot.XamlRoot,
+                Title = "装高危补丁："
+                    + (String.IsNullOrWhiteSpace(entry.Title) ? entry.Id : entry.Title),
+                Content = "这是" + DescribePatchKind(entry.Kind) + "类补丁。"
+                    + reason
+                    + "只装信得过的来源。仍要安装？",
+                PrimaryButtonText = "仍要安装",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Close
+            };
+            return await dialog.ShowAsync() == ContentDialogResult.Primary;
+        }
+
+        private async System.Threading.Tasks.Task<bool> ConfirmBatchHighRiskAsync(
+            List<PatchFeedEntry> batch,
+            int highRiskCount)
+        {
+            var names = new StringBuilder();
+            for (int index = 0; index < batch.Count; index++)
+            {
+                if (!IsPatchHighRisk(batch[index].Kind, batch[index].Risk))
+                {
+                    continue;
+                }
+
+                if (names.Length > 0)
+                {
+                    names.Append('、');
+                }
+
+                names.Append(String.IsNullOrWhiteSpace(batch[index].Title)
+                    ? batch[index].Id
+                    : batch[index].Title);
+            }
+
+            ContentDialog dialog = new ContentDialog
+            {
+                XamlRoot = SettingsRoot.XamlRoot,
+                Title = "有 " + highRiskCount + " 个高危补丁",
+                Content = names.ToString()
+                    + "。这些补丁会执行脚本或替换程序文件，只装信得过的来源。仍要全部应用？",
+                PrimaryButtonText = "仍要安装",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Close
+            };
+            return await dialog.ShowAsync() == ContentDialogResult.Primary;
         }
 
     }

@@ -14,6 +14,7 @@ namespace DeepSeekHarnessLauncher
     {
         public string Version { get; set; }
         public string TarballUrl { get; set; }
+        public string Integrity { get; set; }
 
         /// <summary>这个版本是从哪个 dist-tag 挑出来的（latest / next / alpha…）。</summary>
         public string Channel { get; set; }
@@ -82,29 +83,27 @@ namespace DeepSeekHarnessLauncher
                     StringComparison.OrdinalIgnoreCase)
                     ? OfficialRegistry
                     : AcceleratedRegistry;
+            var urls = BackendDownloadSource.IsSelected(settings)
+                ? UpdateMetadataReader.BackendCandidates(OfficialRegistry, AcceleratedRegistry)
+                : new List<string> { url };
 
+            var result = UpdateMetadataReader.ReadFirstValid(new[] { (IReadOnlyList<string>)urls }, json =>
+            {
+                var package = ParsePackage(json, settings, out string parseError);
+                if (package == null) throw new InvalidDataException(parseError ?? "DSH 包信息无效。");
+                return package;
+            }, request => ProxySupport.Apply(request, settings), groupBudgetMilliseconds: 8000);
+            error = result.Value == null ? "DSH 更新检查失败：" + result.Error : null;
+            return result.Value;
+        }
+
+        internal static DshUpdatePackage ParsePackage(string json, LauncherSettings settings, out string error)
+        {
+            error = null;
             try
             {
-                ServicePointManager.SecurityProtocol =
-                    SecurityProtocolType.Tls12;
-                HttpWebRequest request =
-                    (HttpWebRequest)WebRequest.Create(url);
-                request.Method = "GET";
-                request.Accept = "application/json";
-                request.UserAgent = Constants.UserAgent;
-                ProxySupport.Apply(request);
-                request.Timeout = 20000;
-                request.ReadWriteTimeout = 20000;
-
-                using (WebResponse response = request.GetResponse())
-                using (Stream stream = response.GetResponseStream())
-                using (StreamReader reader = new StreamReader(
-                    stream,
-                    Encoding.UTF8))
+                using (JsonDocument document = JsonDocument.Parse(json))
                 {
-                    using (JsonDocument document = JsonDocument.Parse(
-                        reader.ReadToEnd()))
-                    {
                         JsonElement distTags;
                         JsonElement versions;
                         if (!document.RootElement.TryGetProperty(
@@ -162,21 +161,19 @@ namespace DeepSeekHarnessLauncher
                         {
                             Version = latest,
                             Channel = channel,
-                            TarballUrl = tarball.GetString()
+                            TarballUrl = tarball.GetString(),
+                            Integrity = dist.TryGetProperty("integrity", out var integrity) && integrity.ValueKind == JsonValueKind.String
+                                ? integrity.GetString() : null
                         };
+                        if (!HasValidIntegrity(package.Integrity))
+                        { error = "DSH 更新源缺少有效 SHA-256/SHA-512 安装包校验值。"; return null; }
                         ReadPublishedTimes(
                             document.RootElement,
                             package);
                         return package;
-                    }
                 }
-
             }
-            catch (Exception exception)
-            {
-                error = "DSH 更新检查失败：" + exception.Message;
-            }
-
+            catch (Exception exception) { error = "DSH 更新检查失败：" + exception.Message; }
             return null;
         }
 
@@ -357,9 +354,10 @@ namespace DeepSeekHarnessLauncher
             error = null;
             if (package == null
                 || String.IsNullOrWhiteSpace(package.Version)
-                || String.IsNullOrWhiteSpace(package.TarballUrl))
+                || String.IsNullOrWhiteSpace(package.TarballUrl)
+                || !HasValidIntegrity(package.Integrity))
             {
-                error = "DSH 更新包信息不完整。";
+                error = "DSH 更新包信息不完整或缺少 SHA-256/SHA-512 校验值。";
                 return false;
             }
 
@@ -413,6 +411,15 @@ namespace DeepSeekHarnessLauncher
                     progress(received, received);
                 }
 
+                using (var stream = File.OpenRead(targetPath))
+                {
+                    byte[] actual = package.Integrity.StartsWith("sha512-", StringComparison.Ordinal)
+                        ? System.Security.Cryptography.SHA512.HashData(stream)
+                        : System.Security.Cryptography.SHA256.HashData(stream);
+                    byte[] expected = Convert.FromBase64String(package.Integrity.Substring(7));
+                    if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(actual, expected))
+                    { error = "DSH 安装包 SHA 校验失败，已拒绝安装。"; return false; }
+                }
                 packagePath = targetPath;
                 downloaded = true;
                 return true;
@@ -427,6 +434,15 @@ namespace DeepSeekHarnessLauncher
             {
                 if (!downloaded) { try { Directory.Delete(stagingDirectory, true); } catch { } }
             }
+        }
+
+        internal static bool HasValidIntegrity(string integrity)
+        {
+            if (String.IsNullOrWhiteSpace(integrity)) return false;
+            bool sha512 = integrity.StartsWith("sha512-", StringComparison.Ordinal);
+            if (!sha512 && !integrity.StartsWith("sha256-", StringComparison.Ordinal)) return false;
+            try { return Convert.FromBase64String(integrity.Substring(7)).Length == (sha512 ? 64 : 32); }
+            catch { return false; }
         }
 
         internal static bool InstallVersion(
@@ -492,6 +508,8 @@ namespace DeepSeekHarnessLauncher
         /// </summary>
         internal static string ResolveInstallRegistry(LauncherSettings settings)
         {
+            if (BackendDownloadSource.IsSelected(settings))
+                return BackendDownloadSource.BaseUrl + "/api/npm/";
             bool official = settings != null
                 && String.Equals(
                     settings.UpdateSource,
@@ -627,6 +645,7 @@ namespace DeepSeekHarnessLauncher
                     StandardErrorEncoding = consoleEncoding
                 };
                 SetPath(startInfo, nodeDirectory, npmDirectory);
+                PackageDownloadEnvironment.ApplyRegistry(startInfo, registry);
 
                 using (Process process = Process.Start(startInfo))
                 using (NpmInstallProgress tracker =

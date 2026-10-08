@@ -1,13 +1,103 @@
 # 交接：大肥鱼Go / Dafeiyu-Go Launcher
 
+## 2026-10-08 17:30 最新测试包与收尾（本节优先）
+
+- 当前 ZIP 为 `DeepSeekHarness-1.7.0-feedback-log-startup-review.zip`，66,200,155 字节，SHA-256 `7D9F90AE5C93340EF1BD03BFE752C2B5CE6E01F72674596C1465411FFAC9A3B8`。入口 `source/dist-1.7.0-feedback-log-startup-review/DeepSeek Harness.exe`，旧测试目录不含本轮全部修改。
+- 新建反馈/补充可选上传启动器日志，默认不勾选；公共卡右下角仅便签图标，开发者分页查看与原生另存为下载。固定四日志、每条最近 128 KiB、JSON 最多 1 MiB，双端脱敏和严格服务端验证，封禁阻止上传，删除反馈级联清理。
+- 封禁列表与处理反馈展开失效修复父级鼠标事件抢走 ToggleButton 焦点，ButtonBase 豁免及异步布局定位已验证；24 项真实物理按住/松开检查通过。
+- 启动信息窗短标题“检查插件”“检查补丁”，描述“正在读取插件版本。”“正在读取补丁版本。”；最终“一句一行”显示无更新/更新数量/失败数量。公告/通知后台检查只记日志，原 UI 自排队等待 8 秒卡顿已修复。真实点击公告已读和通知按钮后，第二进程同配置不再重复显示。
+- GitHub/内置后端 HTTPS 只读请求有限直连回退，写请求/取消不重放，Token 仅 api.github.com；实际推荐文件读取通过。统一日志记录脱敏、时间/时区、会话/PID、调用方法与完整异常链；主 WriteLog 保留委托兼容，源码行指向包装层并另记 caller 方法。
+- 最终快照 `build-input-final-r2` 与 117 个现有输入 hash 一致；416 ZIP 文件逐个校验。八组关键回归、反馈 GUI 14 项、最终 InfoHost 13 状态检查通过；服务端反馈日志 API 已部署并完成只读验收。
+- 完整证据、服务器镜像/备份和安装器状态见 [本轮验收报告](../preview-artifacts/1.7.0-feedback-log-startup-20261008/validation.md) 与 [总交接](../HANDOVER.md)。用户删除 Backup 文件保持删除；真实安装/卸载/UAC/Explorer 重启尚待实机。此为本地测试包，未修改公开 manifest、推送或正式发版。
+
+
+## 2026-10-08 14:19 图片、反馈封禁与本轮修复交接（优先于下方历史章节）
+
+启动器 1.7.0 新本地检查包已构建；服务端已按本会话用户批准更新现有服务器。启动器与安装器仍未正式发布。安装器当前源码/测试包为 1.7.0.0，公开安装器历史基线 1.6.0 不代表当前源码。
+
+- 新 [启动器检查 ZIP](<G:/DeepSeek DSH/DSH Works/Project/Dafeiyu-Go/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/DeepSeekHarness-1.7.0-download-feedback-review.zip>)：66,187,056 字节，SHA-256 `AF6C6C3D853ED58B31DA43F01D4CD9951F2860DF9C54F8037A91AB3CD2ECA256`。目录 `source/dist-1.7.0-download-feedback-review`，入口 `DeepSeek Harness.exe`。构建快照 `build-input-feedback-images-bans-r3`，115 个输入 hash 一致；416 个包内文件逐项校验通过。旧 review ZIP 不包含这轮最新改动。
+- [安装器测试 EXE](<G:/DeepSeek DSH/DSH Works/Project/Dafeiyu-Go/Dafeiyu-Go-DeepSeek-Harness-Setup/dist/test-1.7.0-download-fixes-20261008/DSH-Installer-Setup.exe>)已供用户测试，版本 1.7.0.0，11,432,005 字节，SHA-256 `1E50347934A332906E38A011EEF16277E0D262B8A0C7880F9BC1214FA6B91DC3`；本轮反馈功能需使用新启动器检查包。安装器沿用用户本轮确认的启动检测运行库、缺少时先显示普通下载/安装窗口的现有流程，未改为捆绑运行库。
+- 更新元数据超时回退、官方插件有限自动重试/实际缓存字节进度、图片国内 CDN 默认、用户提供启动文案与实际换行已应用并纳入启动器构建。用户删除的三个 Backup 文件只在快照补齐，未恢复工作区。
+- 反馈新回复为蓝色感叹号，音效重新从头播放，helper 显示 5 秒后关闭；反馈紧凑排版、公共/本人/开发者筛选后每页 20 条、总数/翻页、确认删除及空末页回退已完成。
+- 新建反馈与补充每次最多 5 张、每张最多 5 MiB 的 JPG/PNG/WebP 静态图片；96px 正方形裁剪横排/换行，点击展开完整图片，再点击缩回。选图改用支持管理员进程的 WinAppSDK 1.8 picker，正式管理员权限不变。服务端完整解码后重新绘制为 JPEG，剥离元数据/附加内容，输出长边最多 2048px；像素、字节、频率、并发均设上限。SkiaSharp 4.153.1 的依赖审计未报告已知漏洞。
+- 管理员可按匿名机器码限时/永久封禁、删除并封禁、从封禁列表分页解封；服务端对 JSON/multipart 的新建和补充全部校验封禁；客户端底部显示期限和原因并禁用发送，允许继续查看反馈。
+- 回归：客户端反馈 134、信息窗 IPC 70、图片来源 80、更新元数据 14、官方插件 81、设置搜索 193、下载任务全部通过；服务端真实 HTTP/SQLite 106、既有离线 59、Linux/独立 PostgreSQL 74 通过。主/helper Release 构建 0 错误，服务端 0 警告/错误；最终实际反馈页与13状态信息窗 GUI 通过。图片/封禁 fixture GUI 26 项通过，包含真实多选、取消和移除预览；仅在独立副本执行，不混入正式包。GUI 自动化为普通权限，实际 UAC/elevated 流程待实机测试。
+- 生产镜像 `sha256:65b54b237b80ae16ef4dd173757ab74d9b33eb951af5c461d0ad3457971689e4`，备份 `/home/dafeiyu/developer-center-backups/feedback-20261008t055314z`，含数据库、源码、TLS配置及旧镜像/回滚脚本。FeedbackImages/FeedbackBans 迁移存在，API/db healthy、TLS running；生产验收只读取和检查匿名401，未上传fixture、未执行真实删除/封禁。
+- 完整证据与边界见 [本轮验收报告](<G:/DeepSeek DSH/DSH Works/Project/Dafeiyu-Go/preview-artifacts/1.7.0-download-fixes-20261008/final-validation.md>)。真实安装/卸载、自更新替换、官方DSH完整安装及音效听感仍需实机测试。
+
+
+## 2026-10-08 用户截图修复补充（未发布）
+
+- 更新元数据原先选择 backend 后仅请求 `/api/fetch`，其超时错误把完整地址和长异常展示到界面。`UpdateMetadataReader`、`UpdateSupport`、`DshUpdateService`、`InstallerUpdateService` 现在保留 backend 为第一候选，约 500ms 后并行独立元数据来源，失败显示短提示，完整诊断记入设置目录 `launcher.log`；更新包下载仍保留已有来源与校验策略。
+- 官方插件安装加入 `PluginOperationSupport` 的 profile 级互斥租约，锁位于临时目录 `Dafeiyu-Go/plugin-operation-locks`，不接管或删除官方 `package.json.lock`。官方 CLI 使用 pnpm NDJSON reporter，显示实际获取字节/缓存写入量与依赖数量；取消会终止子进程及 profile 排队等待。
+- `PluginStoreService` 将官方插件安装接入 `DownloadTaskCenter`，超时或暂时网络故障自动重试 2 次，仍失败可在下载任务中重试或取消；官方过程不显示不可实现的暂停按钮。400/401/403/404、构建授权等永久失败不自动重试。详细官方命令输出保留在日志。
+- 本次定向验证：UpdateMetadata 14；DownloadTasks 全部通过；PluginOfficial 81（新增并发排队/取消、重入租约、临时失败分类、NDJSON 字节累加断言）；PluginInstallRepair 55；PluginInstallationState 19；PluginUpdateCompare 62。离线回归未运行真实 node/pnpm，也未修改真实 profile。插件回归子进程的 `TEMP/TMP` 必须指向工作区隔离目录，本机默认 Temp 在当前执行环境中拒绝创建 fixture。
+- 当前改动未提交、未构建新的最终检查包、未发布；上述回归不能替代真实网络超时重试、官方管理器字节进度和并发安装的 GUI 验收。启动流程原文案留待用户修改，本修复不替用户改写。
+
+## 2026-10-08 09:23 最终检查包交接（本节优先）
+
+启动器 1.7.0 已完成本轮开发收尾、反馈客户端/服务端及示例网页同步，并生成本地检查包；**尚未正式发布 1.7.0**。安装器仍独立为 1.6.0。用户单独授权发布的空 patches.json 已完成，提交 `7093b2bc1b3cf2ddbfafe0ba558d1fa75d8204df`；这不表示整版发布。
+
+- 当前 [dist](<G:/DeepSeek DSH/DSH Works/Project/Dafeiyu-Go/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/source/dist-1.7.0-review>)、[启动入口](<G:/DeepSeek DSH/DSH Works/Project/Dafeiyu-Go/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/source/dist-1.7.0-review/DeepSeek Harness.exe>)及[ZIP 检查包](<G:/DeepSeek DSH/DSH Works/Project/Dafeiyu-Go/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/DeepSeekHarness-1.7.0-review.zip>)。ZIP 为 66,158,906 字节，SHA-256：`4556784DE17A61460CBCF79CDEBFE02101B47F2349EBE79CFB00BF0BFD36E001`。
+- 最终构建快照 `build-input-feedback-complete-r4`，110 个主程序/helper 输入与当前源码哈希一致。包内 416 个文件逐项大小及解压流 SHA-256 验证通过；dist 无运行日志、fixture、用户设置、临时文件、PDB、Token 或非空凭据配置。
+- [最终验收报告](<G:/DeepSeek DSH/DSH Works/Project/Dafeiyu-Go/preview-artifacts/1.7.0-closeout-20261008/final-validation-feedback.md>)记录全部产物、日志、截图、部署、边界和复现脚本；旧 dist/ZIP 与此前哈希仅作历史记录。
+- 原生“关于—反馈与建议”默认公开；我的提交按匿名稳定机器指纹；四种状态、补充、开发者处理及后台回复信息窗已接入。终态补充客户端/服务端均拒绝。列表与补充独立分页、按需加载，正文及历史不截断；回复按反馈 ID + 正文摘要持久化去重。
+- 真实窗口修正并复测“我的提交”/wdtj 搜索范围、“反馈处理”/fkcl 解锁后的实际模块导航，以及状态筛选标题裁切。反馈回归 55、设置搜索 193、通知客户端 121、信息窗 IPC 62、插件安装状态 19、更新元数据 14、补丁 127、下载任务通过；InfoHost 12 状态和公告/通知/扩展真实 GUI 通过。
+- 服务端隔离 PostgreSQL/API 合约 40 项、既有离线回归 59 项通过；生产 API/DB healthy、TLS running。公开及本人反馈 GET 200，无 Token 管理 401，生产验收只读。备份 `/home/dafeiyu/developer-center-backups/feedback-20261008t010758z`，镜像 `sha256:e17ad448c55592e5cbf2d1902c58b7832798e03a302f0c764cafba9026a22f22`。详见[服务端反馈报告](<G:/DeepSeek DSH/DSH Works/Project/Dafeiyu-Go/preview-artifacts/1.7.0-feedback-server/feedback-api-validation.md>)。
+- 现有 `dafeiyu`/start、reload/restart、stop、status、Token 天数创建（0 永久）/list/remove、Bash Tab 补全已部署；stop 保留数据库卷。
+- 网页目标是用户指定的 [interactive-preview](<G:/DeepSeek DSH/DSH Works/Project/Dafeiyu-Go/Dafeiyu-Go-DeepSeek-Harness-HTML/interactive-preview>)，保留 [4173 HTTP 预览](http://127.0.0.1:4173/?launcher=1)。最终反馈专项 47 项、通用交互 126 项，浏览器异常和意外外网请求为 0；测试 profile/temp 在 G 盘并已清理。网页反馈及管理员操作保持本地模拟，不调用生产反馈 API。
+- 更新检查已细分启动器/安装器/DSH/插件/补丁/公告/通知，raw 优先、限时并发与取消接线完成；信息窗缓存优先非系统盘并正常关闭清理。此前补丁未发布造成 69.159 秒多源等待的日志已归档；本轮未重新测量完整真实 DSH 启动耗时。
+- 主工作区仍保留用户删除的三个 Backup 文件；仅在构建快照补齐既有项目引用。复现使用 [Build-Review.ps1](<G:/DeepSeek DSH/DSH Works/Project/Dafeiyu-Go/preview-artifacts/1.7.0-closeout-20261008/Build-Review.ps1>) 和新快照名。
+- GUI 采用隔离设置的只读预览；完整自更新、新机安装、真实 DSH 全流程耗时、音效听感与原生回复提醒的人工联动仍待实机检查。没有创建正式 tag/Release、npm 发布或更新公开 manifest。
+
+下方旧章节保留历史背景，旧版本状态、待办和产物路径不能替代本节及最终报告。
+
+
+
 > `1.4.9` 是品牌过渡版。可见品牌改为“大肥鱼Go / Dafeiyu-Go”，内部可执行文件名、
 > 数据目录、注册表键、计划任务、快捷方式和 npm 包名保持不变。迁移边界与发布顺序
 > 以 [`TRANSITION.md`](TRANSITION.md) 为准。
 
-> 当前源码版本为 `1.6.0`（本地实现与验证完成，**未发布 / 未推包**）；公开清单仍为 `1.5.4`。
+> 当前源码目标版本为 `1.7.0`（收尾中，**未发布 / 未推包**）；公开清单为已发布 `1.6.0`。
 > 以下保留各轮历史交接，旧章节的版本、待办与验证结果不代表本轮状态。
 
-最后更新：2026-10-07
+最后更新：2026-10-08
+
+## 2026-10-08 交接补充：1.7.0 未发布工作区
+
+- 安装器选择现在作为新建启动器设置的默认值继承。安装成功后实际 `LauncherRoot/installer-defaults.json` 保存来源和绝对 DSH 路径，首次创建时优先读取；本机路径匹配的 `installer-state.json` 是回退。`china` 对应 `Accelerated + Auto`、`backend` 对应 `Accelerated + backend`、`official` 对应 `Official + Auto`，已存在的用户设置不覆盖。机器范围与自定义组件目录使用安装目录默认，不依赖安装器账号。修复恢复来源，显式静默参数优先；新增 InstallerSourceDefaults 35 项、ProxyScope 32 项通过，未写真实配置。完整产品构建仍待主任务，未发布。
+
+- 下载后端接线正在收尾：设置的 `MirrorSource=backend` 且 `UpdateSource` 不是 `Official` 时，`dsh plugin`、pnpm/npm fallback、DSH 更新、技能与推荐插件安装都对单次子进程注入 `https://202.189.21.218:8787/api/npm/`；GitHub 依赖用同次进程的 CA pin、`url.*.insteadOf` 指向 `/api/git/`。不写用户全局配置、不关闭 strict TLS、不传 GitHub/NPM token。旧 `dist-1.7.0-test-20261008-final` ZIP 不是接线后的最终产物，必须完成后端部署、隔离 npm/Git 验证和重新构建再更新摘要。
+
+- 当前版本目标为 `1.7.0`，源码变更未提交、未推送、未正式发布。管理员 token 不得随启动器发布。
+- 管理员 token 的桌面端存储通过 `LauncherSettingsStore.SetAdminToken` 调用 DPAPI `CurrentUser` 加密，写入 `%LOCALAPPDATA%\\DeepSeekHarness\\LauncherSettings.json` 的 `adminTokenProtected`；发布包不包含该值。
+- `WinUIProgram.UpdateItemClick` 现在通过 `_manualUpdateWindowRequested` 包围手动检查更新，`ShowUpdateWindow` 在服务提示占用时允许手动更新接管窗口。
+- `ServerMetricsClient` 对服务器监控专用 `HttpClient` 强制 HTTPS，默认使用 `NoticeTransport`；仅限定部署 IP/端口使用既有 SPKI pin，其它地址必须通过系统证书校验，不接受任意自签或过期证书。服务器页性能每 2 秒刷新，在线历史每 5 秒刷新，离页/关窗取消在途请求。
+- Footer 布局：展开时在线人数/服务器监控内容左对齐，收缩时圆点与数字居中，收缩 padding 和宽度缩小以适应窄导航栏。
+- 最终测试副本为 `source/dist-1.7.0-test-20261008-final`，构建与 verify 0 失败 / 2 提醒。实际 GUI 通过范围：Home 搜 `fwqjk` 跳服务器并读取 metrics/history、PrintWindow 截图；Home 搜 `gly` 跳 API 并显示 AdminTokenBox；InfoHost 12 状态和 InfoWindowClient 62 项通过。当前进程无管理员 token，仅留下只读预览供用户查看，不是正常服务启动；听音未测。最终报告见父目录 [final-validation.md](../preview-artifacts/1.7.0-final/final-validation.md)，桌面维护者 token 文件已确认存在，未读取内容。
+- 服务器页离开、补丁页面覆盖或设置窗口关闭时停止计时器并取消在途请求。公网历史 404 已部署修复，后台采样持续部署：readiness/metrics/history 200、匿名管理接口 401、pin 读回通过；最终备份 `/home/dafeiyu/developer-center-backups/metrics-20261007T204933Z`，镜像 `sha256:edd1714e53dbe546cf19e3b041d4be7ddeb4fe342a3accd3da88b1d7a227734b`。网络卡片显示上传 Mbps、30 Mbps 分母百分比/进度与动态峰值纵轴的 `ServerUploadChart`。证据见 [后台采样摘要](../preview-artifacts/1.7.0-final/background-metrics-summary.md)。
+- 在线人数订阅默认关闭，设置窗口打开后立即 GET `/api/presence` 并每 5 秒刷新，关闭不再 GET；公告与隐私心跳保持原频率并独立运行。服务器页才 GET `/api/presence/history` 压缩完整响应，PostgreSQL 每分钟持久化真实计数，24 小时/1441 点，不补造过去，缺口不连线，初次历史可能不足 24 小时。预览只读请求不登记在线，真实返回 0 就显示 0。
+- 网络占用百分比/进度条始终以 30 Mbps 为分母，上传趋势纵轴按近 5 分钟真实峰值加 15% 余量，取 1/2/5/10 整洁刻度，空/零最小 0.1 Mbps；不能把动态图轴描述成固定 30 Mbps。
+- 用户新增的后端离线/恢复提示已实现。同段离线只提醒一次，确认恢复后再弹恢复；服务、更新或 Notice 正占用信息窗时排队。离线标题“大肥鱼后端服务器离线”，正文“您可能无法及时收到公告与通知，不影响依靠后端的基础功能，以及DeepSeek Harness的使用。”；恢复标题“你的大肥鱼又上线了”，正文“后端服务器已恢复在线状态，所有功能均可正常使用。”。最终副本实际显示与播放待本地验收。
+- 音效使用 `PlayChime` 区分来源：公告/通知、后端离线/恢复与更新成功都有提醒音，只有普通服务启动/重启成功不播放音效。InfoWindowClient 62 项验证实际 IPC 序列化协议，未启动 helper 或播放音频，不能代替最终 GUI/听音确认。
+- 设置搜索补齐 1.7.0 非标准布局新增项：服务器监控/硬件、在线人数、管理员 Token、公告 API 配置与轮询、在线统计/回执和开发者公告/通知/信息窗预览。拼音字表补丁、传、磁、频、硬、遥；开发者管理项当前窗口解锁后重建索引，点击搜索结果会切到正确模块与公告/通知页签。SettingsSearch 133 项通过，包含 24 小时在线趋势与人数图表查询，定位锚点 `ServerPresenceChart`；网络上传带宽/速率/百分比覆盖中文与首字母，最终 GUI 定位结果待报告。
+- 后续新增设置功能必须同时同步搜索索引、中文别名、拼音首字母字表和定位落点；新增页面或非标准行布局必须显式登记，不允许仅加界面而漏掉搜索。测试需覆盖中文、首字母、结果页面与锚点，真实窗口点击定位也要验证；不要按缩进猜测搬移 XAML。
+
+## 公告通知与实时预览（2026-10-08）
+
+本节为最新状态，后文 HTTP、会话 Token、纯文本 Markdown 和 helper 平铺目录等记录均为历史状态。
+
+- 公告管理与通知管理分开，使用“编辑正文”按钮打开共用 Markdown 弹窗编辑器；保存应用、取消保留原稿。字号、粗体、斜体、下划线、删除线等工具已接入原生渲染。
+- 公告支持获取 GitHub 当前文件及 SHA、新增、编辑、删除、上下排序、标题/正文/标签/日期/置顶、发布。整表写入使用编辑时 SHA，409 冲突要求重新获取，避免覆盖并发修改。
+- 服务端事务保证只有一条当前通知；重新推送用新 ID 重新计数，旧指标保留。支持独立显示日期、最多两个 HTTPS/设置/PowerShell 按钮；PowerShell 仅点击并明确确认后执行。
+- GitHub Token 使用通用的 API 与翻译设置；管理员 Token 同页提供显示、保存、清空并以 DPAPI 加密持久化。未填写时开发者页显示红色提示。已验证密文、重读和清空。
+- 正式开发者工具保留信息窗口预览。预览与真实操作各用独立会话，不执行动作或上报回执；设置预览立即并每 5 秒只读真实在线人数，关闭停止请求，不发心跳。在线组件位于 FooterMenuItems 最后一项，下载任务与开发者位于其上，保持正常主题颜色。
+- 信息 helper 独立打包到 `info-host/`，必须包含 exe/dll/pri/App.xbf；不能混用主程序 PRI。运行副本位于设置目录 `info-host-cache/<guid>`，解决 Temp 目录权限和资源加载崩溃。
+- 通知尺寸测量已区分 XAML DIP 与窗口物理像素。公告/通知宽 480、最大高 480，正文滚动，图标对齐左上标题，自定义按钮单行省略并显示全文提示；其他状态宽 380，图标居中，隐藏进度条与页脚无空行间距。结果切换恢复 XAML 图标透明度，避免合成动画无法显示。
+- 公网 API 为 `https://202.189.21.218:8787`；保留既有有效证书，客户端仅该 IP/端口固定 SPKI `2c72728755267c607124b2ac86e431743c34af5c6069aa22bbcc401e0f626f0b`。202610070003 日期迁移已部署，真实 PostgreSQL 单例/重推/计数/日期验证通过；测试通知已撤回。
+- 当前回归：PatchSystem 127、ClientNotice 117、DeveloperNotice 58、GitHubAnnouncement 21、InfoWindowClient 62、InfoHost 12 状态、服务端 59、SettingsSearch 133、HTML 124 + 162。Helper 状态覆盖普通、下载、短通知、长通知、结果与固定右下锚点；仍有历史 WebRequest 弃用警告。实际 GUI 通过范围和截图见最终验收报告，听音/正常管理员服务启动/自更新/新机安装未测。
+- 网页实时预览 `http://127.0.0.1:4173/?launcher=1`，启动命令 `node dev-server.mjs 4173`（HTML 的 interactive-preview 目录）。网页使用本地模拟数据，Token 只保存在内存；不向真实服务发送管理操作。
+- 未执行 GitHub 公告正式发布、提交、推送、tag/release、npm 或公开 manifest 更新。全部改动完成后重新构建并提供本地测试入口，等待用户明确反馈本地测试无问题后推进正式发布。补丁 page/resource 已接实际资源消费者与事务恢复；binary/script 安装仍拒绝，参见 PATCHES.md。
 
 ## 1.6.0 正式发布 + XAML 事故复盘（2026-10-07 02:25）
 
@@ -1068,3 +1158,124 @@ pnpm 定位应参考启动器 npm 定位策略：
 4. 修改主题、圆角和图标前读 `LauncherAppearance.cs`、`CornerRadiusHelper.cs`。
 5. 修改路径和卸载前读 `InstallerRegistration.cs` 和安装器仓库的 `ConfigStore.cs`。
 6. 后续版本必须通过父级 `set-version.ps1` 和 `release-all.ps1` 同步启动器与安装器。
+## 本轮公告通知交接（2026-10-07 晚）
+
+### 已完成
+
+- 独立 DeveloperCenter.Server 已部署，临时公网地址为 `http://202.189.21.218:8787`。
+- 根路径、`/health/live`、`/health/ready`、`/api/messages` 已验证 HTTP 200。
+- `/api/admin/messages` 返回 403；数据库无公网端口，SSH 映射未改；TLS 配置和证书目录保留。
+- 客户端已接入公告/通知模型、60 秒轮询、匿名安装 ID、心跳、回执模型、公告已读状态和队列逻辑。
+- 信息小窗增加 Notice 模式：标题、正文、时间、蓝色圆圈叹号、最多两个按钮、确认已读按钮、长正文滚动和受限 actions 命名管道。
+- Markdown 当前为安全纯文本转换，不执行 HTML、脚本、图片、链接目标或代码块，不是完整富文本渲染。
+- 设置窗口常规页增加 BaseUrl、60~86400 秒轮询、在线统计、交互回执、允许 HTTP 开关和明文风险提示。
+- 客户端回归 38 项通过；主启动器构建 0 错误；helper 构建 0 错误；信息窗基础烟测通过。
+
+### 本轮用户反馈与暂缓项
+
+1. 设置窗口左下角没有看到在线人数，presence 当前只写日志，未接到可见绿色圆点和 `N 人在线` UI。
+2. 信息小窗真实公告内容下仍会出现上下留白不对等；尚未完成 Notice 真实内容截图和像素测量。
+3. 最终启动器预览曾被旧安装实例的单实例机制接管，从最终预览目录启动的进程随后退出，主启动器真实预览原因待查。
+4. 尚未用服务端发布测试公告完成真实轮询、弹窗、确认已读、按钮点击和指标核验。
+5. HTTP 是临时明文方案，禁止客户端传管理员 Bearer Token；备案后恢复 HTTPS、关闭 Allow HTTP。
+
+### 后续建议
+
+1. 暂不继续改布局；先发布测试公告并测量 Notice 客户区四边距。
+2. 把 presence 接到设置窗口左下角在线状态。
+3. 修复主启动器预览退出原因。
+4. 完成真实端到端指标验收。
+
+## 服务端与信息小窗接口
+
+### 服务端 HTTP 接口
+
+临时公网基址：`http://202.189.21.218:8787`。
+
+```text
+公网 :8787 -> Nginx HTTP -> API 127.0.0.1:8788 -> PostgreSQL Docker 内网
+```
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/` | 服务状态 JSON |
+| GET | `/health/live` | 进程存活 |
+| GET | `/health/ready` | API 与数据库就绪 |
+| GET | `/api/messages` | 拉取已发布且未过期消息 |
+| GET | `/api/presence` | 最近 300 秒在线安装数 |
+| POST | `/api/installations/heartbeat` | 匿名 installation UUID 心跳 |
+| POST | `/api/messages/{id}/metrics` | Delivered/Displayed/Read/Click 幂等回执 |
+
+管理接口：
+
+```text
+GET  /api/admin/messages
+POST /api/admin/messages
+POST /api/admin/messages/{id}/publish
+POST /api/admin/messages/{id}/withdraw
+GET  /api/admin/messages/{id}/metrics
+GET  /api/admin/presence
+```
+
+管理 API 要求 Bearer Token。Token 只能保存在可信管理端，不能嵌入启动器客户端。当前公网 HTTP 为明文临时方案，禁止发送任何管理凭据；备案后恢复 HTTPS。
+
+消息字段：`kind`、`title`、`markdown`、`expiresAt`、`buttons`。按钮最多 2 个，动作只允许 `Url`、`Settings`、`Dismiss`。Url 仅 HTTPS 无凭据地址；Settings 只能跳转白名单设置页；客户端必须再次校验。
+
+```json
+{"installationId":"匿名UUID"}
+```
+
+```json
+{"installationId":"匿名UUID","kind":"Displayed","buttonPosition":null}
+```
+
+指标类型为 `Delivered`、`Displayed`、`Read`、`Click`。Click 的 `buttonPosition` 只能为 0 或 1，其余指标必须为空；按消息、安装 ID、指标类型和按钮位置去重。
+
+完整服务端契约见 [`DeveloperCenter.Server/docs/API.md`](../DeveloperCenter.Server/docs/API.md)。
+
+### 信息小窗 IPC 接口
+
+主进程使用 `InfoWindowClient`，helper 为 `DafeiyuGo.Info.exe`。主命名管道：
+
+```text
+DafeiyuGo.Info.<session>
+主启动器 -> helper
+CurrentUserOnly，每行一个 JSON
+```
+
+启动参数：
+
+```text
+--theme=<System|Light|Dark>
+--material=<Mica|Acrylic|...>
+--window-style=<System|Windows10|Windows11>
+```
+
+命令：
+
+| Command | 作用 |
+|---|---|
+| `Appearance` | 应用主题、材质、窗口风格 |
+| `Update` | 更新进度，含 Percent |
+| `Working` | 工作中状态 |
+| `Complete` | 成功/失败/警告结果 |
+| `Close` | 关闭 |
+| `Notice` | 公告/通知专用窗口 |
+
+Notice 字段包括 `NoticeId`、`Title`、安全纯文本 `Detail`、`PublishedAt` 和最多两个 `Buttons`。窗口显示正文滚动区、发布时间、按钮和确认已读按钮。
+
+动作回传使用独立管道：
+
+```text
+DafeiyuGo.Info.<session>.actions
+helper -> 主启动器
+CurrentUserOnly，每行一个 JSON
+```
+
+```json
+{"NoticeId":"消息UUID","ButtonIndex":null}
+```
+
+`ButtonIndex:null` 表示确认已读；`0` 或 `1` 表示点击按钮。主启动器必须校验当前消息和按钮定义，再执行已读、URL、设置页或关闭动作，并发送 Read/Click 指标。helper 只回传索引，不执行 URL 或远程命令。
+
+发布/预览目录必须包含 `DafeiyuGo.Info.exe`、`DafeiyuGo.Info.dll`、运行时依赖和 `DafeiyuGo.Info.pri`。
