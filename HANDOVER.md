@@ -1,5 +1,12 @@
 # 交接：大肥鱼Go / Dafeiyu-Go Launcher
 
+## 2026-10-09 00:10 v1.7.1 已发布（本节优先）
+
+- Release：`https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/tag/v1.7.1`（id `407026093`，tag v1.7.1 → `5305347`）。
+- 资产：`DeepSeekHarness-1.7.1.zip`，23,560,998 字节，SHA-256 `BBEFB7C1D3C1C8AA5A087C68A6DC889CE4796F22B914D432C08F0448BA82FE2E`（用户提供的本地构建；压缩包比 1.7.0 小很多，因清掉重复运行库）。
+- `manifest.json` / `manifest-1.7.1.json` 已更新为该哈希并推送（`9c7884b`）；npm `@yunxiramito/dsh-launcher@1.7.1` 已发布。
+- tag CI run `37806490535` 已取消，避免 CI 产物覆盖 Release 资产。
+
 ## 2026-10-08 19:40 v1.7.0 已发布（本节优先）
 
 - 正式 Release：`https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/tag/v1.7.0`（id `406746499`，tag v1.7.0 → `842b128`）。
