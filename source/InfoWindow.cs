@@ -107,8 +107,11 @@ namespace DeepSeekHarnessLauncher
         private StackPanel _noticeButtons;
         private ScrollViewer _detailScroll;
         private string _noticeId;
+        private string _displayedNoticeId;
+        private bool _noticeAutoDismiss;
         private Border _noticeIcon;
         internal event Action<string, int?> NoticeAction;
+        internal event Action<string> NoticeDisplayed;
         private readonly DispatcherQueue _dispatcher;
         private Grid _root;
         private Grid _panel;
@@ -116,6 +119,7 @@ namespace DeepSeekHarnessLauncher
         private Grid _barHost;
         private DispatcherQueueTimer _slideTimer;
         private DispatcherQueueTimer _resultTimer;
+        private DispatcherQueueTimer _firstFrameTimer;
         private WindowState _state = WindowState.Update;
 
         /// <summary>当前实际渲染出来的位置与尺寸；动画每帧更新，也作为下一轮动画的起点。</summary>
@@ -317,6 +321,9 @@ namespace DeepSeekHarnessLauncher
                 });
             _window.Closed += delegate
             {
+                CompositionTarget.Rendering -= OnFirstFrameRendered;
+                CompositionTarget.Rendering -= OnNoticeRendered;
+                _firstFrameTimer?.Stop();
                 LauncherAppearance.Unregister(_window);
                 _closed = true;
             };
@@ -383,6 +390,13 @@ namespace DeepSeekHarnessLauncher
                         _dispatcher.TryEnqueue(
                             DispatcherQueuePriority.Low,
                             delegate { CompositionTarget.Rendering += OnFirstFrameRendered; });
+                        // Offscreen windows can stop receiving rendering events on some displays.
+                        _firstFrameTimer ??= _dispatcher.CreateTimer();
+                        _firstFrameTimer.Interval = TimeSpan.FromMilliseconds(500);
+                        _firstFrameTimer.IsRepeating = false;
+                        _firstFrameTimer.Tick -= OnFirstFrameTimeout;
+                        _firstFrameTimer.Tick += OnFirstFrameTimeout;
+                        _firstFrameTimer.Start();
                     }
                 }
                 catch
@@ -395,6 +409,8 @@ namespace DeepSeekHarnessLauncher
         private void OnFirstFrameRendered(object sender, object args)
         {
             CompositionTarget.Rendering -= OnFirstFrameRendered;
+            _firstFrameTimer?.Stop();
+            if (_closed || _firstFrameRendered) return;
             _firstFrameRendered = true;
             ComputeBottomRight(
                 _windowWidth,
@@ -407,6 +423,12 @@ namespace DeepSeekHarnessLauncher
                 out int offscreenX,
                 out int offscreenY);
             StartSlide(offscreenX, targetX, targetY, targetY, false);
+        }
+
+        private void OnFirstFrameTimeout(DispatcherQueueTimer sender, object args)
+        {
+            sender.Stop();
+            OnFirstFrameRendered(null, null);
         }
 
         /// <summary>滑出屏幕右侧之后再真正关闭（关的时候只有淡出）。</summary>
@@ -531,6 +553,24 @@ namespace DeepSeekHarnessLauncher
                 {
                 }
             }
+            else if (_state == WindowState.Notice) QueueNoticeDisplayReceipt();
+        }
+
+        private void QueueNoticeDisplayReceipt()
+        {
+            CompositionTarget.Rendering -= OnNoticeRendered;
+            CompositionTarget.Rendering += OnNoticeRendered;
+        }
+
+        private void OnNoticeRendered(object sender, object args)
+        {
+            CompositionTarget.Rendering -= OnNoticeRendered;
+            if (_closed || _state != WindowState.Notice || !_firstFrameRendered
+                || _slideClosing || _slideTimer?.IsRunning == true || _root.Opacity <= 0
+                || !_window.AppWindow.IsVisible || _noticeId == _displayedNoticeId) return;
+            _displayedNoticeId = _noticeId;
+            NoticeDisplayed?.Invoke(_noticeId);
+            if (_noticeAutoDismiss) StartResultTimer(InfoOutcome.Information);
         }
 
         /// <summary>cubic-bezier(0.16, 1, 0.3, 1)：快进慢收，跟系统弹窗的曲线感一致。</summary>
@@ -572,7 +612,8 @@ namespace DeepSeekHarnessLauncher
         /// 什么时候用：任何不属于「带百分比进度」的进行中动作——服务启动/重启、
         /// 后台任务执行中；要显示百分比进度或进度条就改用 Update。
         /// </summary>
-        internal void ShowNotice(string id, string title, string markdown, string publishedAt, string[] buttons)
+        internal void ShowNotice(string id, string title, string markdown, string publishedAt, string[] buttons,
+            bool isLocal = false, bool autoDismiss = false)
         {
             RunOnUi(() =>
             {
@@ -580,6 +621,7 @@ namespace DeepSeekHarnessLauncher
                 _state = WindowState.Notice;
                 _panel.Padding = new Thickness(18, 20, 18, 20);
                 _noticeId = id;
+                _noticeAutoDismiss = autoDismiss;
                 _title.Text = title ?? "";
                 _title.TextWrapping = TextWrapping.Wrap;
                 _title.MaxLines = 3;
@@ -599,6 +641,7 @@ namespace DeepSeekHarnessLauncher
                 _noticeIcon.VerticalAlignment = VerticalAlignment.Top;
                 _indicator.VerticalAlignment = VerticalAlignment.Top;
                 _noticeTimestamp.Text = publishedAt ?? "";
+                _noticeTimestamp.Visibility = isLocal ? Visibility.Collapsed : Visibility.Visible;
                 _noticeFooter.Visibility = Visibility.Visible;
                 _noticeButtons.Children.Clear();
                 double scale = LayoutScale();
@@ -615,10 +658,10 @@ namespace DeepSeekHarnessLauncher
                     button.Click += (_, _) => NoticeAction?.Invoke(_noticeId, selected);
                     _noticeButtons.Children.Add(button);
                 }
-                var confirm = new Button { Content = new TextBlock { Text = "已读", FontSize = 12,
+                var confirm = new Button { Content = new TextBlock { Text = isLocal ? "关闭" : "已读", FontSize = 12,
                     TextWrapping = TextWrapping.NoWrap }, Width = readButtonWidth, Padding = new Thickness(8, 6, 8, 6) };
-                Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(confirm, "已读");
-                ToolTipService.SetToolTip(confirm, "标记已读并关闭");
+                Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(confirm, isLocal ? "关闭" : "已读");
+                ToolTipService.SetToolTip(confirm, isLocal ? "关闭通知" : "标记已读并关闭");
                 confirm.Click += (_, _) => NoticeAction?.Invoke(_noticeId, null);
                 _noticeButtons.Children.Add(confirm);
                 // XAML measures in DIPs; AppWindow bounds are physical pixels, including at 150% DPI.
@@ -627,6 +670,7 @@ namespace DeepSeekHarnessLauncher
                 _detailScroll.MaxHeight = Math.Max(40, Math.Min(320, 480 / scale - 2 - fixedHeight));
                 _panel.Measure(new Windows.Foundation.Size(contentWidth, Double.PositiveInfinity));
                 Resize(NoticeWindowWidth, Math.Clamp((int)Math.Ceiling((_panel.DesiredSize.Height + 2) * scale), 120, 480), true);
+                QueueNoticeDisplayReceipt();
             });
         }
 

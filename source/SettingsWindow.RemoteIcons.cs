@@ -70,7 +70,17 @@ namespace DeepSeekHarnessLauncher
                         cancellation.ThrowIfCancellationRequested();
                         stream.Seek(0);
                         if (icon is SvgImageSource svg) await svg.SetSourceAsync(stream);
-                        else await ((BitmapImage)icon).SetSourceAsync(stream);
+                        else
+                        {
+                            var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream);
+                            var bitmap = (BitmapImage)icon;
+                            const int maximumEdge = 128;
+                            if (decoder.PixelWidth >= decoder.PixelHeight)
+                                bitmap.DecodePixelWidth = (int)Math.Min(decoder.PixelWidth, maximumEdge);
+                            else bitmap.DecodePixelHeight = (int)Math.Min(decoder.PixelHeight, maximumEdge);
+                            stream.Seek(0);
+                            await bitmap.SetSourceAsync(stream);
+                        }
                         return;
                     }
                     catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { throw; }

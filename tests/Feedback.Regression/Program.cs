@@ -18,6 +18,33 @@ async Task<T> ThrowsAsync<T>(Func<Task> action, string name) where T : Exception
 }
 
 // The fixture lives beside these test binaries on the workspace drive, never in real launcher state.
+var notificationTracker = new DeveloperFeedbackNotificationTracker();
+DateTimeOffset baselineTime = DateTimeOffset.UtcNow.AddMinutes(-2);
+var existingFeedback = new FeedbackModel { Id = "existing", CreatedAt = baselineTime.AddDays(-1), UpdatedAt = baselineTime };
+var newFeedback = new FeedbackModel { Id = "new", CreatedAt = baselineTime.AddSeconds(1), UpdatedAt = baselineTime.AddSeconds(1) };
+notificationTracker.BeginPoll();
+var initialPage = notificationTracker.ObservePage(new[] { existingFeedback });
+Check(initialPage.NewItems.Count == 0 && !initialPage.ScanNextPage, "developer first page establishes baseline without scanning historical feedback");
+notificationTracker.CompletePoll();
+notificationTracker.BeginPoll();
+Check(notificationTracker.ObservePage(new[] { newFeedback }).NewItems.Single() == newFeedback, "developer receives new feedback after baseline");
+var sameTime = new FeedbackModel { Id = "same-time", CreatedAt = newFeedback.CreatedAt, UpdatedAt = newFeedback.UpdatedAt };
+Check(notificationTracker.ObservePage(new[] { sameTime, existingFeedback }).NewItems.Single() == sameTime, "multi-page scan retains new feedback with same timestamp");
+notificationTracker.CompletePoll();
+existingFeedback.Reply = "updated historical feedback";
+existingFeedback.UpdatedAt = baselineTime.AddSeconds(5);
+notificationTracker.BeginPoll();
+Check(notificationTracker.ObservePage(new[] { existingFeedback, newFeedback }).NewItems.Count == 0,
+    "historical replies and repeated polls do not trigger new-item notifications");
+var boundaryNew = new FeedbackModel { Id = "new-same-boundary", CreatedAt = newFeedback.CreatedAt, UpdatedAt = newFeedback.UpdatedAt };
+Check(notificationTracker.ObservePage(new[] { boundaryNew }).NewItems.Single() == boundaryNew,
+    "equal poll watermark scans across page boundaries without missing a new ID");
+var oldPage = notificationTracker.ObservePage(new[] { new FeedbackModel { Id = "older", CreatedAt = baselineTime.AddDays(-2), UpdatedAt = baselineTime.AddDays(-1) } });
+Check(!oldPage.ScanNextPage && oldPage.NewItems.Count == 0, "incremental scan stops below previous successful watermark");
+notificationTracker.CompletePoll();
+var resetTracker = new DeveloperFeedbackNotificationTracker();
+resetTracker.BeginPoll();
+Check(resetTracker.ObservePage(new[] { existingFeedback }).NewItems.Count == 0, "changed developer token resets first-load baseline");
 string fixture = Path.Combine(AppContext.BaseDirectory, "feedback-fixture-" + Guid.NewGuid().ToString("N"));
 string machineGuid = "64b987f1-38a5-4224-a387-2939e12399bd";
 var json = new JsonSerializerOptions { PropertyNameCaseInsensitive = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };

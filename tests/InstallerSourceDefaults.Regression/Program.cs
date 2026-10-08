@@ -47,6 +47,17 @@ try
     ConfigStore.SaveLauncherDefaults(launcherDirectory, dshRoot, "backend");
     var existing = LauncherSettingsStore.LoadOrCreate(launcherDirectory, dshRoot);
     Check(existing.MirrorSource == "ghfast" && existing.UpdateSource == "Accelerated", "existing user preference survives installer backend default");
+    Check(existing.InstallerUpdateMode == "Install", "older settings gain independent automatic installer updates");
+    foreach (string mode in new[] { "Install", "Check", "Off" })
+    {
+        existing.InstallerUpdateMode = mode;
+        LauncherSettingsStore.Save(existing);
+        Check(LauncherSettingsStore.LoadOrCreate(launcherDirectory, dshRoot).InstallerUpdateMode == mode,
+            "installer update choice survives save and normalization: " + mode);
+    }
+    existing.InstallerUpdateMode = "invalid";
+    LauncherSettingsStore.Save(existing);
+    Check(LauncherSettingsStore.LoadOrCreate(launcherDirectory, dshRoot).InstallerUpdateMode == "Install", "invalid installer update policy normalizes to automatic installation");
     existing.UpdateSource = "Official";
     LauncherSettingsStore.Save(existing);
     ConfigStore.SaveLauncherDefaults(launcherDirectory, dshRoot, "china");
@@ -121,11 +132,16 @@ namespace DeepSeekHarnessLauncher
 namespace DshInstaller.Shared.Install
 {
     public static class MirrorSource { public const string China = "china"; }
-    public static class BackendDownloadSource { public static string SelectedPreference { get; set; } }
+    public static class BackendDownloadSource
+    {
+        public static string SelectedPreference { get; set; }
+        public static bool IsSelected(string value) => value == "backend";
+    }
     public sealed class ReusableComponent
     {
         public string Id { get; set; }
         public string ExePath { get; set; }
+        public string Version { get; set; }
         public string PathDirectory { get; set; }
     }
     public sealed class UninstallOptions

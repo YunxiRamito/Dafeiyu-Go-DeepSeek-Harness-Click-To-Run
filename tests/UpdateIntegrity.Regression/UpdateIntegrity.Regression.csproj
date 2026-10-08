@@ -11,6 +11,7 @@
     <Compile Include="../../source/InstallerVersionPolicy.cs" Link="InstallerVersionPolicy.cs" />
     <Compile Include="../../source/InstallerVersionReader.cs" Link="InstallerVersionReader.cs" />
     <Compile Include="../../source/InstallerUpdateService.cs" Link="InstallerUpdateService.cs" />
+    <Compile Include="../../source/UpdateMetadataReader.cs" Link="UpdateMetadataReader.cs" />
     <Compile Include="../../source/BackendDownloadSource.cs" Link="BackendDownloadSource.cs" />
   </ItemGroup>
 </Project>

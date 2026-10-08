@@ -97,6 +97,23 @@ InstallerUpdateService.WriteCache(new InstallerUpdatePackage
 Assert(InstallerUpdateService.ReadCache(true) == null, "cache with an unparsable version is ignored");
 InstallerUpdateService.WriteCache(cachedPackage);
 
+int fetches = 0;
+InstallerUpdatePackage FetchNewRelease()
+{
+    fetches++;
+    return new InstallerUpdatePackage { Version = "10.0.0", SetupUrl = cachedPackage.SetupUrl, Sha256 = new string('b', 64) };
+}
+var automaticCached = InstallerUpdateService.FetchReleaseWithCache(FetchNewRelease,
+    () => throw new Exception("unexpected version fallback"), out error, false);
+Assert(automaticCached.Version == "9.9.9" && fetches == 0, "automatic metadata check respects fresh cache");
+var manualFresh = InstallerUpdateService.FetchReleaseWithCache(FetchNewRelease,
+    () => throw new Exception("unexpected version fallback"), out error, true);
+Assert(manualFresh.Version == "10.0.0" && fetches == 1 && error == null, "manual check bypasses fresh cache and finds a new installer");
+Assert(InstallerUpdateService.ReadCache(true).Version == "10.0.0", "manual refresh persists the latest verified installer");
+var offlineCached = InstallerUpdateService.FetchReleaseWithCache(() => throw new System.Net.WebException("offline"),
+    () => throw new Exception("unexpected version fallback"), out error, true);
+Assert(offlineCached.Version == "10.0.0" && !String.IsNullOrWhiteSpace(error), "offline cache cannot be reported as a successful current check");
+
 Console.WriteLine($"PASS: {checks} integrity regression checks; no download, update or app launch.");
 try
 {
@@ -125,6 +142,7 @@ namespace DeepSeekHarnessLauncher
     internal static class ProxySupport
     {
         internal static void Apply(System.Net.WebRequest value) => throw new Exception("Unexpected network I/O");
+        internal static void Apply(System.Net.WebRequest value, LauncherSettings settings) => throw new Exception("Unexpected network I/O");
         internal static void Apply(System.Net.WebClient value) => throw new Exception("Unexpected network I/O");
     }
     internal static class UpdateSupport

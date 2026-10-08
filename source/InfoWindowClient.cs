@@ -23,6 +23,9 @@ namespace DeepSeekHarnessLauncher
         internal event Action<string, int?> NoticeAction;
         internal event Action<string> NoticeDisplayed;
         private int _actionListenerStarted;
+        private string _noticeId;
+        private DateTime _noticeDisplayStartedUtc;
+        private volatile bool _noticeDisplayed;
         private volatile bool _closed;
         private volatile bool _showingResult;
         private DateTime _resultUtc;
@@ -63,6 +66,9 @@ namespace DeepSeekHarnessLauncher
             get { return _closed || (_showingResult && _resultHoldSeconds != 5 && (DateTime.UtcNow - _resultUtc).TotalSeconds > _resultHoldSeconds + 0.3); }
         }
         internal bool IsShowingResult { get { return _showingResult; } }
+        internal bool HasDisplayedNotice => _noticeDisplayed;
+        internal bool IsNoticeDisplayTimedOut => _noticeId != null && !_noticeDisplayed
+            && (DateTime.UtcNow - _noticeDisplayStartedUtc).TotalSeconds >= 30;
 
         internal void Show()
         {
@@ -321,7 +327,8 @@ namespace DeepSeekHarnessLauncher
             string message = JsonSerializer.Serialize(new
             {
                 Command = command, Title = title ?? "", Detail = detail ?? "",
-                Percent = percent, Outcome = outcome, PlayChime = playChime,
+                Percent = percent, Outcome = outcome, PlayChime = playChime && Program.Settings?.NotificationMuted != true,
+                Muted = Program.Settings?.NotificationMuted == true,
                 Dark = String.Equals(Program.Settings?.Theme, "Dark", StringComparison.OrdinalIgnoreCase),
                 Theme = Program.Settings?.Theme ?? "System",
                 Material = Program.Settings?.Material ?? "Mica",
@@ -335,6 +342,9 @@ namespace DeepSeekHarnessLauncher
         {
             if (notice == null || !notice.Validate(out _)) return;
             _showingResult = false;
+            _noticeId = notice.Id;
+            _noticeDisplayStartedUtc = DateTime.UtcNow;
+            _noticeDisplayed = false;
             if (Interlocked.Exchange(ref _actionListenerStarted, 1) == 0)
                 _ = System.Threading.Tasks.Task.Run(ReadNoticeActions);
             string message = JsonSerializer.Serialize(new {
@@ -342,6 +352,9 @@ namespace DeepSeekHarnessLauncher
                 Detail = notice.Markdown,
                 NoticeId = notice.Id, PublishedAt = notice.DisplayDate,
                 Buttons = notice.Buttons.ConvertAll(button => button.Text).ToArray(),
+                IsLocal = notice.IsLocal, AutoDismiss = notice.AutoDismiss,
+                PlayChime = Program.Settings?.NotificationMuted != true,
+                Muted = Program.Settings?.NotificationMuted == true,
                 Theme = Program.Settings?.Theme ?? "System", Material = Program.Settings?.Material ?? "Mica",
                 WindowStyle = Program.Settings?.WindowStyle ?? "System"
             });
@@ -368,7 +381,11 @@ namespace DeepSeekHarnessLauncher
                         if (id?.Length <= 128 && json.RootElement.TryGetProperty("Event", out var eventName)
                             && eventName.GetString() == "Displayed")
                         {
-                            _dispatcher.TryEnqueue(() => NoticeDisplayed?.Invoke(id));
+                            if (String.Equals(id, _noticeId, StringComparison.Ordinal) && !_noticeDisplayed)
+                            {
+                                _noticeDisplayed = true;
+                                _dispatcher.TryEnqueue(() => NoticeDisplayed?.Invoke(id));
+                            }
                             pipe.Disconnect();
                             continue;
                         }

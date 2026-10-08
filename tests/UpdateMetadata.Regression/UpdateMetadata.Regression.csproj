@@ -11,6 +11,5 @@
     <Compile Include="../../source/ProductVersion.cs" Link="ProductVersion.cs" />
     <Compile Include="../../source/BackendDownloadSource.cs" Link="BackendDownloadSource.cs" />
     <Compile Include="../../source/GitHubAccelerator.cs" Link="GitHubAccelerator.cs" />
-    <Compile Include="../../source/StartupUpdatePolicy.cs" Link="StartupUpdatePolicy.cs" />
   </ItemGroup>
 </Project>

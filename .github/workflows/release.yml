@@ -90,7 +90,7 @@ jobs:
         shell: pwsh
         run: |
           .\check-release-gate.ps1 -Version '${{ steps.meta.outputs.version }}'
-          foreach ($suite in @('PluginUpdateCompare', 'PluginInstallRepair', 'PatchSystem', 'SettingsSearch', 'ClientNotice', 'DeveloperNotice', 'InfoWindowClient')) {
+          foreach ($suite in @('PluginUpdateCompare', 'PluginInstallRepair', 'PatchSystem', 'SettingsSearch', 'ClientNotice', 'DeveloperNotice', 'InfoWindowClient', 'DshDataImport', 'DshDataExport', 'DshDataDiscovery', 'StartupBackgroundUpdates', 'UpdateMetadata', 'UpdateIntegrity')) {
             dotnet run --project "tests\$suite.Regression\$suite.Regression.csproj" -c Release
             if ($LASTEXITCODE -ne 0) { throw "$suite regression failed" }
           }
@@ -125,6 +125,8 @@ jobs:
         run: |
           .\verify.ps1 -Dist .\source\dist-release -Version '${{ steps.meta.outputs.version }}'
           if ($LASTEXITCODE -ne 0) { throw 'Release artifacts invalid' }
+          dotnet run --project tests\StartupUpdateOwnership.Regression\StartupUpdateOwnership.Regression.csproj -c Release -- source\dist-release
+          if ($LASTEXITCODE -ne 0) { throw 'Update ownership regression failed' }
 
       - name: 打包未签名 ZIP
         shell: pwsh

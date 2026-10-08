@@ -28,6 +28,7 @@ namespace DeepSeekHarnessLauncher
         /// <summary>在线插件的来源：Market = DSH 插件市场（api.dshmk.com），GitHub = GitHub 搜索接口。</summary>
         public string PluginSource { get; set; } = "Market";
         public string LauncherUpdateMode { get; set; } = "Install";
+        public string InstallerUpdateMode { get; set; } = "Install";
         public string DshUpdateMode { get; set; } = "Check";
         public string PluginUpdateMode { get; set; } = "Check";
 
@@ -47,6 +48,7 @@ namespace DeepSeekHarnessLauncher
         public string DshChannel { get; set; } = "latest";
         public DateTime? LastUpdateCheckUtc { get; set; }
         public string LastNotifiedLauncherVersion { get; set; } = String.Empty;
+        public string LastNotifiedInstallerVersion { get; set; } = String.Empty;
         public string LastNotifiedDshVersion { get; set; } = String.Empty;
         public string LastNotifiedPluginSignature { get; set; } = String.Empty;
 
@@ -91,6 +93,7 @@ namespace DeepSeekHarnessLauncher
         public DateTime? ApiKeyValidatedUtc { get; set; }
         public bool ApiKeyLastValidationSucceeded { get; set; }
 
+        public bool NotificationMuted { get; set; }
         public bool UpdateReminder { get; set; } = true;
         public bool PluginUpdateReminder { get; set; } = true;
         public bool RechargeReminder { get; set; } = true;

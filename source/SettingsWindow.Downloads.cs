@@ -71,9 +71,6 @@ namespace DeepSeekHarnessLauncher
             if (ActiveDownloadRows == null) return;
             List<DownloadTaskRecord> tasks = DownloadTaskCenter.Snapshot();
             int active = tasks.Count(IsActiveDownload);
-            int downloading = tasks.Count(t => t.Status == "Downloading" || t.Status == "Preparing");
-            int paused = tasks.Count(t => t.Status == "Paused");
-            int failed = tasks.Count(t => t.Status == "Failed" && IsActiveDownload(t));
             DownloadsNavItem.Content = active > 0 ? "下载任务 · " + active : "下载任务";
             // 入口默认藏着：真有在下载/暂停/待重试的任务，或者人已经在下载页
             // （搜索「下载 / xz」点进来）时才露出来。
@@ -82,13 +79,15 @@ namespace DeepSeekHarnessLauncher
                 && (active > 0 || DownloadsPage.Visibility == Visibility.Visible)
                 ? Visibility.Visible
                 : Visibility.Collapsed;
+            if (DownloadsPage.Visibility != Visibility.Visible) return;
+            int downloading = tasks.Count(t => t.Status == "Downloading" || t.Status == "Preparing");
+            int paused = tasks.Count(t => t.Status == "Paused");
+            int failed = tasks.Count(t => t.Status == "Failed" && IsActiveDownload(t));
             DownloadSummaryText.Text = active == 0 ? "共 " + tasks.Count + " 条历史记录"
                 : downloading + " 个下载中 · " + paused + " 个已暂停 · " + failed + " 个待重试";
             ActiveDownloadsEmptyText.Visibility = active == 0 ? Visibility.Visible : Visibility.Collapsed;
             DownloadHistoryEmptyText.Visibility = tasks.Count == active ? Visibility.Visible : Visibility.Collapsed;
             ClearDownloadHistoryButton.IsEnabled = tasks.Count > active;
-            if (DownloadsPage.Visibility != Visibility.Visible) return;
-
             var ids = new HashSet<string>(tasks.Select(t => t.Id));
             foreach (string id in _downloadRows.Keys.Where(id => !ids.Contains(id)).ToList())
             {

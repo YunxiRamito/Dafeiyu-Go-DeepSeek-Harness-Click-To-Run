@@ -2,6 +2,7 @@ using DeepSeekHarnessLauncher;
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 
@@ -44,6 +45,11 @@ CheckCompletion(client => client.CompleteInfo(InfoOutcome.Success, "silent", "do
 CheckCompletion(client => client.CompletePatch(true, "installed", false), "Success", true, "patch update success");
 CheckCompletion(client => client.CompletePatch(false, "failed", false), "Failure", false, "patch update failure");
 CheckCompletion(client => client.NotifyFeedbackReply("反馈有新回复", "收到"), "Information", true, "feedback reply");
+DeepSeekHarnessLauncher.Program.Settings.NotificationMuted = true;
+CheckCompletion(client => client.CompleteInfo(InfoOutcome.Success, "muted update", "done"), "Success", false, "muted update success");
+CheckCompletion(client => client.NotifyFeedbackReply("muted reply", "detail"), "Information", false, "muted feedback reply");
+CheckCompletion(client => client.CompleteService(true, false, "started"), "Success", false, "muted service remains silent");
+DeepSeekHarnessLauncher.Program.Settings.NotificationMuted = false;
 var replyClient = Client();
 replyClient.NotifyFeedbackReply("反馈有新回复", "收到");
 Check((double)typeof(InfoWindowClient).GetField("_resultHoldSeconds", privateInstance).GetValue(replyClient) == 5,
@@ -81,6 +87,10 @@ var notice = new ClientNoticeMessage
     Buttons = new List<ClientNoticeButton> { new ClientNoticeButton { Text = "Open", Action = "url", Target = "https://example.test" } }
 };
 noticeClient.ShowNotice(notice);
+Check(!noticeClient.HasDisplayedNotice && !noticeClient.IsNoticeDisplayTimedOut,
+    "serializing notice does not pretend helper has displayed it");
+typeof(InfoWindowClient).GetField("_noticeDisplayStartedUtc", privateInstance).SetValue(noticeClient, DateTime.UtcNow.AddSeconds(-31));
+Check(noticeClient.IsNoticeDisplayTimedOut, "missing helper display acknowledgement times out for launcher retry");
 using (var payload = LastPayload(noticeClient))
 {
     var value = payload.RootElement;
@@ -89,9 +99,36 @@ using (var payload = LastPayload(noticeClient))
         "notice identity and Markdown preserved");
     Check(value.GetProperty("PublishedAt").GetString() == "2030-01-01", "independent notice display date preserved");
     Check(value.GetProperty("Buttons")[0].GetString() == "Open", "notice button labels preserved");
-    Check(!value.TryGetProperty("PlayChime", out _), "notice keeps its existing helper audio protocol");
+    Check(value.GetProperty("PlayChime").GetBoolean() && !value.GetProperty("Muted").GetBoolean(),
+        "notice default preserves existing sound");
 }
+DeepSeekHarnessLauncher.Program.Settings.NotificationMuted = true;
+notice.IsLocal = true;
+notice.AutoDismiss = true;
+noticeClient.ShowNotice(notice);
+using (var payload = LastPayload(noticeClient))
+{
+    var value = payload.RootElement;
+    Check(!value.GetProperty("PlayChime").GetBoolean() && value.GetProperty("Muted").GetBoolean(), "muted notice carries explicit silent policy");
+    Check(value.GetProperty("IsLocal").GetBoolean() && value.GetProperty("AutoDismiss").GetBoolean(), "local notice carries display policy without service action");
+}
+DeepSeekHarnessLauncher.Program.Settings.NotificationMuted = false;
 noticeClient.Close();
+var localNotifications = new List<ClientNoticeMessage>();
+NotificationService.Initialize(localNotifications.Add);
+Check(NotificationService.Show("balance alert", true), "former Windows balloon enters information-window queue");
+Check(NotificationService.ShowPluginUpdateCompleted(2), "plugin completion enters information-window queue");
+Check(localNotifications.Count == 2 && localNotifications.All(item => item.IsLocal && item.Validate(out _)),
+    "queued notifications are validated local messages without backend identity");
+Check(localNotifications[0].AutoDismiss && !localNotifications[1].AutoDismiss,
+    "short notification dismisses automatically while plugin action stays available");
+Check(localNotifications[1].Buttons.Select(button => button.Text).SequenceEqual(new[] { "重启 DSH", "稍后" }),
+    "plugin update retains both actions");
+localNotifications[1].Buttons[0].LocalAction();
+Check(DeepSeekHarnessLauncher.Program.RestartRequests == 1, "plugin restart action reaches existing launcher restart entry");
+Check(localNotifications[1].Buttons[1].LocalAction == null, "plugin later action dismisses without restarting");
+NotificationService.Shutdown();
+Check(!NotificationService.Show("after shutdown", false), "notification service releases launcher callback on shutdown");
 string actionFixture = Path.Combine(Environment.CurrentDirectory, ".info-notice-tests", Guid.NewGuid().ToString("N"));
 var actionClient = new InfoWindowClient(new Microsoft.UI.Dispatching.DispatcherQueue { ExecuteCallbacks = true },
     message => Console.WriteLine("IPC fixture log: " + message));
@@ -119,19 +156,40 @@ try
         arrived.Release();
     };
     actionClient.ShowNotice(actionMessage);
-    async Task SendAction(string eventName, int? index)
+    async Task SendAction(string eventName, int? index, string noticeId = null)
     {
+        // ShowNotice starts the action listener on a background task. Give that
+        // task a turn before ConnectAsync occupies a thread-pool worker.
+        if (OperatingSystem.IsWindows())
+        {
+            DateTime readyDeadline = DateTime.UtcNow.AddSeconds(10);
+            string nativePipeName = @"\\.\pipe\" + actionClient.Session + ".actions";
+            while (!NamedPipeFixture.WaitNamedPipe(nativePipeName, 1))
+            {
+                if (DateTime.UtcNow >= readyDeadline)
+                    throw new TimeoutException("Isolated action pipe was not ready; Windows error "
+                        + Marshal.GetLastWin32Error() + ".");
+                await Task.Delay(25);
+            }
+        }
         using var pipe = new NamedPipeClientStream(".", actionClient.Session + ".actions", PipeDirection.Out, PipeOptions.Asynchronous);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
         await pipe.ConnectAsync(timeout.Token);
         using var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
-        await writer.WriteLineAsync(JsonSerializer.Serialize(new { NoticeId = actionMessage.Id, ButtonIndex = index, Event = eventName }));
+        await writer.WriteLineAsync(JsonSerializer.Serialize(new { NoticeId = noticeId ?? actionMessage.Id, ButtonIndex = index, Event = eventName }));
         // Each helper event uses a new connection; let the server finish disconnecting this one.
         await Task.Delay(100);
     }
+    await SendAction("Displayed", null, "stale-notice");
+    Check(!displayed.Task.IsCompleted && !actionClient.HasDisplayedNotice, "stale display acknowledgement cannot confirm the active notice");
+    int displayCallbacks = 0;
+    actionClient.NoticeDisplayed += _ => displayCallbacks++;
     await SendAction("Displayed", null);
     Check(await displayed.Task.WaitAsync(TimeSpan.FromSeconds(3)) == actionMessage.Id && actions.IsEmpty
-        && !actionStore.IsNotificationRead(actionMessage.Id), "real helper Displayed IPC preserves unread notification");
+        && !actionStore.IsNotificationRead(actionMessage.Id) && actionClient.HasDisplayedNotice
+        && !actionClient.IsNoticeDisplayTimedOut, "real helper Displayed IPC confirms display and preserves unread notification");
+    await SendAction("Displayed", null);
+    Check(displayCallbacks == 1, "duplicate helper display acknowledgements do not repeat launcher metrics");
     foreach (int? index in new int?[] { 0, 1, null })
     {
         await SendAction("Action", index);
@@ -146,6 +204,13 @@ finally
     if (Directory.Exists(actionFixture)) Directory.Delete(actionFixture, true);
 }
 Console.WriteLine($"PASS {checks} information-window IPC checks; local isolated action pipe only, no helper process, audio, network, or user settings.");
+
+internal static class NamedPipeFixture
+{
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool WaitNamedPipe(string name, uint timeout);
+}
 
 namespace Microsoft.UI.Dispatching
 {
@@ -168,8 +233,14 @@ namespace DeepSeekHarnessLauncher
         internal string Theme { get; set; } = "System";
         internal string Material { get; set; } = "Mica";
         internal string WindowStyle { get; set; } = "System";
+        internal bool NotificationMuted { get; set; }
     }
-    internal static class Program { internal static AppearanceSettings Settings = new AppearanceSettings(); }
+    internal static class Program
+    {
+        internal static AppearanceSettings Settings = new AppearanceSettings();
+        internal static int RestartRequests;
+        internal static void RestartAfterPluginUpdate() { RestartRequests++; }
+    }
     internal static class LauncherSettingsStore
     {
         internal static string DirectoryPath => throw new Exception("Real launcher state forbidden in IPC regression.");

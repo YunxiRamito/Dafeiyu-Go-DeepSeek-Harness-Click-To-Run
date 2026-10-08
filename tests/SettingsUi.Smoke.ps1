@@ -20,6 +20,7 @@ public static class SettingsCapture {
 [SettingsCapture]::SetThreadDpiAwarenessContext([IntPtr]::new(-4)) | Out-Null
 New-Item -ItemType Directory -Force $Output | Out-Null
 $env:DAFEIYU_LAUNCHER_SETTINGS_DIRECTORY = Join-Path $Output 'settings'
+$env:DAFEIYU_DOWNLOAD_HISTORY_DIRECTORY = Join-Path ([IO.Path]::GetFullPath($Output)) 'downloads'
 New-Item -ItemType Directory -Force $env:DAFEIYU_LAUNCHER_SETTINGS_DIRECTORY | Out-Null
 $fixtureFile = Join-Path $env:DAFEIYU_LAUNCHER_SETTINGS_DIRECTORY 'LauncherSettings.json'
 if (!(Test-Path -LiteralPath $fixtureFile)) {
@@ -91,6 +92,38 @@ try {
  }
  $nodes = $element.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
  $rows = foreach ($node in $nodes) { if ($node.Current.Name) { [pscustomobject]@{Name=$node.Current.Name;Type=$node.Current.ControlType.ProgrammaticName;Offscreen=$node.Current.IsOffscreen;Bounds=$node.Current.BoundingRectangle.ToString()} } }
+ if ($Page -eq 'Alerts') {
+  foreach ($text in @('通知静音','更新提醒','插件更新提醒','充值提醒','今日消费提醒','余额提醒')) {
+   if (!$rows.Where({$_.Name -eq $text -and !$_.Offscreen}).Count) { throw "Alert control missing: $text" }
+  }
+  foreach ($amount in @('¥5','¥10','¥20','¥50','¥1')) {
+   if (!$rows.Where({$_.Name -eq $amount -and $_.Type -eq 'ControlType.CheckBox' -and !$_.Offscreen}).Count) { throw "Alert threshold clipped: $amount" }
+  }
+  $customChecks=@($nodes | Where-Object {$_.Current.Name -eq '自定义金额' -and $_.Current.ControlType -eq [Windows.Automation.ControlType]::CheckBox -and !$_.Current.IsOffscreen} | Sort-Object {$_.Current.BoundingRectangle.Left})
+  foreach($index in 0,1) {
+   $inputName=if($index -eq 0){'自定义消费提醒金额'}else{'自定义余额提醒金额'}
+   $input=$nodes | Where-Object {$_.Current.Name -eq $inputName -and !$_.Current.IsOffscreen} | Select-Object -First 1
+   if($customChecks.Count -ne 2 -or !$input){throw 'Custom alert amount controls missing'}
+   $checkBounds=$customChecks[$index].Current.BoundingRectangle
+   $inputBounds=$input.Current.BoundingRectangle
+   $gap=$inputBounds.Left-$checkBounds.Right
+   if($gap -lt 0 -or $gap -gt 16 -or [Math]::Abs($inputBounds.Top-$checkBounds.Top) -gt 2){throw "Custom alert amount is not adjacent and aligned: $inputName gap=$gap"}
+   Write-Host "PASS custom amount adjacent and aligned: $inputName checkbox=$checkBounds input=$inputBounds"
+  }
+  $mute=$nodes | Where-Object {$_.Current.Name -eq '通知静音' -and $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button} | Select-Object -First 1
+  $pattern=$mute.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)
+  foreach($expectedMute in $true,$false) {
+   $targetState=if($expectedMute){[Windows.Automation.ToggleState]::On}else{[Windows.Automation.ToggleState]::Off}
+   if($pattern.Current.ToggleState -ne $targetState){$pattern.Toggle()}
+   $saveDeadline=[datetime]::UtcNow.AddSeconds(5)
+   do {
+    Start-Sleep -Milliseconds 100
+    $saved=Get-Content -LiteralPath $fixtureFile -Raw | ConvertFrom-Json
+   } while($saved.notificationMuted -ne $expectedMute -and [datetime]::UtcNow -lt $saveDeadline)
+   if($saved.notificationMuted -ne $expectedMute){throw "Mute toggle was not persisted: expected=$expectedMute"}
+  }
+  Write-Host 'PASS reminder controls, all thresholds visible, mute enabled and disabled persist to isolated settings'
+ }
  if ($Page -in @('Patches','Updates')) {
   foreach ($tab in @('更新','补丁')) {
    if (!$rows.Where({$_.Name -eq $tab -and $_.Type -eq 'ControlType.TabItem' -and !$_.Offscreen}).Count) { throw "Tab missing: $tab" }

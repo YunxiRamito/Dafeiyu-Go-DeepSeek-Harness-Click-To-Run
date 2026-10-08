@@ -11,11 +11,17 @@ namespace DeepSeekHarnessLauncher
         public Func<string> GetServiceStatus { get; set; } =
             delegate { return "状态未知"; };
 
+        public Func<bool> IsDshDataInUse { get; set; } = delegate { return false; };
+        public Func<bool> TryBeginDshDataTransfer { get; set; } = delegate { return false; };
+        public Action EndDshDataTransfer { get; set; } = delegate { };
+
         public Action RestartService { get; set; } = delegate { };
         public Action StopService { get; set; } = delegate { };
         public Action RecheckEnvironment { get; set; } = delegate { };
         public Action CheckLauncherUpdate { get; set; } = delegate { };
         public Action InstallLauncherUpdate { get; set; } = delegate { };
+        public Action CheckInstallerUpdate { get; set; } = delegate { };
+        public Action InstallInstallerUpdate { get; set; } = delegate { };
         public Action CheckDshUpdate { get; set; } = delegate { };
         public Action InstallDshUpdate { get; set; } = delegate { };
         public Action CheckPluginUpdates { get; set; } = delegate { };
@@ -25,6 +31,8 @@ namespace DeepSeekHarnessLauncher
             delegate { return new UpdateUiSnapshot(); };
         public Func<UpdateUiSnapshot> GetDshUpdateState { get; set; } =
             delegate { return new UpdateUiSnapshot(); };
+        public Func<UpdateUiSnapshot> GetInstallerUpdateState { get; set; } =
+            delegate { return new UpdateUiSnapshot(); };
         public Func<UpdateUiSnapshot> GetPluginUpdateState { get; set; } =
             delegate { return new UpdateUiSnapshot(); };
         public Action<string> ApplyApiKey { get; set; } = delegate { };
@@ -33,6 +41,8 @@ namespace DeepSeekHarnessLauncher
         public Func<ClientNoticePresence> GetNoticePresence { get; set; } = delegate { return null; };
         public Action<bool> SetPresencePollingEnabled { get; set; } = delegate { };
         public Action NoticeSettingsChanged { get; set; } = delegate { };
+        public Action DeveloperIdentityActivated { get; set; } = delegate { };
+        public Action DeveloperCredentialsChanged { get; set; } = delegate { };
         public Action<string, string, double> PatchProgress { get; set; } = delegate { };
         public Action<bool, string, bool> PatchCompleted { get; set; } = delegate { };
 

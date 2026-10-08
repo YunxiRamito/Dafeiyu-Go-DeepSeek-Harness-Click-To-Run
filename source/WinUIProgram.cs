@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Numerics;
@@ -26,8 +27,6 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.Win32;
-using Microsoft.Windows.AppNotifications;
-using Microsoft.Windows.AppNotifications.Builder;
 using Windows.Graphics;
 using Windows.Storage.Streams;
 using WinFormsApplication = System.Windows.Forms.Application;
@@ -44,7 +43,7 @@ namespace DeepSeekHarnessLauncher
     {
         public const string Title = "Dafeiyu-Go";
         public const string EnglishTitle = "Dafeiyu-Go";
-        public const string Version = "1.7.0";
+        public const string Version = "1.7.1";
         public const string Repository = "YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run";
         public const string LegacyRepository = "YunxiRamito/DSH-Launcher";
         public const string UserAgent = "Dafeiyu-Go/" + Version;
@@ -1262,6 +1261,10 @@ namespace DeepSeekHarnessLauncher
         private FeedbackClient _feedbackReplyClient;
         private CancellationTokenSource _feedbackReplyStop;
         private Task _feedbackReplyTask;
+        private bool _developerIdentityActive;
+        private string _developerFeedbackCredential;
+        private CancellationTokenSource _developerFeedbackStop;
+        private Task _developerFeedbackTask;
         private readonly ClientNoticeQueue _noticeQueue = new ClientNoticeQueue();
         private ClientNoticeMessage _activeNotice;
         private InfoWindowClient _noticeWindow;
@@ -1284,6 +1287,8 @@ namespace DeepSeekHarnessLauncher
         private int _balanceRequestInProgress;
         private bool _serviceRunning;
         private bool _startupInProgress;
+        private readonly object _dshDataOperationLock = new object();
+        private bool _dshDataTransferInProgress;
         private bool _pendingOpenAfterStartup;
         private bool _suppressExitNotification;
         private bool _exiting;
@@ -1319,6 +1324,8 @@ namespace DeepSeekHarnessLauncher
             new UpdateUiSnapshot();
         private volatile UpdateUiSnapshot _dshUpdateUi =
             new UpdateUiSnapshot();
+        private volatile UpdateUiSnapshot _installerUpdateUi = new UpdateUiSnapshot();
+        private int _installerUpdateInProgress;
         private volatile UpdateUiSnapshot _pluginUpdateUi =
             new UpdateUiSnapshot();
         private readonly object _startupCheckLock = new object();
@@ -1421,12 +1428,8 @@ namespace DeepSeekHarnessLauncher
             _trayIcon.ContextMenuRequested += TrayContextMenuRequested;
             _trayIcon.DoubleClick += TrayDoubleClick;
 
-            bool notificationRegistered = NotificationService.Initialize(_trayIcon);
-            WriteLog(
-                "Windows App SDK notifications registered="
-                + notificationRegistered.ToString()
-                + ", setting="
-                + NotificationService.SettingName);
+            NotificationService.Initialize(message => InvokeOnUi(() => ShowClientNotice(message)));
+            WriteLog("通知通道：信息窗");
 
             _balanceTimer = _dispatcherQueue.CreateTimer();
             _balanceTimer.Interval = TimeSpan.FromMinutes(1);
@@ -1520,12 +1523,10 @@ namespace DeepSeekHarnessLauncher
             serviceMonitorThread.Name = "DeepSeekHarnessServiceMonitor";
             serviceMonitorThread.Start();
 
-            // 启动顺序：默认先检查更新（信息窗口显示检查 / 下载 / 安装），更新流程结束后
-            // 再拉起 DSH 服务（信息窗口接着显示服务启动与结果）。两个阶段先后串行，
-            // ShowServiceWindow / IsServiceWindowBusy 的「服务优先」不会打架 —— 更新那轮
-            // 的信息窗口先滑出，服务窗口才开，不会有两个窗叠在同一个角落。
+            // Only DSH updates precede service startup. Other updates wait for the
+            // running service and the startup result window to finish.
             _startupUpdateFlow = true;
-            ShowUpdateWindow();
+            ShowUpdateWindow("检查 DSH", "正在读取 DSH 版本。");
             StartUpdateThread(delegate()
             {
                 try
@@ -1581,6 +1582,11 @@ namespace DeepSeekHarnessLauncher
 
         private void StartServiceStartupThread()
         {
+            lock (_dshDataOperationLock)
+            {
+                if (_dshDataTransferInProgress || _startupInProgress || _exiting) return;
+                _startupInProgress = true;
+            }
             Thread startupThread = new Thread(StartupThreadProc);
             startupThread.IsBackground = true;
             startupThread.Name = "DeepSeekHarnessStartup";
@@ -1595,28 +1601,6 @@ namespace DeepSeekHarnessLauncher
             updateThread.Start();
         }
 
-        /// <summary>
-        /// 启动时能不能跳过「先检查更新」这一步、直接起服务（快速路径）。
-        ///
-        /// 只有启动器更新、DSH 更新都关着，而且自动检查周期还没到，才算没什么可等。
-        /// 插件 / 补丁的周期同样由 IsAutomaticUpdateCheckDue 一起判断：它返回 false 时
-        /// RunConfiguredUpdates 本来就会立刻返回、不联网，所以这里放行是安全的。
-        /// </summary>
-        private bool ShouldStartServiceImmediately()
-        {
-            bool launcherUpdatesOff = String.Equals(
-                _settings.LauncherUpdateMode,
-                "Off",
-                StringComparison.OrdinalIgnoreCase);
-            bool dshUpdatesOff = String.Equals(
-                _settings.DshUpdateMode,
-                "Off",
-                StringComparison.OrdinalIgnoreCase);
-            return launcherUpdatesOff
-                && dshUpdatesOff
-                && !IsAutomaticUpdateCheckDue();
-        }
-
         private void RunConfiguredUpdates()
         {
             if (!IsAutomaticUpdateCheckDue())
@@ -1626,55 +1610,59 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
-            _settings.LastUpdateCheckUtc = DateTime.UtcNow;
-            LauncherSettingsStore.Save(_settings);
             var total = Stopwatch.StartNew();
-            RunStartupCheck("检查启动器更新", () => RunLauncherUpdate(false),
-                () => _launcherUpdateUi.Activity == UpdateUiActivity.Failed ? _launcherUpdateUi.Detail + " 检查失败" : null,
-                !String.Equals(_settings.LauncherUpdateMode, "Off", StringComparison.OrdinalIgnoreCase),
-                () => _launcherUpdateUi.ProgressText + " " + _launcherUpdateUi.Version);
-            if (_launcherUpdateRestartPending || _exiting) return;
-            var deferred = new List<Action>();
-            if (!_startupInstallerChecked)
-            {
-                ReportStartupCheck("检查安装器更新", "Pending", "服务就绪后读取安装器元数据", 0);
-                deferred.Add(() => ReadStartupInstallerRelease());
-            }
             RunStartupCheck("检查 DSH 更新", () => RunDshUpdate(false),
                 () => _dshUpdateUi.Activity == UpdateUiActivity.Failed ? _dshUpdateUi.Detail + " 检查失败" : null,
                 !String.Equals(_settings.DshUpdateMode, "Off", StringComparison.OrdinalIgnoreCase),
                 () => _dshUpdateUi.ProgressText + " " + _dshUpdateUi.Version);
             if (_launcherUpdateRestartPending || _exiting) return;
+            var deferred = new List<Action>();
+            void Defer(string label, string mode, Action check)
+            {
+                if (String.Equals(mode, "Off", StringComparison.OrdinalIgnoreCase))
+                    ReportStartupCheck(label, "Off", "更新策略已关闭", 0);
+                else
+                {
+                    ReportStartupCheck(label, "Pending", "DSH 服务就绪后运行", 0);
+                    deferred.Add(check);
+                }
+            }
+            Action installer = () => RunStartupCheck("检查安装器更新",
+                () => RunInstallerUpdate(false, String.Equals(_settings.InstallerUpdateMode, "Install", StringComparison.OrdinalIgnoreCase)),
+                () => _installerUpdateUi.Activity == UpdateUiActivity.Failed ? _installerUpdateUi.Detail : null,
+                !String.Equals(_settings.InstallerUpdateMode, "Off", StringComparison.OrdinalIgnoreCase),
+                () => _installerUpdateUi.ProgressText + " " + _installerUpdateUi.Version);
+            Defer("检查启动器更新", _settings.LauncherUpdateMode, () => RunStartupCheck("检查启动器更新", () => RunLauncherUpdate(false),
+                () => _launcherUpdateUi.Activity == UpdateUiActivity.Failed ? _launcherUpdateUi.Detail + " 检查失败" : null,
+                !String.Equals(_settings.LauncherUpdateMode, "Off", StringComparison.OrdinalIgnoreCase),
+                () => _launcherUpdateUi.ProgressText + " " + _launcherUpdateUi.Version));
+            Defer("检查安装器更新", _settings.InstallerUpdateMode, installer);
             bool pluginInstall = String.Equals(_settings.PluginUpdateMode, "Install", StringComparison.OrdinalIgnoreCase);
             Action plugins = () => RunStartupCheck("检查插件更新", () => RunPluginUpdates(false, pluginInstall, null),
                 () => _pluginUpdateUi.Activity == UpdateUiActivity.Failed ? _pluginUpdateUi.Detail + " 检查失败" : null,
                 !String.Equals(_settings.PluginUpdateMode, "Off", StringComparison.OrdinalIgnoreCase),
                 () => String.IsNullOrWhiteSpace(_pluginUpdateUi.Detail) ? _pluginUpdateUi.ProgressText : _pluginUpdateUi.Detail);
-            if (StartupUpdatePolicy.ShouldDefer(_settings.PluginUpdateMode))
-            { ReportStartupCheck("检查插件更新", "Pending", "仅检查，服务就绪后运行", 0); deferred.Add(plugins); }
-            else plugins();
-            Action patches = () => RunPatchesWithStartupProgress();
-            if (StartupUpdatePolicy.ShouldDefer(_settings.PatchUpdateMode))
-            { ReportStartupCheck("检查补丁升级", "Pending", "仅检查，服务就绪后运行", 0); deferred.Add(patches); }
-            else patches();
-            WriteLog("启动前更新阶段完成，耗时 " + total.ElapsedMilliseconds + " ms；仅检查任务将在服务就绪后运行。");
-            _ = Task.Run(async () =>
+            Defer("检查插件更新", _settings.PluginUpdateMode, plugins);
+            Defer("检查补丁升级", _settings.PatchUpdateMode, RunPatchesWithStartupProgress);
+            WriteLog("启动前 DSH 更新阶段完成，耗时 " + total.ElapsedMilliseconds + " ms；其余更新将在服务就绪后运行。");
+            if (deferred.Count == 0)
             {
-                while (!_exiting && !_launcherUpdateRestartPending
-                    && (_startupUpdateFlow || _startupInProgress || !_serviceRunning
-                        || _updateInProgress || _dshUpdateInProgress || _pluginUpdateInProgress != 0
-                        || (_infoWindow != null && !_infoWindow.IsClosed)))
-                    await Task.Delay(200).ConfigureAwait(false);
-                if (_exiting || _launcherUpdateRestartPending || deferred.Count == 0) return;
+                MarkAutomaticUpdateCheckCompleted();
+                return;
+            }
+            _ = StartupBackgroundUpdates.RunWhenReadyAsync(
+                () => !_startupUpdateFlow && !_startupInProgress && _serviceRunning
+                    && !_updateInProgress && !_dshUpdateInProgress && _pluginUpdateInProgress == 0 && _installerUpdateInProgress == 0
+                    && (_infoWindow == null || _infoWindow.IsClosed),
+                () => _exiting || _launcherUpdateRestartPending,
+                () =>
+            {
                 _backgroundStartupCheckFlow = true;
                 try
                 {
-                    ShowUpdateWindow("检查更新", "正在读取更新版本。");
-                    foreach (var check in deferred)
-                    {
-                        if (_exiting || _launcherUpdateRestartPending) return;
-                        check();
-                    }
+                    ShowUpdateWindow("检查更新", "DSH 已就绪，正在读取更新版本。");
+                    StartupBackgroundUpdates.RunChecks(deferred,
+                        () => _exiting || _launcherUpdateRestartPending, MarkAutomaticUpdateCheckCompleted);
                 }
                 finally
                 {
@@ -1682,6 +1670,13 @@ namespace DeepSeekHarnessLauncher
                     _backgroundStartupCheckFlow = false;
                 }
             });
+        }
+
+        private void MarkAutomaticUpdateCheckCompleted()
+        {
+            if (_exiting || _launcherUpdateRestartPending) return;
+            _settings.LastUpdateCheckUtc = DateTime.UtcNow;
+            LauncherSettingsStore.Save(_settings);
         }
 
         private void ReportStartupCheck(string label, string state, string detail, long milliseconds)
@@ -1756,16 +1751,16 @@ namespace DeepSeekHarnessLauncher
                 failed = 0;
                 foreach (string label in _startupCheckFailures)
                 {
-                    if (label == "检查安装器更新" || label == "检查插件更新" || label == "检查补丁升级") failed++;
+                    if (label == "检查启动器更新" || label == "检查安装器更新" || label == "检查插件更新" || label == "检查补丁升级") failed++;
                 }
             }
             int available = (_pluginUpdateUi.Activity == UpdateUiActivity.Available ? _startupPluginUpdateCount : 0)
+                + (_installerUpdateUi.Activity == UpdateUiActivity.Available ? 1 : 0)
+                + (_launcherUpdateUi.Activity == UpdateUiActivity.Available ? 1 : 0)
                 + (String.Equals(_settings.PatchUpdateMode, "Check", StringComparison.OrdinalIgnoreCase) ? _startupPatchUpdateCount : 0);
-            bool skipped = String.Equals(_settings.PluginUpdateMode, "Off", StringComparison.OrdinalIgnoreCase)
-                || String.Equals(_settings.PatchUpdateMode, "Off", StringComparison.OrdinalIgnoreCase);
             string detail = failed > 0 ? failed + " 项检查失败，请查看日志。"
                 : available > 0 ? "发现 " + available + " 项可用更新。"
-                : skipped ? "更新检查已完成。" : "插件和补丁均无需更新。";
+                : "更新检查已完成。";
             _infoWindow?.CompleteInfo(failed > 0 ? InfoOutcome.Warning : InfoOutcome.Success,
                 failed > 0 ? "检查失败" : "检查完成", detail, false);
         }
@@ -1804,11 +1799,8 @@ namespace DeepSeekHarnessLauncher
             lock (_startupInstallerLock)
             {
                 if (_startupInstallerChecked && reuseResult) return _startupInstallerPackage;
-                bool cached = InstallerUpdateService.HasFreshMetadataCache;
-                RunStartupCheck("检查安装器更新", () =>
-                    _startupInstallerPackage = InstallerUpdateService.FetchLatestRelease(_settings, out _startupInstallerError),
-                    () => _startupInstallerPackage == null ? _startupInstallerError ?? "安装器检查失败" : null,
-                    completedDetail: () => cached ? "有效本地缓存 · " + _startupInstallerPackage?.Version : "读取已发布版本成功");
+                _startupInstallerPackage = InstallerUpdateService.FetchLatestRelease(
+                    _settings, out _startupInstallerError, forceRefresh: !reuseResult);
                 _startupInstallerChecked = true;
                 return _startupInstallerPackage;
             }
@@ -2066,7 +2058,8 @@ namespace DeepSeekHarnessLauncher
             if (String.Equals(
                     _settings.LauncherUpdateMode,
                     "Off",
-                    StringComparison.OrdinalIgnoreCase)
+                StringComparison.OrdinalIgnoreCase)
+                && String.Equals(_settings.InstallerUpdateMode, "Off", StringComparison.OrdinalIgnoreCase)
                 && String.Equals(
                     _settings.DshUpdateMode,
                     "Off",
@@ -2128,12 +2121,11 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
-            if (_updateInProgress)
+            lock (_dshDataOperationLock)
             {
-                return;
+                if (_updateInProgress || _dshDataTransferInProgress) return;
+                _updateInProgress = true;
             }
-
-            _updateInProgress = true;
 
             try
             {
@@ -2307,6 +2299,14 @@ namespace DeepSeekHarnessLauncher
             catch (Exception exception)
             {
                 WriteLog("启动期更新出错: " + DescribeException(exception));
+                FinishUpdateWindow();
+            }
+            finally
+            {
+                lock (_dshDataOperationLock)
+                {
+                    if (!_launcherUpdateRestartPending) _updateInProgress = false;
+                }
                 FinishUpdateWindow();
             }
         }
@@ -2662,8 +2662,8 @@ namespace DeepSeekHarnessLauncher
 
         private void FinishUpdateWindow()
         {
-            _updateInProgress = false;
-            if (_startupUpdateFlow || _launcherUpdateRestartPending) return;
+            if (_updateInProgress || _dshUpdateInProgress || _installerUpdateInProgress != 0 || _pluginUpdateInProgress != 0
+                || _startupUpdateFlow || _backgroundStartupCheckFlow || _launcherUpdateRestartPending) return;
             if (IsServiceWindowBusy())
             {
                 // 信息窗口被服务提示接管了：等它自己滑出，别当场关掉把结果吞了。
@@ -2767,7 +2767,11 @@ namespace DeepSeekHarnessLauncher
                 }
             }
 
-            _updateInProgress = true;
+            lock (_dshDataOperationLock)
+            {
+                if (_updateInProgress || _dshDataTransferInProgress) return;
+                _updateInProgress = true;
+            }
             _trayIcon.UpdateTip(Constants.Title + " 正在检查更新…");
             // 手动点击“检查更新”必须显示右下角进度窗；安装模式只决定发现新版本后的行为。
             bool useUpdateWindow = true;
@@ -2966,141 +2970,93 @@ namespace DeepSeekHarnessLauncher
             string launcherTargetVersion,
             bool forceRepair)
         {
-            UpdateLauncherUi(
-                UpdateUiActivity.Installing,
-                launcherTargetVersion,
-                "安装器检查中",
-                -1,
-                true,
-                String.Empty);
-            UpdateWindow(
-                "正在更新 Dafeiyu-Go v" + launcherTargetVersion,
-                "步骤 1/2 · 检查安装器",
-                -1);
-
-            string localSource;
-            string localVersion = InstallerVersionReader.TryRead(_root, out localSource);
-            bool filesPresent = InstallerVersionReader.FilesPresent(_root);
-            WriteLog("本机安装器版本: " + (localVersion ?? "(未知)")
-                + "，来源: " + (localSource ?? "(没有记录)"));
-
-            string fetchError;
-            InstallerUpdatePackage package =
-                ReadStartupInstallerRelease(reuseResult: _startupUpdateFlow);
-            fetchError = _startupInstallerError;
-            if (package == null)
-            {
-                WriteLog("安装器检查失败，保留当前安装器: " + fetchError);
-                return "安装器检查失败" + Environment.NewLine + "原因："
-                    + fetchError;
-            }
-
-            InstallerUpdateAction action = InstallerVersionPolicy.Decide(
-                localVersion,
-                package.Version,
-                filesPresent);
-            string judgement = InstallerVersionPolicy.Describe(
-                action,
-                localVersion,
-                package.Version,
-                forceRepair);
-            WriteLog("安装器判定: " + judgement);
-
-            if (!InstallerVersionPolicy.NeedsDownload(action, forceRepair))
-            {
-                UpdateWindow(null, "步骤 1/2 · 安装器无需更新", 35);
-                // "版本读不出来但文件还在"要让用户知道有手动修复这条路，
-                // 其余情况（已是最新）不用打扰。
-                return action == InstallerUpdateAction.UnknownLocal ? judgement : null;
-            }
-
-            if (!InstallerUpdateService.IsValidSha256(package.Sha256))
-            {
-                WriteLog("安装器 Release 没有可用的 SHA-256，跳过安装器更新");
-                return "安装器 " + package.Version
-                    + " 没有提供校验值，" + Environment.NewLine + "已跳过安装器更新。";
-            }
-
-            bool applied = InstallerUpdateService.PrepareAndApply(
-                package,
-                _root,
-                delegate(long received, long total)
-                {
-                    bool indeterminate = total <= 0;
-                    double percent = indeterminate
-                        ? -1
-                        : received * 35.0 / total;
-                    string detail = indeterminate
-                        ? "步骤 1/2 · 安装器下载中"
-                        : "步骤 1/2 · 安装器 "
-                            + FormatBytes(received)
-                            + "/"
-                            + FormatBytes(total);
-                    UpdateLauncherUi(
-                        UpdateUiActivity.Installing,
-                        launcherTargetVersion,
-                        "安装器下载中",
-                        percent,
-                        indeterminate,
-                        detail);
-                    UpdateWindow(null, detail, percent);
-                },
-                out fetchError,
-                _settings);
-            if (!applied)
-            {
-                WriteLog("安装器更新失败，保留当前安装器: " + fetchError);
-                return "安装器更新失败，" + Environment.NewLine + "原因："
-                    + fetchError;
-            }
-
-            UpdateLauncherUi(
-                UpdateUiActivity.Installing,
-                launcherTargetVersion,
-                "安装器已更新",
-                35,
-                false,
-                "安装器和卸载器已替换");
-            UpdateWindow(
-                null,
-                "步骤 1/2 · 安装器和卸载器已更新",
-                35);
-            InstallerRegistration.SynchronizeInstallerVersion(package.Version);
-            WriteLog("安装器与卸载器已更新到 v" + package.Version);
-            return null;
+            if (!forceRepair && !String.Equals(_settings.InstallerUpdateMode, "Install", StringComparison.OrdinalIgnoreCase))
+                return null;
+            return RunInstallerUpdate(false, true, forceRepair);
         }
 
-        /// <summary>
-        /// 设置页的「修复安装器」：本机版本读不出来或文件缺失时，用户显式要求重装一次。
-        /// </summary>
-        private void RepairInstallerFromSettings()
+        private void RepairInstallerFromSettings() => StartInstallerUpdateThread(true, true);
+
+        private void StartInstallerUpdateThread(bool install, bool forceRepair)
         {
-            Thread worker = new Thread(delegate()
-            {
-                try
-                {
-                    string warning = PrepareInstallerCompanion(Constants.Version, true);
-                    InvokeOnUi(delegate()
-                    {
-                        ShowNotification(
-                            String.IsNullOrWhiteSpace(warning)
-                                ? "安装器修复完成。"
-                                : warning,
-                            !String.IsNullOrWhiteSpace(warning));
-                    });
-                }
-                catch (Exception exception)
-                {
-                    WriteLog("修复安装器失败: " + DescribeException(exception));
-                    InvokeOnUi(delegate()
-                    {
-                        ShowNotification("修复安装器失败：" + exception.Message, true);
-                    });
-                }
-            });
-            worker.IsBackground = true;
-            worker.Name = "InstallerRepair";
+            Thread worker = new Thread(() => RunInstallerUpdate(true, install, forceRepair))
+            { IsBackground = true, Name = "InstallerUpdate" };
             worker.Start();
+        }
+
+        private string RunInstallerUpdate(bool manual, bool install, bool forceRepair = false)
+        {
+            if (!manual && String.Equals(_settings.InstallerUpdateMode, "Off", StringComparison.OrdinalIgnoreCase)) return null;
+            lock (_dshDataOperationLock)
+            {
+                if (_dshDataTransferInProgress) return "数据传输正在进行，请完成后再检查或更新安装器。";
+                if (Interlocked.CompareExchange(ref _installerUpdateInProgress, 1, 0) != 0) return null;
+            }
+            try
+            {
+                if (manual) ShowUpdateWindow("检查安装器", "正在读取安装器发布版本。");
+                UpdateInstallerUi(UpdateUiActivity.Checking, "", "正在检查安装器", -1, true, "");
+                string localVersion = InstallerVersionReader.TryRead(_root, out string localSource);
+                WriteLog("本机安装器版本: " + (localVersion ?? "未知") + "，来源: " + (localSource ?? "没有记录"));
+                InstallerUpdatePackage package = ReadStartupInstallerRelease(reuseResult: !manual);
+                if (package == null || !String.IsNullOrWhiteSpace(_startupInstallerError))
+                    throw new InvalidOperationException(_startupInstallerError ?? "安装器发布信息读取失败。");
+                InstallerUpdateAction action = InstallerVersionPolicy.Decide(localVersion, package.Version, InstallerVersionReader.FilesPresent(_root));
+                string judgement = InstallerVersionPolicy.Describe(action, localVersion, package.Version, forceRepair);
+                WriteLog("安装器判定: " + judgement);
+                if (!forceRepair && !InstallerVersionPolicy.NeedsDownload(action, false))
+                {
+                    UpdateInstallerUi(action == InstallerUpdateAction.UnknownLocal ? UpdateUiActivity.Failed : UpdateUiActivity.UpToDate,
+                        package.Version, "检查完成", 100, false, judgement);
+                    return action == InstallerUpdateAction.UnknownLocal ? judgement : null;
+                }
+                if (!install)
+                {
+                    UpdateInstallerUi(UpdateUiActivity.Available, package.Version, "发现新版本", 0, false, judgement);
+                    if (_settings.UpdateReminder && _settings.LastNotifiedInstallerVersion != package.Version)
+                    {
+                        _settings.LastNotifiedInstallerVersion = package.Version;
+                        LauncherSettingsStore.Save(_settings);
+                        ShowNotification("发现安装器新版本 v" + package.Version + "。", false);
+                    }
+                    return null;
+                }
+                if (!InstallerUpdateService.IsValidSha256(package.Sha256))
+                    throw new InvalidOperationException("安装器 " + package.Version + " 缺少 SHA-256 校验值，无法安装。");
+                UpdateInstallerUi(UpdateUiActivity.Installing, package.Version, "正在下载安装器", -1, true, "");
+                if (!InstallerUpdateService.PrepareAndApply(package, _root, (received, total) =>
+                {
+                    double percent = total <= 0 ? -1 : received * 100.0 / total;
+                    UpdateInstallerUi(UpdateUiActivity.Installing, package.Version, "正在下载安装器", percent, total <= 0,
+                        FormatBytes(received) + (total > 0 ? "/" + FormatBytes(total) : ""));
+                }, out string error, _settings)) throw new InvalidOperationException(error ?? "安装器替换失败。");
+                InstallerRegistration.SynchronizeInstallerVersion(package.Version);
+                UpdateInstallerUi(UpdateUiActivity.Completed, package.Version, "安装器已更新", 100, false, "安装器和卸载器已替换");
+                WriteLog("安装器与卸载器已更新到 v" + package.Version);
+                return null;
+            }
+            catch (Exception exception)
+            {
+                WriteLog("安装器更新失败: " + DescribeException(exception));
+                UpdateInstallerUi(UpdateUiActivity.Failed, "", "安装器检查或更新失败", 0, false, exception.Message);
+                return exception.Message;
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _installerUpdateInProgress, 0);
+                if (manual && !_updateInProgress && !_dshUpdateInProgress && _pluginUpdateInProgress == 0
+                    && !_startupUpdateFlow && !_backgroundStartupCheckFlow) FinishUpdateWindow();
+                PublishUpdateState();
+            }
+        }
+
+        private void UpdateInstallerUi(UpdateUiActivity activity, string version, string text, double progress, bool indeterminate, string detail)
+        {
+            _installerUpdateUi = new UpdateUiSnapshot
+            { Activity = activity, Version = version ?? "", ProgressText = text, Progress = progress,
+                IsIndeterminate = indeterminate, Detail = detail ?? "" };
+            if (!IsServiceWindowBusy()) UpdateWindow(activity == UpdateUiActivity.Installing ? "更新安装器" : "检查安装器", text, progress);
+            PublishUpdateState();
         }
 
         private void BalanceItemClick()
@@ -3123,6 +3079,8 @@ namespace DeepSeekHarnessLauncher
                     GetNoticePresence = () => _noticePresence,
                     SetPresencePollingEnabled = enabled => _noticeClient?.SetPresencePollingEnabled(enabled),
                     NoticeSettingsChanged = NoticeSettingsChanged,
+                    DeveloperIdentityActivated = () => { _developerIdentityActive = true; RefreshDeveloperFeedbackNotifications(); },
+                    DeveloperCredentialsChanged = RefreshDeveloperFeedbackNotifications,
                     PatchProgress = delegate(string title, string detail, double percent)
                     {
                         UpdatePatchWindow(title, detail, percent);
@@ -3133,15 +3091,21 @@ namespace DeepSeekHarnessLauncher
                     },
                     GetServiceStatus = delegate
                     {
+                        if (_startupInProgress || _startupUpdateFlow) return "正在启动";
                         return _serviceRunning
                             ? "正在运行 · 端口 " + _port.ToString()
                             : "已停止";
                     },
+                    IsDshDataInUse = IsDshDataInUse,
+                    TryBeginDshDataTransfer = TryBeginDshDataTransfer,
+                    EndDshDataTransfer = () => { lock (_dshDataOperationLock) _dshDataTransferInProgress = false; },
                     RestartService = RestartItemClick,
                     StopService = delegate { StopService(); },
                     RecheckEnvironment = RecheckEnvironmentFromSettings,
                     CheckLauncherUpdate = CheckLauncherUpdateForSettings,
                     InstallLauncherUpdate = InstallLauncherUpdateForSettings,
+                    CheckInstallerUpdate = () => StartInstallerUpdateThread(false, false),
+                    InstallInstallerUpdate = () => StartInstallerUpdateThread(true, false),
                     CheckDshUpdate = CheckDshUpdateForSettings,
                     InstallDshUpdate = InstallDshUpdateForSettings,
                     CheckPluginUpdates = CheckPluginUpdatesForSettings,
@@ -3149,6 +3113,7 @@ namespace DeepSeekHarnessLauncher
                     InstallPluginUpdate = InstallPluginUpdateForSettings,
                     GetLauncherUpdateState = delegate { return _launcherUpdateUi; },
                     GetDshUpdateState = delegate { return _dshUpdateUi; },
+                    GetInstallerUpdateState = delegate { return _installerUpdateUi; },
                     GetPluginUpdateState = delegate { return _pluginUpdateUi; },
                     ApplyApiKey = ApplyApiKeyFromSettings,
                     RefreshBalance = RefreshBalanceAsync,
@@ -3203,12 +3168,11 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
-            if (_dshUpdateInProgress)
+            lock (_dshDataOperationLock)
             {
-                return;
+                if (_dshUpdateInProgress || _dshDataTransferInProgress) return;
+                _dshUpdateInProgress = true;
             }
-
-            _dshUpdateInProgress = true;
             try
             {
                 UpdateDshUi(
@@ -3477,8 +3441,8 @@ namespace DeepSeekHarnessLauncher
             }
             finally
             {
+                lock (_dshDataOperationLock) _dshUpdateInProgress = false;
                 FinishUpdateWindow();
-                _dshUpdateInProgress = false;
             }
         }
 
@@ -3560,12 +3524,11 @@ namespace DeepSeekHarnessLauncher
 
         private void InstallLauncherUpdateForSettings()
         {
-            if (_updateInProgress)
+            lock (_dshDataOperationLock)
             {
-                return;
+                if (_updateInProgress || _dshDataTransferInProgress) return;
+                _updateInProgress = true;
             }
-
-            _updateInProgress = true;
             UpdateLauncherUi(
                 UpdateUiActivity.Installing,
                 _availableUpdateVersion,
@@ -3603,7 +3566,11 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
-            _dshUpdateInProgress = true;
+            lock (_dshDataOperationLock)
+            {
+                if (_dshDataTransferInProgress) return;
+                _dshUpdateInProgress = true;
+            }
             UpdateDshUi(
                 UpdateUiActivity.Checking,
                 null,
@@ -3717,12 +3684,9 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
-            if (Interlocked.CompareExchange(
-                ref _pluginUpdateInProgress,
-                1,
-                0) != 0)
+            lock (_dshDataOperationLock)
             {
-                return;
+                if (_dshDataTransferInProgress || Interlocked.CompareExchange(ref _pluginUpdateInProgress, 1, 0) != 0) return;
             }
 
             try
@@ -3869,6 +3833,7 @@ namespace DeepSeekHarnessLauncher
             finally
             {
                 Interlocked.Exchange(ref _pluginUpdateInProgress, 0);
+                FinishUpdateWindow();
             }
         }
 
@@ -4024,6 +3989,15 @@ namespace DeepSeekHarnessLauncher
                 }
             }
 
+            lock (_dshDataOperationLock)
+            {
+                if (_dshDataTransferInProgress || _startupInProgress || _startupUpdateFlow)
+                {
+                    ShowNotification("数据传输或 DSH 启动正在进行，请完成后再启动服务。", false);
+                    return;
+                }
+                _startupInProgress = true;
+            }
             _trayMenu.SetRunning(false);
             _trayIcon.UpdateTip(
                 Constants.Title
@@ -4146,6 +4120,89 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
+        private void RefreshDeveloperFeedbackNotifications()
+        {
+            string credential = _developerIdentityActive ? _settings.AdminTokenProtected : String.Empty;
+            if (_exiting || String.Equals(credential, _developerFeedbackCredential, StringComparison.Ordinal)) return;
+            StopDeveloperFeedbackNotifications();
+            _developerFeedbackCredential = credential;
+            if (String.IsNullOrWhiteSpace(credential)) return;
+            string adminToken = LauncherSettingsStore.ReadAdminToken(_settings);
+            if (String.IsNullOrWhiteSpace(adminToken)) return;
+            var cancellation = new CancellationTokenSource();
+            _developerFeedbackStop = cancellation;
+            _developerFeedbackTask = Task.Run(() => DeveloperFeedbackLoopAsync(adminToken, cancellation.Token));
+        }
+
+        private void StopDeveloperFeedbackNotifications()
+        {
+            _developerFeedbackStop?.Cancel();
+            _developerFeedbackStop?.Dispose();
+            _developerFeedbackStop = null;
+            _developerFeedbackTask = null;
+            _noticeQueue.RemoveWaiting(message => message.IsDeveloperFeedback);
+            if (_activeNotice?.IsDeveloperFeedback == true)
+            {
+                _noticeQueue.Complete(_activeNotice);
+                _activeNotice = null;
+                _noticeWindow?.Close();
+                _noticeWindow = null;
+            }
+        }
+
+        private async Task DeveloperFeedbackLoopAsync(string adminToken, CancellationToken token)
+        {
+            var tracker = new DeveloperFeedbackNotificationTracker();
+            using var client = new DeveloperFeedbackAdminClient();
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    tracker.BeginPoll();
+                    int? offset = 0;
+                    do
+                    {
+                        var page = await client.ListPageAsync("https://202.189.21.218:8787", adminToken, token, offset.Value).ConfigureAwait(false);
+                        token.ThrowIfCancellationRequested();
+                        DeveloperFeedbackNotificationPage observed = tracker.ObservePage(page.Feedback);
+                        IReadOnlyList<FeedbackModel> added = observed.NewItems;
+                        offset = observed.ScanNextPage ? page.NextOffset : null;
+                        if (added.Count == 0) continue;
+                        string detail = String.Join("\n\n", added.Take(3).Select(item =>
+                            (item.Category == "Bug" ? "问题反馈：" : "建议：")
+                            + (item.Body.Length > 120 ? item.Body.Substring(0, 120) + "…" : item.Body)));
+                        var notice = new ClientNoticeMessage
+                        {
+                            Id = "developer-feedback-" + Guid.NewGuid().ToString("N"),
+                            IsLocal = true,
+                            IsDeveloperFeedback = true,
+                            AutoDismiss = true,
+                            Title = added.Count == 1 ? "收到新的反馈与建议" : "收到 " + added.Count + " 条新的反馈与建议",
+                            Markdown = detail,
+                            PublishedAt = DateTimeOffset.UtcNow,
+                            ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
+                            Buttons = new List<ClientNoticeButton>
+                            {
+                                new ClientNoticeButton { Text = "查看反馈", LocalAction = () => ShowSettings("Developer:Feedback") }
+                            }
+                        };
+                        InvokeOnUi(() => { if (!token.IsCancellationRequested && !_exiting) ShowClientNotice(notice); });
+                    } while (offset.HasValue && !token.IsCancellationRequested);
+                    tracker.CompletePoll();
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
+                catch (HttpRequestException exception) when (exception.StatusCode == HttpStatusCode.Unauthorized || exception.StatusCode == HttpStatusCode.Forbidden)
+                {
+                    WriteLog("开发者反馈提醒已停止：管理员授权失效，请重新保存有效 Token。");
+                    InvokeOnUi(() => { if (!token.IsCancellationRequested) StopDeveloperFeedbackNotifications(); });
+                    break;
+                }
+                catch (Exception exception) { WriteLog("开发者反馈检查失败：" + exception.GetType().Name); }
+                try { await Task.Delay(TimeSpan.FromSeconds(60), token).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
+            }
+        }
+
         private static ClientNoticeMessage BuildFeedbackReplyNotice(FeedbackModel item)
         {
             string reply = item.Reply.Trim();
@@ -4170,7 +4227,7 @@ namespace DeepSeekHarnessLauncher
         private void ShowClientNotice(ClientNoticeMessage message)
         {
             if (_exiting || !_noticeQueue.Enqueue(message)) return;
-            if (!message.IsFeedbackReply) ReportNotice(message, "received", null);
+            if (!message.IsFeedbackReply && !message.IsLocal) ReportNotice(message, "received", null);
         }
         private string _startupAnnouncementError;
         private string _startupAnnouncementDetail;
@@ -4239,7 +4296,8 @@ namespace DeepSeekHarnessLauncher
             if (_noticePresence != null && (DateTimeOffset.UtcNow - _noticePresence.ObservedAt).TotalSeconds > 300)
                 SetNoticePresence(null);
             if (_startupInProgress || _startupUpdateFlow || _updateInProgress || _dshUpdateInProgress
-                || _pluginUpdateInProgress != 0 || _launcherUpdateRestartPending
+                || _pluginUpdateInProgress != 0 || _installerUpdateInProgress != 0 || _launcherUpdateRestartPending
+                || _backgroundStartupCheckFlow
                 || (_infoWindow != null && !_infoWindow.IsClosed))
             {
                 DeferActiveNotice();
@@ -4247,8 +4305,20 @@ namespace DeepSeekHarnessLauncher
             }
             if (_activeNotice != null)
             {
+                if (_activeNotice.Kind == "announcement" && (_backendStatusNotices.Count > 0
+                    || _noticeQueue.HasWaitingNotification(DateTimeOffset.UtcNow)))
+                {
+                    DeferActiveNotice();
+                    return;
+                }
+                if (!_activeNotice.IsFeedbackReply && (_noticeWindow == null
+                    || !_noticeWindow.HasDisplayedNotice && (_noticeWindow.IsClosed || _noticeWindow.IsNoticeDisplayTimedOut)))
+                {
+                    RetryActiveNotice("信息窗口未确认展示");
+                    return;
+                }
                 if (_noticeWindow != null && !_noticeWindow.IsClosed) return;
-                if (_activeNotice.IsFeedbackReply)
+                if (_activeNotice.IsFeedbackReply || _activeNotice.IsLocal && _noticeWindow?.HasDisplayedNotice == true)
                 {
                     _noticeQueue.Complete(_activeNotice);
                     _activeNotice = null;
@@ -4273,16 +4343,17 @@ namespace DeepSeekHarnessLauncher
             }
             ClientNoticeMessage message = _noticeQueue.TryTake(DateTimeOffset.UtcNow);
             if (message == null) return;
+            _activeNotice = message;
             try
             {
-                if (_noticeStore.IsMessageRead(message))
-                { _noticeQueue.Complete(message); return; }
-                _activeNotice = message;
+                if (!message.IsLocal && _noticeStore.IsMessageRead(message))
+                { _noticeQueue.Complete(message); _activeNotice = null; return; }
                 _noticeWindow = new InfoWindowClient(_dispatcherQueue, WriteLog);
                 _noticeWindow.NoticeAction += HandleNoticeAction;
                 _noticeWindow.NoticeDisplayed += id =>
                 {
-                    if (_activeNotice?.Id == id && !_activeNotice.IsFeedbackReply) ReportNotice(_activeNotice, "displayed", null);
+                    if (_activeNotice?.Id == id && !_activeNotice.IsFeedbackReply && !_activeNotice.IsLocal)
+                        ReportNotice(_activeNotice, "displayed", null);
                 };
                 _noticeWindow.Show();
                 if (message.IsFeedbackReply)
@@ -4292,11 +4363,18 @@ namespace DeepSeekHarnessLauncher
             catch (Exception exception)
             {
                 WriteLog("公告展示失败：" + DescribeException(exception));
-                _noticeQueue.Complete(message);
-                _activeNotice = null;
-                _noticeWindow?.Close();
-                _noticeWindow = null;
+                RetryActiveNotice(exception.Message);
             }
+        }
+
+        private void RetryActiveNotice(string reason)
+        {
+            if (_activeNotice == null) return;
+            WriteLog("通知展示未完成，将重试（" + _activeNotice.Id + "）：" + reason);
+            _noticeQueue.RetryDisplay(_activeNotice, DateTimeOffset.UtcNow);
+            _activeNotice = null;
+            _noticeWindow?.Close();
+            _noticeWindow = null;
         }
 
         private void DeferActiveNotice()
@@ -4311,7 +4389,7 @@ namespace DeepSeekHarnessLauncher
         private void ReportNotice(ClientNoticeMessage message, string eventName, int? index)
         {
             ClientNoticeClient client = _noticeClient;
-            if (client == null || message == null) return;
+            if (client == null || message == null || message.IsLocal || message.IsFeedbackReply) return;
             _ = Task.Run(async () =>
             {
                 try
@@ -4332,9 +4410,12 @@ namespace DeepSeekHarnessLauncher
             try
             {
                 // Persist the user's acknowledgement before an external action or receipt can fail.
-                if (_noticeClient != null) _noticeClient.AcknowledgeAction(message, buttonIndex);
-                else _noticeStore.MarkMessageRead(message);
-                if (!message.IsFeedbackReply)
+                if (!message.IsLocal)
+                {
+                    if (_noticeClient != null) _noticeClient.AcknowledgeAction(message, buttonIndex);
+                    else _noticeStore.MarkMessageRead(message);
+                }
+                if (!message.IsFeedbackReply && !message.IsLocal)
                 {
                     if (buttonIndex.HasValue) ReportNotice(message, "click", buttonIndex);
                     ReportNotice(message, "read", null);
@@ -4342,7 +4423,8 @@ namespace DeepSeekHarnessLauncher
                 if (buttonIndex.HasValue)
                 {
                     ClientNoticeButton button = message.Buttons[buttonIndex.Value];
-                    if (button.Action == "url" && !UrlLauncher.TryOpen(button.ActionTarget, out string error))
+                    if (message.IsLocal && button.LocalAction != null) button.LocalAction();
+                    else if (button.Action == "url" && !UrlLauncher.TryOpen(button.ActionTarget, out string error))
                         throw new InvalidOperationException(error);
                     else if (button.Action == "settings") ShowSettings(message.IsFeedbackReply ? "Feedback" : button.ActionTarget switch
                         { "Extensions" => "Plugins", "Core" => "Service", _ => button.ActionTarget });
@@ -5061,6 +5143,11 @@ namespace DeepSeekHarnessLauncher
 
         private void RestartThreadProc()
         {
+            lock (_dshDataOperationLock)
+            {
+                if (_dshDataTransferInProgress) return;
+                _startupInProgress = true;
+            }
             WriteLog("Restart requested.");
 
             // 服务本来在跑 = 重启；本来停着（比如「强行终止」之后又点启动）= 启动。
@@ -5164,7 +5251,7 @@ namespace DeepSeekHarnessLauncher
         {
             if (!NotificationService.Show(message, critical))
             {
-                WriteLog("Native balloon notification failed for: " + message);
+                WriteLog("信息窗通知排队失败：" + message);
             }
         }
 
@@ -5337,6 +5424,25 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
+        private bool IsDshDataInUse()
+        {
+            lock (_dshDataOperationLock)
+                return _serviceRunning || _startupInProgress || _startupUpdateFlow || _dshUpdateInProgress
+                    || _pluginUpdateInProgress != 0 || _updateInProgress || _installerUpdateInProgress != 0
+                    || _backgroundStartupCheckFlow || _dshDataTransferInProgress || _exiting
+                    || IsServicePortListening(_port);
+        }
+
+        private bool TryBeginDshDataTransfer()
+        {
+            lock (_dshDataOperationLock)
+            {
+                if (IsDshDataInUse()) return false;
+                _dshDataTransferInProgress = true;
+                return true;
+            }
+        }
+
         private void ServiceMonitorThreadProc()
         {
             int stoppedSamples = 0;
@@ -5438,6 +5544,7 @@ namespace DeepSeekHarnessLauncher
             }
 
             _exiting = true;
+            StopDeveloperFeedbackNotifications();
             InfoWindowClient.CloseAllAndWait(_launcherUpdateRestartPending ? _infoWindow?.Session : null);
             try
             {
@@ -7634,438 +7741,6 @@ namespace DeepSeekHarnessLauncher
 
         public void Close()
         {
-        }
-    }
-
-    internal static class NotificationService
-    {
-        private static NativeTrayIcon _fallbackTray;
-        private static DispatcherQueue _dispatcherQueue;
-        private static bool _registered;
-        private static bool _notificationHandlerAttached;
-        private static AppNotificationSetting _setting = AppNotificationSetting.Unsupported;
-        private static readonly System.Collections.Generic.List<WinUINotificationWindow> Windows =
-            new System.Collections.Generic.List<WinUINotificationWindow>();
-
-        internal const int NotificationWidth = 390;
-        internal const int NotificationHeight = 116;
-
-        public static bool Initialize(NativeTrayIcon fallbackTray)
-        {
-            _fallbackTray = fallbackTray;
-            _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
-            try
-            {
-                AppNotificationManager.Default.Register();
-                _registered = true;
-                if (!_notificationHandlerAttached)
-                {
-                    AppNotificationManager.Default.NotificationInvoked +=
-                        OnNotificationInvoked;
-                    _notificationHandlerAttached = true;
-                }
-                try
-                {
-                    _setting = AppNotificationManager.Default.Setting;
-                }
-                catch
-                {
-                    _setting = AppNotificationSetting.Unsupported;
-                }
-
-                return true;
-            }
-            catch
-            {
-                _registered = false;
-                _setting = AppNotificationSetting.Unsupported;
-                return false;
-            }
-        }
-
-        public static string SettingName
-        {
-            get { return _setting.ToString(); }
-        }
-
-        public static bool Show(string message, bool critical)
-        {
-            if (String.IsNullOrEmpty(message))
-            {
-                return true;
-            }
-
-            if (_dispatcherQueue == null)
-            {
-                return false;
-            }
-
-            if (!_dispatcherQueue.HasThreadAccess)
-            {
-                _dispatcherQueue.TryEnqueue(() => Show(message, critical));
-                return true;
-            }
-
-            return _fallbackTray != null && _fallbackTray.ShowBalloon(message, critical);
-        }
-
-        public static bool ShowPluginUpdateCompleted(int count)
-        {
-            if (!_registered)
-            {
-                return Show(
-                    "插件更新完成，重启 DSH 后生效。",
-                    false);
-            }
-
-            try
-            {
-                AppNotification notification = new AppNotificationBuilder()
-                    .AddText("插件更新完成")
-                    .AddText(
-                        "已更新 " + count + " 个插件，重启 DSH 后生效。")
-                    .AddButton(
-                        new AppNotificationButton("重启 DSH")
-                            .AddArgument("action", "restart"))
-                    .AddButton(
-                        new AppNotificationButton("稍后")
-                            .AddArgument("action", "later"))
-                    .BuildNotification();
-                AppNotificationManager.Default.Show(notification);
-                return true;
-            }
-            catch
-            {
-                return Show(
-                    "插件更新完成，重启 DSH 后生效。",
-                    false);
-            }
-        }
-
-        private static void OnNotificationInvoked(
-            AppNotificationManager sender,
-            AppNotificationActivatedEventArgs args)
-        {
-            string action;
-            if (args.Arguments.TryGetValue("action", out action)
-                && String.Equals(
-                    action,
-                    "restart",
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                Program.RestartAfterPluginUpdate();
-            }
-        }
-
-        private static bool ShowWinUiNotification(string message, bool critical)
-        {
-            try
-            {
-                WinUINotificationWindow window = new WinUINotificationWindow(
-                    message,
-                    critical,
-                    delegate
-                    {
-                        Program.OpenPage();
-                    });
-                window.Closed += delegate
-                {
-                    Windows.Remove(window);
-                    RepositionWindows();
-                };
-                Windows.Insert(0, window);
-                while (Windows.Count > 3)
-                {
-                    Windows[Windows.Count - 1].Close();
-                }
-
-                RepositionWindows();
-                window.ShowNotification();
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static void RepositionWindows()
-        {
-            Screen screen = Screen.PrimaryScreen;
-            if (screen == null)
-            {
-                return;
-            }
-
-            System.Drawing.Rectangle workArea = screen.WorkingArea;
-            int right = workArea.Right - NotificationWidth - 18;
-            int bottom = workArea.Bottom - 18;
-            for (int index = 0; index < Windows.Count; index++)
-            {
-                int top = bottom - NotificationHeight;
-                Windows[index].MoveTo(new RectInt32(right, top, NotificationWidth, NotificationHeight));
-                bottom = top - 10;
-            }
-        }
-
-        public static void Shutdown()
-        {
-            for (int index = Windows.Count - 1; index >= 0; index--)
-            {
-                Windows[index].Close();
-            }
-            Windows.Clear();
-
-            if (!_registered)
-            {
-                return;
-            }
-
-            try
-            {
-                if (_notificationHandlerAttached)
-                {
-                    AppNotificationManager.Default.NotificationInvoked -=
-                        OnNotificationInvoked;
-                    _notificationHandlerAttached = false;
-                }
-                AppNotificationManager.Default.Unregister();
-            }
-            catch
-            {
-            }
-
-            _registered = false;
-        }
-    }
-
-    internal sealed class WinUINotificationWindow
-    {
-        private readonly WinUIWindow _window;
-        private readonly DispatcherQueueTimer _timer;
-        private readonly Action _clickAction;
-        private bool _closed;
-
-        public WinUINotificationWindow(string message, bool critical, Action clickAction)
-        {
-            _clickAction = clickAction;
-            _window = new WinUIWindow();
-            _window.Title = Constants.Title;
-            _window.ExtendsContentIntoTitleBar = true;
-            _window.AppWindow.IsShownInSwitchers = false;
-
-            OverlappedPresenter presenter = _window.AppWindow.Presenter as OverlappedPresenter;
-            if (presenter != null)
-            {
-                presenter.SetBorderAndTitleBar(false, false);
-                presenter.IsResizable = false;
-                presenter.IsMaximizable = false;
-                presenter.IsMinimizable = false;
-                presenter.IsAlwaysOnTop = true;
-            }
-
-            Windows.UI.Color background = critical
-                ? Windows.UI.Color.FromArgb(248, 64, 24, 24)
-                : Windows.UI.Color.FromArgb(248, 28, 31, 38);
-            Windows.UI.Color borderColor = critical
-                ? Windows.UI.Color.FromArgb(255, 220, 70, 70)
-                : Windows.UI.Color.FromArgb(255, 74, 144, 226);
-
-            Grid root = new Grid
-            {
-                Padding = new Thickness(16, 12, 10, 12),
-                Background = new SolidColorBrush(background)
-            };
-            root.PointerPressed += delegate
-            {
-                Close();
-                _clickAction();
-            };
-
-            Grid content = new Grid();
-            content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(46) });
-            content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(34) });
-
-            Border iconFrame = new Border
-            {
-                Width = 38,
-                Height = 38,
-                CornerRadius = CornerRadiusHelper.SurfaceRadius,
-                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 37, 43, 57)),
-                HorizontalAlignment = Microsoft.UI.Xaml.HorizontalAlignment.Left,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            Microsoft.UI.Xaml.Controls.Image icon = new Microsoft.UI.Xaml.Controls.Image
-            {
-                Width = 30,
-                Height = 30,
-                Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform,
-                HorizontalAlignment = Microsoft.UI.Xaml.HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            iconFrame.Child = icon;
-            Grid.SetColumn(iconFrame, 0);
-            content.Children.Add(iconFrame);
-            LoadNotificationIcon(icon);
-
-            StackPanel textPanel = new StackPanel
-            {
-                Spacing = 5,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            TextBlock title = new TextBlock
-            {
-                Text = Constants.Title,
-                FontSize = 15,
-                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                Foreground = new SolidColorBrush(Microsoft.UI.Colors.White)
-            };
-            TextBlock body = new TextBlock
-            {
-                Text = message,
-                FontSize = 13,
-                TextWrapping = TextWrapping.Wrap,
-                MaxLines = 3,
-                Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 230, 234, 242))
-            };
-            textPanel.Children.Add(title);
-            textPanel.Children.Add(body);
-            Grid.SetColumn(textPanel, 1);
-            content.Children.Add(textPanel);
-
-            Microsoft.UI.Xaml.Controls.Button closeButton = new Microsoft.UI.Xaml.Controls.Button
-            {
-                Width = 30,
-                Height = 30,
-                Padding = new Thickness(0),
-                Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
-                BorderThickness = new Thickness(0),
-                VerticalAlignment = VerticalAlignment.Top,
-                HorizontalAlignment = Microsoft.UI.Xaml.HorizontalAlignment.Right,
-                Content = new FontIcon
-                {
-                    FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe Fluent Icons"),
-                    Glyph = "\uE711",
-                    FontSize = 12,
-                    Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 205, 212, 224))
-                }
-            };
-            closeButton.Click += delegate { Close(); };
-            Grid.SetColumn(closeButton, 2);
-            content.Children.Add(closeButton);
-
-            Border accent = new Border
-            {
-                Width = 4,
-                CornerRadius = CornerRadiusHelper.BadgeRadius,
-                Background = new SolidColorBrush(borderColor),
-                HorizontalAlignment = Microsoft.UI.Xaml.HorizontalAlignment.Left,
-                Margin = new Thickness(-12, 0, 10, 0)
-            };
-            root.Children.Add(accent);
-            root.Children.Add(content);
-            _window.Content = root;
-            LauncherAppearance.Register(
-                _window,
-                root,
-                delegate(Microsoft.UI.Xaml.Media.Brush brush)
-                {
-                    root.Background = brush;
-                });
-
-            _timer = DispatcherQueue.GetForCurrentThread().CreateTimer();
-            _timer.Interval = TimeSpan.FromSeconds(8);
-            _timer.IsRepeating = false;
-            _timer.Tick += delegate { Close(); };
-            _window.Closed += delegate { OnClosed(); };
-        }
-
-        private static async void LoadNotificationIcon(Microsoft.UI.Xaml.Controls.Image image)
-        {
-            try
-            {
-                using (Stream source = typeof(WinUINotificationWindow).Assembly
-                    .GetManifestResourceStream("AppIcon.png"))
-                {
-                    if (source == null)
-                    {
-                        return;
-                    }
-
-                    using (MemoryStream buffer = new MemoryStream())
-                    {
-                        source.CopyTo(buffer);
-                        using (InMemoryRandomAccessStream randomAccess = new InMemoryRandomAccessStream())
-                        {
-                            using (DataWriter writer = new DataWriter(randomAccess.GetOutputStreamAt(0)))
-                            {
-                                writer.WriteBytes(buffer.ToArray());
-                                await writer.StoreAsync();
-                                await writer.FlushAsync();
-                                writer.DetachStream();
-                            }
-
-                            randomAccess.Seek(0);
-                            BitmapImage bitmap = new BitmapImage();
-                            await bitmap.SetSourceAsync(randomAccess);
-                            image.Source = bitmap;
-                        }
-                    }
-                }
-            }
-            catch
-            {
-            }
-        }
-
-        public event Action Closed = delegate { };
-
-        public void MoveTo(RectInt32 bounds)
-        {
-            try
-            {
-                _window.AppWindow.MoveAndResize(bounds);
-            }
-            catch
-            {
-            }
-        }
-
-        public void ShowNotification()
-        {
-            _window.Activate();
-            _timer.Start();
-        }
-
-        public void Close()
-        {
-            if (_closed)
-            {
-                return;
-            }
-
-            try
-            {
-                _timer.Stop();
-                _window.Close();
-            }
-            catch
-            {
-                OnClosed();
-            }
-        }
-
-        private void OnClosed()
-        {
-            if (_closed)
-            {
-                return;
-            }
-
-            _closed = true;
-            LauncherAppearance.Unregister(_window);
-            Closed();
         }
     }
 

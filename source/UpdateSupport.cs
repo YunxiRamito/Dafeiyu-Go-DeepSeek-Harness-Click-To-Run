@@ -696,6 +696,21 @@ namespace DeepSeekHarnessLauncher
             builder.AppendLine("  catch { $fail++; W (\"copy failed: $rel -> \" + $_.Exception.Message) }");
             builder.AppendLine("}");
             builder.AppendLine("W \"files copied: total=$total failed=$fail\"");
+            // Older helpers bundled Windows App Runtime. Remove obsolete helper
+            // files only after every new file was copied successfully.
+            builder.AppendLine("if ($fail -eq 0) {");
+            builder.AppendLine("  $oldHelper = Join-Path $dir 'info-host'");
+            builder.AppendLine("  $newHelper = Join-Path $new 'info-host'");
+            builder.AppendLine("  if ((Test-Path -LiteralPath (Join-Path $newHelper 'DafeiyuGo.Info.dll')) -and (Test-Path -LiteralPath $oldHelper)) {");
+            builder.AppendLine("    Get-ChildItem -LiteralPath $oldHelper -Recurse -File | ForEach-Object {");
+            builder.AppendLine("      $rel = $_.FullName.Substring($oldHelper.Length).TrimStart('\\')");
+            builder.AppendLine("      if (-not (Test-Path -LiteralPath (Join-Path $newHelper $rel))) {");
+            builder.AppendLine("        try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop }");
+            builder.AppendLine("        catch { W ('obsolete helper file retained: ' + $rel) }");
+            builder.AppendLine("      }");
+            builder.AppendLine("    }");
+            builder.AppendLine("  }");
+            builder.AppendLine("}");
             builder.AppendLine("Start-Sleep -Seconds 1");
             // Restart the launcher only. DSH service (node) is a separate process and stays alive.
             //

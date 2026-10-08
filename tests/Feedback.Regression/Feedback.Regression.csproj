@@ -2,6 +2,7 @@
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>disable</Nullable></PropertyGroup>
   <ItemGroup>
     <Compile Include="../../source/FeedbackModels.cs" Link="FeedbackModels.cs" />
+    <Compile Include="../../source/DeveloperFeedbackNotificationTracker.cs" Link="DeveloperFeedbackNotificationTracker.cs" />
     <Compile Include="../../source/LauncherDiagnostics.cs" Link="LauncherDiagnostics.cs" />
     <Compile Include="../../source/FeedbackImageSupport.cs" Link="FeedbackImageSupport.cs" />
     <Compile Include="../../source/FeedbackClient.cs" Link="FeedbackClient.cs" />

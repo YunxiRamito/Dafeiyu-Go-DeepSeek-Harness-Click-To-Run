@@ -1634,9 +1634,8 @@
                             </StackPanel>
                         </Border>
 
-                        <!-- 数据备份：导出/导入都挂在这一张卡上，点了才展开自己的面板，
-                             免得常规页为了一个偶尔用一次的功能再长出一截。 -->
-                        <Border Style="{StaticResource SettingsCardStyle}">
+                        <!-- BuildSettingsGroups moves this section into the backup/import tab. -->
+                        <Border x:Name="DymBackupSection" Style="{StaticResource SettingsCardStyle}">
                             <StackPanel Spacing="12">
                                 <Grid ColumnSpacing="12">
                                     <Grid.ColumnDefinitions>
@@ -1649,22 +1648,22 @@
                                         Spacing="3">
                                         <TextBlock
                                             Style="{StaticResource SettingsRowTitleTextStyle}"
-                                            Text="数据备份" />
+                                            Text="DYM 文件" />
                                         <TextBlock
                                             Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                            Text="将配置、技能和插件打包为 .dym 文件。换机或重装前请先备份。" />
+                                            Text="导入或导出 Dafeiyu-Go 的 .dym 备份文件，包含配置、技能和插件。" />
                                     </StackPanel>
                                     <Button
                                         x:Name="BackupExportButton"
                                         Grid.Column="1"
                                                                         
-                                        Content="导出数据"
+                                        Content="导出 DYM"
                                         Style="{StaticResource SettingsActionButtonStyle}"  Click="BackupExportButton_Click"/>
                                     <Button
                                         x:Name="BackupImportButton"
                                         Grid.Column="2"
                                                                         
-                                        Content="导入数据"
+                                        Content="导入 DYM"
                                         Style="{StaticResource SettingsActionButtonStyle}"  Click="BackupImportButton_Click"/>
                                 </Grid>
 
@@ -1681,7 +1680,7 @@
                                     <StackPanel Spacing="2">
                                         <TextBlock
                                             Style="{StaticResource SettingsRowTitleTextStyle}"
-                                            Text="要带走哪些" />
+                                            Text="导出内容" />
                                         <StackPanel
                                             x:Name="BackupExportGroupsHost"
                                             Spacing="2" />
@@ -1693,9 +1692,11 @@
                                         </Grid.ColumnDefinitions>
                                         <TextBox
                                             x:Name="BackupExportTargetBox"
+                                            IsReadOnly="True"
                                             Style="{StaticResource SettingsPathBoxStyle}" />
                                         <Button
                                             x:Name="BackupExportFolderButton"
+                                            Visibility="Collapsed"
                                             Grid.Column="1"
                                                                                   
                                             Content="选择文件夹"
@@ -1709,6 +1710,7 @@
                                         </Grid.ColumnDefinitions>
                                         <Button
                                             x:Name="BackupExportStartButton"
+                                            Visibility="Collapsed"
                                                                                  
                                             Content="开始导出"
                                             Style="{StaticResource SettingsAccentActionButtonStyle}"  Click="BackupExportStartButton_Click"/>
@@ -1744,10 +1746,12 @@
                                         </Grid.ColumnDefinitions>
                                         <TextBox
                                             x:Name="BackupImportFileBox"
+                                            IsReadOnly="True"
                                             PlaceholderText="还没选备份包"
                                             Style="{StaticResource SettingsPathBoxStyle}" />
                                         <Button
                                             x:Name="BackupImportPickButton"
+                                            Visibility="Collapsed"
                                             Grid.Column="1"
                                                                                 
                                             Content="选择备份包"
@@ -1760,7 +1764,7 @@
                                         <StackPanel Spacing="2">
                                             <TextBlock
                                                 Style="{StaticResource SettingsRowTitleTextStyle}"
-                                                Text="要恢复哪些" />
+                                                Text="导入内容" />
                                             <StackPanel
                                                 x:Name="BackupImportGroupsHost"
                                                 Spacing="2" />
@@ -1788,6 +1792,7 @@
                                         </Grid.ColumnDefinitions>
                                         <Button
                                             x:Name="BackupImportStartButton"
+                                            Visibility="Collapsed"
                                                                                  
                                             Content="开始导入"
                                             Style="{StaticResource SettingsAccentActionButtonStyle}"  Click="BackupImportStartButton_Click"/>
@@ -2187,176 +2192,109 @@
                     </StackPanel>
 
                     <!-- 提醒 -->
-                    <StackPanel
-                        x:Name="AlertsPage"
-                        Spacing="16"
-                        Visibility="Collapsed">
+                    <StackPanel x:Name="AlertsPage" Spacing="12" Visibility="Collapsed">
                         <Border Style="{StaticResource SettingsCardStyle}">
-                            <Grid Style="{StaticResource SettingsRowGridStyle}">
+                            <Grid ColumnSpacing="16" MinHeight="48">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <StackPanel
-                                    VerticalAlignment="Center"
-                                    Spacing="3">
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowTitleTextStyle}"
-                                        Text="更新提醒" />
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                        Text="有启动器或 DSH 新版本时提醒。" />
+                                <StackPanel VerticalAlignment="Center" Spacing="3">
+                                    <TextBlock Style="{StaticResource SettingsRowTitleTextStyle}" Text="通知静音" />
+                                    <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="关闭提示音，继续显示通知。" />
                                 </StackPanel>
-                                <ToggleSwitch
-                                    x:Name="UpdateReminderToggle"
-                                    Grid.Column="1"
-                                    HorizontalAlignment="Right"
-                                    IsOn="True"
-                                    VerticalAlignment="Center" />
+                                <ToggleSwitch x:Name="NotificationMutedToggle" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" AutomationProperties.Name="通知静音" />
                             </Grid>
                         </Border>
-
                         <Border Style="{StaticResource SettingsCardStyle}">
-                            <Grid Style="{StaticResource SettingsRowGridStyle}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel
-                                    VerticalAlignment="Center"
-                                    Spacing="3">
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowTitleTextStyle}"
-                                        Text="插件更新提醒" />
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                        Text="插件有新版本时提醒。" />
-                                </StackPanel>
-                                <ToggleSwitch
-                                    x:Name="PluginUpdateReminderToggle"
-                                    Grid.Column="1"
-                                    HorizontalAlignment="Right"
-                                    IsOn="True"
-                                    VerticalAlignment="Center" />
-                            </Grid>
-                        </Border>
-
-                        <Border Style="{StaticResource SettingsCardStyle}">
-                            <Grid Style="{StaticResource SettingsRowGridStyle}">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel
-                                    VerticalAlignment="Center"
-                                    Spacing="3">
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowTitleTextStyle}"
-                                        Text="充值提醒" />
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                        Text="余额增加达到该金额时提醒。" />
-                                </StackPanel>
-                                <ToggleSwitch
-                                    x:Name="RechargeReminderToggle"
-                                    Grid.Column="1"
-                                    HorizontalAlignment="Right"
-                                    IsOn="True"
-                                    VerticalAlignment="Center" />
-                            </Grid>
-                        </Border>
-
-                        <Border Style="{StaticResource SettingsCardStyle}">
-                            <StackPanel Spacing="12">
-                                <StackPanel Spacing="3">
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowTitleTextStyle}"
-                                        Text="今日消费提醒" />
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                        Text="今日消费达到该金额时提醒。" />
-                                </StackPanel>
-                                <Grid RowSpacing="10">
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-                                    <StackPanel
-                                        Orientation="Horizontal"
-                                        Spacing="24">
-                                        <CheckBox x:Name="Spend5CheckBox" Content="¥5" IsChecked="True" />
-                                        <CheckBox x:Name="Spend10CheckBox" Content="¥10" IsChecked="True" />
-                                        <CheckBox x:Name="Spend20CheckBox" Content="¥20" IsChecked="True" />
-                                        <CheckBox x:Name="Spend50CheckBox" Content="¥50" IsChecked="True" />
+                            <StackPanel>
+                                <Grid ColumnSpacing="16" MinHeight="56">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center" Spacing="2">
+                                        <TextBlock Style="{StaticResource SettingsRowTitleTextStyle}" Text="更新提醒" />
+                                        <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="启动器、DSH 和安装器的新版本。" />
                                     </StackPanel>
-                                    <StackPanel
-                                        Grid.Row="1"
-                                        Orientation="Horizontal"
-                                        Spacing="10">
-                                        <CheckBox
-                                            x:Name="SpendCustomCheckBox"
-                                            VerticalAlignment="Center"
-                                            Content="自定义消费提醒"
-                                            IsChecked="True" />
-                                        <NumberBox
-                                            x:Name="SpendCustomBox"
-                                            Width="150"
-                                            HorizontalAlignment="Left"
-                                            VerticalAlignment="Center"
-                                            Minimum="0.01"
-                                            SmallChange="1"
-                                            SpinButtonPlacementMode="Compact"
-                                            Value="15" />
+                                    <ToggleSwitch x:Name="UpdateReminderToggle" Grid.Column="1" HorizontalAlignment="Right" IsOn="True" VerticalAlignment="Center" AutomationProperties.Name="更新提醒" />
+                                </Grid>
+                                <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                                <Grid ColumnSpacing="16" MinHeight="56">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center" Spacing="2">
+                                        <TextBlock Style="{StaticResource SettingsRowTitleTextStyle}" Text="插件更新提醒" />
+                                        <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="插件的新版本及安装结果。" />
                                     </StackPanel>
+                                    <ToggleSwitch x:Name="PluginUpdateReminderToggle" Grid.Column="1" HorizontalAlignment="Right" IsOn="True" VerticalAlignment="Center" AutomationProperties.Name="插件更新提醒" />
+                                </Grid>
+                                <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                                <Grid ColumnSpacing="16" MinHeight="56">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center" Spacing="2">
+                                        <TextBlock Style="{StaticResource SettingsRowTitleTextStyle}" Text="充值提醒" />
+                                        <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="余额增加时提醒。" />
+                                    </StackPanel>
+                                    <ToggleSwitch x:Name="RechargeReminderToggle" Grid.Column="1" HorizontalAlignment="Right" IsOn="True" VerticalAlignment="Center" AutomationProperties.Name="充值提醒" />
                                 </Grid>
                             </StackPanel>
                         </Border>
-
-                        <Border Style="{StaticResource SettingsCardStyle}">
-                            <StackPanel Spacing="12">
-                                <StackPanel Spacing="3">
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowTitleTextStyle}"
-                                        Text="余额提醒" />
-                                    <TextBlock
-                                        Style="{StaticResource SettingsRowDescriptionTextStyle}"
-                                        Text="低于该金额时提醒，回升后重新触发。" />
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border Style="{StaticResource SettingsCardStyle}">
+                                <StackPanel Spacing="10">
+                                    <StackPanel Spacing="3">
+                                        <TextBlock Style="{StaticResource SettingsRowTitleTextStyle}" Text="今日消费提醒" />
+                                        <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="今日消费达到所选金额。" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Spacing="12">
+                                        <CheckBox x:Name="Spend5CheckBox" Content="¥5" MinWidth="0" IsChecked="True" />
+                                        <CheckBox x:Name="Spend10CheckBox" Content="¥10" MinWidth="0" IsChecked="True" />
+                                        <CheckBox x:Name="Spend20CheckBox" Content="¥20" MinWidth="0" IsChecked="True" />
+                                        <CheckBox x:Name="Spend50CheckBox" Content="¥50" MinWidth="0" IsChecked="True" />
+                                    </StackPanel>
+                                    <Grid HorizontalAlignment="Left" ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="112" />
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox x:Name="SpendCustomCheckBox" MinWidth="0" VerticalAlignment="Center" Content="自定义金额" IsChecked="True" />
+                                        <NumberBox x:Name="SpendCustomBox" Grid.Column="1" VerticalAlignment="Center" Minimum="0.01" SmallChange="1" SpinButtonPlacementMode="Compact" Value="15" AutomationProperties.Name="自定义消费提醒金额" />
+                                    </Grid>
                                 </StackPanel>
-                                <Grid RowSpacing="10">
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-                                    <StackPanel
-                                        Orientation="Horizontal"
-                                        Spacing="24">
-                                        <CheckBox x:Name="Balance20CheckBox" Content="¥20" IsChecked="True" />
-                                        <CheckBox x:Name="Balance10CheckBox" Content="¥10" IsChecked="True" />
-                                        <CheckBox x:Name="Balance5CheckBox" Content="¥5" IsChecked="True" />
-                                        <CheckBox x:Name="Balance1CheckBox" Content="¥1" IsChecked="True" />
+                            </Border>
+                            <Border Grid.Column="1" Style="{StaticResource SettingsCardStyle}">
+                                <StackPanel Spacing="10">
+                                    <StackPanel Spacing="3">
+                                        <TextBlock Style="{StaticResource SettingsRowTitleTextStyle}" Text="余额提醒" />
+                                        <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="余额低于所选金额，回升后重新触发。" />
                                     </StackPanel>
-                                    <StackPanel
-                                        Grid.Row="1"
-                                        Orientation="Horizontal"
-                                        Spacing="10">
-                                        <CheckBox
-                                            x:Name="BalanceCustomCheckBox"
-                                            VerticalAlignment="Center"
-                                            Content="自定义余额提醒"
-                                            IsChecked="True" />
-                                        <NumberBox
-                                            x:Name="BalanceCustomBox"
-                                            Width="150"
-                                            HorizontalAlignment="Left"
-                                            VerticalAlignment="Center"
-                                            Minimum="0.01"
-                                            SmallChange="1"
-                                            SpinButtonPlacementMode="Compact"
-                                            Value="50" />
+                                    <StackPanel Orientation="Horizontal" Spacing="12">
+                                        <CheckBox x:Name="Balance20CheckBox" Content="¥20" MinWidth="0" IsChecked="True" />
+                                        <CheckBox x:Name="Balance10CheckBox" Content="¥10" MinWidth="0" IsChecked="True" />
+                                        <CheckBox x:Name="Balance5CheckBox" Content="¥5" MinWidth="0" IsChecked="True" />
+                                        <CheckBox x:Name="Balance1CheckBox" Content="¥1" MinWidth="0" IsChecked="True" />
                                     </StackPanel>
-                                </Grid>
-                            </StackPanel>
-                        </Border>
+                                    <Grid HorizontalAlignment="Left" ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="112" />
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox x:Name="BalanceCustomCheckBox" MinWidth="0" VerticalAlignment="Center" Content="自定义金额" IsChecked="True" />
+                                        <NumberBox x:Name="BalanceCustomBox" Grid.Column="1" VerticalAlignment="Center" Minimum="0.01" SmallChange="1" SpinButtonPlacementMode="Compact" Value="50" AutomationProperties.Name="自定义余额提醒金额" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
                     </StackPanel>
 
                     <!-- 服务 -->
@@ -4010,16 +3948,94 @@
                                             Style="{StaticResource SettingsRowDescriptionTextStyle}"
                                             Text="与启动器独立更新：只有安装器自己出了新版本才替换。" />
                                     </StackPanel>
-                                    <Button
-                                        x:Name="RepairInstallerButton"
+                                    <ComboBox
+                                        x:Name="InstallerUpdateModeComboBox"
                                         Grid.Column="1"
-                                        Content="修复安装器"
-                                        Style="{StaticResource SettingsActionButtonStyle}" />
+                                        SelectedIndex="0"
+                                        MinWidth="180" HorizontalAlignment="Right" VerticalAlignment="Center" SelectionChanged="UpdateModeComboBox_SelectionChanged">
+                                        <ComboBoxItem Content="自动下载并安装" Tag="Install" />
+                                        <ComboBoxItem Content="仅检查更新" Tag="Check" />
+                                        <ComboBoxItem Content="关闭" Tag="Off" />
+                                    </ComboBox>
                                 </Grid>
-                                <InfoBar
-                                    x:Name="InstallerResultInfoBar"
-                                    IsClosable="True"
-                                    IsOpen="False" />
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <InfoBar x:Name="InstallerResultInfoBar" VerticalAlignment="Center" IsClosable="False" IsOpen="False" />
+                                    <Button x:Name="CheckInstallerUpdateButton" Grid.Column="1" Content="立即检查" Style="{StaticResource SettingsActionButtonStyle}" />
+                                    <Button x:Name="RepairInstallerButton" Grid.Column="2" Content="修复安装器" Style="{StaticResource SettingsActionButtonStyle}" />
+                                </Grid>
+                                <StackPanel x:Name="InstallerUpdateProgressPanel" Spacing="6" Visibility="Collapsed">
+                                    <TextBlock x:Name="InstallerUpdateProgressText" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                    <ProgressBar x:Name="InstallerUpdateProgressBar" Height="5" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <StackPanel x:Name="BackupImportPage" Spacing="16" Visibility="Collapsed">
+                        <TextBlock Style="{StaticResource SettingsPageTitleTextStyle}" Text="备份与导入" />
+                        <Border x:Name="DshDataFindSection" Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel Spacing="10">
+                                <TextBlock Style="{StaticResource SettingsRowTitleTextStyle}" Text="查找已有数据" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button x:Name="DshDataFindButton" Content="自动查找" Style="{StaticResource SettingsActionButtonStyle}" Click="DshDataFindButton_Click" />
+                                    <Button x:Name="DshDataFindDrivesButton" Content="扫描其他磁盘" Style="{StaticResource SettingsActionButtonStyle}" Click="DshDataFindDrivesButton_Click" />
+                                    <Button x:Name="DshDataFindCancelButton" Content="取消" Visibility="Collapsed" Style="{StaticResource SettingsCompactButtonStyle}" Click="DshDataFindCancelButton_Click" />
+                                </StackPanel>
+                                <ProgressBar x:Name="DshDataFindProgress" IsIndeterminate="True" Visibility="Collapsed" />
+                                <TextBlock x:Name="DshDataFindStatusText" Visibility="Collapsed" Style="{StaticResource SettingsRowDescriptionTextStyle}" TextWrapping="Wrap" />
+                                <TextBlock x:Name="DshDataFindPathText" Visibility="Collapsed" Style="{StaticResource SettingsRowDescriptionTextStyle}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Border>
+                        <Border x:Name="DshDataSection" Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel Spacing="12">
+                                <StackPanel Spacing="3">
+                                    <TextBlock Style="{StaticResource SettingsRowTitleTextStyle}" Text="DSH 会话、插件与 Skill" />
+                                    <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="导入已有 DSH 数据目录，或导出兼容 DeepSeek Harness 的 ZIP 文件。" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button x:Name="DshDataImportButton" Content="导入 DSH 文件夹" Style="{StaticResource SettingsActionButtonStyle}" Click="DshDataImportButton_Click" />
+                                    <Button x:Name="DshDataExportButton" Content="导出 DSH ZIP" Style="{StaticResource SettingsActionButtonStyle}" Click="DshDataExportButton_Click" />
+                                </StackPanel>
+                                <InfoBar x:Name="DshDataInfoBar" IsClosable="True" IsOpen="False" />
+                                <StackPanel x:Name="DshDataImportPanel" Spacing="10" Visibility="Collapsed">
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                        <TextBox x:Name="DshDataSourceBox" IsReadOnly="True" PlaceholderText="选择 .dsh 或 DSH_HOME 文件夹" Style="{StaticResource SettingsPathBoxStyle}" />
+                                        <Button x:Name="DshDataSourcePickButton" Grid.Column="1" Content="选择文件夹" Visibility="Collapsed" Style="{StaticResource SettingsActionButtonStyle}" Click="DshDataSourcePickButton_Click" />
+                                    </Grid>
+                                    <ComboBox x:Name="DshDataSourceProfileBox" Header="来源 Profile" HorizontalAlignment="Stretch" Style="{StaticResource SettingsComboBoxStyle}" SelectionChanged="DshDataSourceProfileBox_SelectionChanged" Visibility="Collapsed" />
+                                    <TextBlock x:Name="DshDataImportTargetText" Style="{StaticResource SettingsRowDescriptionTextStyle}" TextWrapping="Wrap" />
+                                    <StackPanel x:Name="DshDataImportGroupsHost" Spacing="4" />
+                                    <TextBlock x:Name="DshDataImportSummaryText" Style="{StaticResource SettingsRowDescriptionTextStyle}" TextWrapping="Wrap" />
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                        <Button x:Name="DshDataImportStartButton" Content="开始导入" Visibility="Collapsed" IsEnabled="False" Style="{StaticResource SettingsAccentActionButtonStyle}" Click="DshDataImportStartButton_Click" />
+                                        <ProgressBar x:Name="DshDataImportProgress" Grid.Column="1" Minimum="0" Maximum="100" VerticalAlignment="Center" />
+                                        <Button x:Name="DshDataImportCancelButton" Grid.Column="2" Content="取消" Style="{StaticResource SettingsCompactButtonStyle}" Visibility="Collapsed" Click="DshDataCancel_Click" />
+                                    </Grid>
+                                    <TextBlock x:Name="DshDataImportDetailText" Style="{StaticResource SettingsRowDescriptionTextStyle}" TextWrapping="Wrap" />
+                                </StackPanel>
+                                <StackPanel x:Name="DshDataExportPanel" Spacing="10" Visibility="Collapsed">
+                                    <StackPanel x:Name="DshDataExportGroupsHost" Spacing="4" />
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                        <TextBox x:Name="DshDataExportTargetBox" IsReadOnly="True" PlaceholderText="选择 ZIP 输出文件夹" Style="{StaticResource SettingsPathBoxStyle}" />
+                                        <Button x:Name="DshDataExportFolderButton" Grid.Column="1" Content="选择文件夹" Visibility="Collapsed" Style="{StaticResource SettingsActionButtonStyle}" Click="DshDataExportFolderButton_Click" />
+                                    </Grid>
+                                    <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" Text="ZIP 解压后可覆盖到官方 DeepSeek Harness 的 .dsh / DSH_HOME 数据目录。" TextWrapping="Wrap" />
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                        <Button x:Name="DshDataExportStartButton" Content="开始导出" Visibility="Collapsed" IsEnabled="False" Style="{StaticResource SettingsAccentActionButtonStyle}" Click="DshDataExportStartButton_Click" />
+                                        <ProgressBar x:Name="DshDataExportProgress" Grid.Column="1" Minimum="0" Maximum="100" VerticalAlignment="Center" />
+                                        <Button x:Name="DshDataExportCancelButton" Grid.Column="2" Content="取消" Style="{StaticResource SettingsCompactButtonStyle}" Visibility="Collapsed" Click="DshDataCancel_Click" />
+                                    </Grid>
+                                    <TextBlock x:Name="DshDataExportDetailText" Style="{StaticResource SettingsRowDescriptionTextStyle}" TextWrapping="Wrap" />
+                                </StackPanel>
                             </StackPanel>
                         </Border>
                     </StackPanel>

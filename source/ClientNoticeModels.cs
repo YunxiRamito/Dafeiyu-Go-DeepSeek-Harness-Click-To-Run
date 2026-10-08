@@ -17,6 +17,8 @@ namespace DeepSeekHarnessLauncher
         public string Url { get; set; }
         public string Page { get; set; }
         public string Command { get; set; }
+        [JsonIgnore]
+        internal Action LocalAction { get; set; }
         internal string ActionTarget => Action switch
             { "url" => Url ?? Target, "settings" => Page ?? Target, "powershell" => Command ?? Target, _ => Target };
     }
@@ -27,6 +29,12 @@ namespace DeepSeekHarnessLauncher
         public string Id { get; set; } = String.Empty;
         [JsonIgnore]
         internal bool IsFeedbackReply { get; set; }
+        [JsonIgnore]
+        internal bool IsLocal { get; set; }
+        [JsonIgnore]
+        internal bool AutoDismiss { get; set; }
+        [JsonIgnore]
+        internal bool IsDeveloperFeedback { get; set; }
         private string _kind = "notification";
         public string Kind { get => _kind; set => _kind = value?.ToLowerInvariant(); }
         public string Title { get; set; } = String.Empty;
@@ -124,8 +132,11 @@ namespace DeepSeekHarnessLauncher
         private readonly object _sync = new object();
         private readonly Queue<ClientNoticeMessage> _announcements = new Queue<ClientNoticeMessage>();
         private readonly Queue<ClientNoticeMessage> _notifications = new Queue<ClientNoticeMessage>();
+        private readonly Queue<ClientNoticeMessage> _localNotifications = new Queue<ClientNoticeMessage>();
         private readonly HashSet<string> _ids = new HashSet<string>(StringComparer.Ordinal);
         private readonly Queue<string> _completed = new Queue<string>();
+        private readonly Dictionary<string, (int Failures, DateTimeOffset After)> _displayRetries
+            = new Dictionary<string, (int, DateTimeOffset)>(StringComparer.Ordinal);
         private int _operations;
         private string _active;
         internal IDisposable BeginOperation()
@@ -139,8 +150,8 @@ namespace DeepSeekHarnessLauncher
             lock (_sync)
             {
                 string key = Key(message);
-                if (_announcements.Count + _notifications.Count >= 256 || !_ids.Add(key)) return false;
-                (message.Kind == "announcement" ? _announcements : _notifications).Enqueue(message);
+                if (_announcements.Count + _notifications.Count + _localNotifications.Count >= 256 || !_ids.Add(key)) return false;
+                QueueFor(message).Enqueue(message);
                 return true;
             }
         }
@@ -149,13 +160,16 @@ namespace DeepSeekHarnessLauncher
             lock (_sync)
             {
                 if (_operations > 0 || _active != null) return null;
-                foreach (var queue in new[] { _announcements, _notifications })
+                foreach (var queue in new[] { _localNotifications, _notifications, _announcements })
                 {
-                    while (queue.Count > 0)
+                    int remaining = queue.Count;
+                    while (remaining-- > 0)
                     {
                         var message = queue.Dequeue();
                         if (message.ExpiresAt.HasValue && message.ExpiresAt.Value <= now)
-                        { _ids.Remove(Key(message)); continue; }
+                        { _ids.Remove(Key(message)); _displayRetries.Remove(Key(message)); continue; }
+                        if (_displayRetries.TryGetValue(Key(message), out var retry) && retry.After > now)
+                        { queue.Enqueue(message); continue; }
                         _active = Key(message);
                         return message;
                     }
@@ -169,6 +183,7 @@ namespace DeepSeekHarnessLauncher
             {
                 if (message != null && _active == Key(message))
                 {
+                    _displayRetries.Remove(_active);
                     _completed.Enqueue(_active);
                     if (_completed.Count > 1024) _ids.Remove(_completed.Dequeue());
                     _active = null;
@@ -181,12 +196,53 @@ namespace DeepSeekHarnessLauncher
             {
                 if (message != null && _active == Key(message))
                 {
-                    (message.Kind == "announcement" ? _announcements : _notifications).Enqueue(message);
+                    QueueFor(message).Enqueue(message);
                     _active = null;
                 }
             }
         }
-        private static string Key(ClientNoticeMessage message) { return message.Kind + ":" + message.Id; }
+        internal void RetryDisplay(ClientNoticeMessage message, DateTimeOffset now)
+        {
+            lock (_sync)
+            {
+                if (message == null || _active != Key(message)) return;
+                _displayRetries.TryGetValue(_active, out var previous);
+                int failures = Math.Min(previous.Failures + 1, 5);
+                _displayRetries[_active] = (failures, now.AddSeconds(Math.Min(60, 5 * (1 << (failures - 1)))));
+                QueueFor(message).Enqueue(message);
+                _active = null;
+            }
+        }
+        internal bool HasWaitingNotification(DateTimeOffset now)
+        {
+            lock (_sync)
+            {
+                return _localNotifications.Concat(_notifications).Any(message =>
+                    (!message.ExpiresAt.HasValue || message.ExpiresAt > now)
+                    && (!_displayRetries.TryGetValue(Key(message), out var retry) || retry.After <= now));
+            }
+        }
+        internal void RemoveWaiting(Predicate<ClientNoticeMessage> predicate)
+        {
+            lock (_sync)
+            {
+                foreach (var queue in new[] { _localNotifications, _notifications, _announcements })
+                {
+                    int count = queue.Count;
+                    while (count-- > 0)
+                    {
+                        var message = queue.Dequeue();
+                        if (!predicate(message)) { queue.Enqueue(message); continue; }
+                        _ids.Remove(Key(message));
+                        _displayRetries.Remove(Key(message));
+                    }
+                }
+            }
+        }
+        private Queue<ClientNoticeMessage> QueueFor(ClientNoticeMessage message)
+            => message.IsLocal ? _localNotifications : message.Kind == "announcement" ? _announcements : _notifications;
+        private static string Key(ClientNoticeMessage message)
+            { return (message.IsLocal ? "local:" : "") + message.Kind + ":" + message.Id; }
         private sealed class Operation : IDisposable
         {
             private ClientNoticeQueue _owner;

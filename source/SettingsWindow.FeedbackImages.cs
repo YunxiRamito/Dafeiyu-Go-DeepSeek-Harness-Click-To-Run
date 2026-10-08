@@ -82,12 +82,13 @@ namespace DeepSeekHarnessLauncher
                     editor.Images.AddRange(selected);
                     foreach (var selectedImage in selected)
                     {
-                        var image = new Image { Width = 96, Height = 96, Stretch = Stretch.UniformToFill };
+                        var image = new ImageBrush { Stretch = Stretch.UniformToFill,
+                            AlignmentX = AlignmentX.Center, AlignmentY = AlignmentY.Center };
                         var placeholder = new TextBlock { Text = Path.GetExtension(selectedImage.FileName).TrimStart('.').ToUpperInvariant(),
                             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-                        var tile = new Grid { Width = 96, Height = 96, Clip = new RectangleGeometry { Rect = new Rect(0, 0, 96, 96) } };
+                        var tile = new Grid { Width = 96, Height = 96, Background = image,
+                            Clip = new RectangleGeometry { Rect = new Rect(0, 0, 96, 96) } };
                         tile.Children.Add(placeholder);
-                        tile.Children.Add(image);
                         var remove = new Button { Content = "×", Width = 26, Height = 26, MinWidth = 0, MinHeight = 0,
                             Padding = new Thickness(0), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top };
                         AutomationProperties.SetName(remove, "移除图片 " + selectedImage.FileName);
@@ -100,7 +101,7 @@ namespace DeepSeekHarnessLauncher
                         tile.Children.Add(remove);
                         ToolTipService.SetToolTip(tile, selectedImage.FileName);
                         previews.Children.Add(tile);
-                        try { image.Source = await DecodeFeedbackBitmapAsync(selectedImage.Content, 192); placeholder.Visibility = Visibility.Collapsed; }
+                        try { image.ImageSource = await DecodeFeedbackBitmapAsync(selectedImage.Content, 192); placeholder.Visibility = Visibility.Collapsed; }
                         catch { /* Windows codec availability can vary; the server validates and converts WebP. */ }
                     }
                 }
@@ -143,13 +144,15 @@ namespace DeepSeekHarnessLauncher
             }
             foreach (FeedbackImageModel model in images)
             {
-                var image = new Image { Width = 96, Height = 96, Stretch = Stretch.UniformToFill };
+                var image = new ImageBrush { Stretch = Stretch.UniformToFill,
+                    AlignmentX = AlignmentX.Center, AlignmentY = AlignmentY.Center };
                 var loading = new ProgressRing { Width = 24, Height = 24, IsActive = true };
-                var tile = new Grid { Width = 96, Height = 96, Clip = new RectangleGeometry { Rect = new Rect(0, 0, 96, 96) } };
-                tile.Children.Add(image);
+                var tile = new Grid { Width = 96, Height = 96, Background = image,
+                    Clip = new RectangleGeometry { Rect = new Rect(0, 0, 96, 96) } };
                 tile.Children.Add(loading);
                 var thumbnail = new Button { Content = tile, Width = 96, Height = 96, MinWidth = 0, MinHeight = 0,
-                    Padding = new Thickness(0), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
+                    Padding = new Thickness(0), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
+                    HorizontalContentAlignment = HorizontalAlignment.Center, VerticalContentAlignment = VerticalAlignment.Center };
                 AutomationProperties.SetName(thumbnail, "展开反馈图片");
                 ToolTipService.SetToolTip(thumbnail, "点击展开图片");
                 thumbnails.Children.Add(thumbnail);
@@ -164,7 +167,7 @@ namespace DeepSeekHarnessLauncher
                     {
                         byte[] bytes = await LoadFeedbackImageBytesAsync(model, token);
                         token.ThrowIfCancellationRequested();
-                        image.Source = await DecodeFeedbackBitmapAsync(bytes, 192);
+                        image.ImageSource = await DecodeFeedbackBitmapAsync(bytes, 192);
                     }
                     catch (OperationCanceledException) { }
                     catch
@@ -194,7 +197,7 @@ namespace DeepSeekHarnessLauncher
                     {
                         byte[] bytes = await LoadFeedbackImageBytesAsync(model, token);
                         token.ThrowIfCancellationRequested();
-                        var bitmap = await DecodeFeedbackBitmapAsync(bytes, Math.Min(model.Width, 2048));
+                        var bitmap = await DecodeFeedbackBitmapAsync(bytes, 2048);
                         if (expanded != detail) return;
                         largeImage.Source = bitmap;
                         void Resize() => largeImage.Height = Math.Max(1, panel.ActualWidth) * model.Height / model.Width;
@@ -237,7 +240,7 @@ namespace DeepSeekHarnessLauncher
             finally { _feedbackImageSlots.Release(); }
         }
 
-        private static async Task<BitmapImage> DecodeFeedbackBitmapAsync(byte[] bytes, int decodeWidth)
+        private static async Task<BitmapImage> DecodeFeedbackBitmapAsync(byte[] bytes, int maximumEdge)
         {
             FeedbackImageSupport.ValidatePreviewDimensions(bytes);
             using var stream = new InMemoryRandomAccessStream();
@@ -253,7 +256,10 @@ namespace DeepSeekHarnessLauncher
                 || (long)decoder.PixelWidth * decoder.PixelHeight > FeedbackImageSupport.MaximumPixels || decoder.FrameCount != 1)
                 throw new InvalidDataException("请选择尺寸不超过 2000 万像素、单边不超过 10000 像素的静态图片。");
             stream.Seek(0);
-            var bitmap = new BitmapImage { DecodePixelWidth = decodeWidth };
+            var bitmap = new BitmapImage();
+            if (decoder.PixelWidth >= decoder.PixelHeight)
+                bitmap.DecodePixelWidth = (int)Math.Min(decoder.PixelWidth, maximumEdge);
+            else bitmap.DecodePixelHeight = (int)Math.Min(decoder.PixelHeight, maximumEdge);
             await bitmap.SetSourceAsync(stream);
             return bitmap;
         }

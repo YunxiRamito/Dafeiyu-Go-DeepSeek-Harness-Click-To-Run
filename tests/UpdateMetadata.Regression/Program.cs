@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -125,7 +126,81 @@ using (var server = new FixtureServer())
         "DSH download does not start without integrity");
 }
 
-Console.WriteLine($"PASS {checks} update metadata checks; loopback HTTP only.");
+if (OperatingSystem.IsWindows())
+{
+    string applyRoot = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(),
+        ".update-integrity-tests", "apply-" + Guid.NewGuid().ToString("N")));
+    Directory.CreateDirectory(applyRoot);
+    try
+    {
+        void RunApplyCase(string name, bool validHelper, bool failCopy)
+        {
+            string root = Path.Combine(applyRoot, name);
+            string installed = Path.Combine(root, "installed");
+            string incoming = Path.Combine(root, "incoming");
+            string oldHelper = Path.Combine(installed, "info-host");
+            string newHelper = Path.Combine(incoming, "info-host");
+            string temporary = Path.Combine(root, "temporary");
+            Directory.CreateDirectory(oldHelper);
+            Directory.CreateDirectory(newHelper);
+            Directory.CreateDirectory(temporary);
+            Directory.CreateDirectory(Path.Combine(installed, ".dsh", "sessions"));
+            Directory.CreateDirectory(Path.Combine(oldHelper, "runtime"));
+            File.WriteAllText(Path.Combine(installed, ".dsh", "sessions", "user.json"), "user data");
+            File.WriteAllText(Path.Combine(installed, "launcher.json"), "user settings");
+            File.WriteAllText(Path.Combine(oldHelper, "DafeiyuGo.Info.dll"), "old helper");
+            File.WriteAllText(Path.Combine(oldHelper, "runtime", "obsolete.dll"), "old runtime");
+            File.WriteAllText(Path.Combine(newHelper, "keep.dll"), "new dependency");
+            if (validHelper) File.WriteAllText(Path.Combine(newHelper, "DafeiyuGo.Info.dll"), "new helper");
+            string scriptPath = Path.Combine(root, "apply.ps1");
+            string taskCalls = Path.Combine(root, "task-calls.txt");
+            // Exercise the emitted script with scheduling and delays replaced by local stubs.
+            string prelude = "function Start-Sleep {}\nfunction schtasks.exe { $args -join ' ' | Add-Content -LiteralPath '"
+                + taskCalls.Replace("'", "''") + "' }\n";
+            File.WriteAllText(scriptPath, prelude + UpdateSupport.BuildApplyScript(installed, incoming,
+                int.MaxValue, Path.Combine(root, "apply.log"), Path.Combine(root, "restart.cmd"), "1.7.1"),
+                new UTF8Encoding(true));
+            using FileStream locked = failCopy
+                ? new FileStream(Path.Combine(oldHelper, "DafeiyuGo.Info.dll"), FileMode.Open, FileAccess.Read, FileShare.Read)
+                : null;
+            var start = new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
+            {
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            foreach (string arg in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath })
+                start.ArgumentList.Add(arg);
+            start.Environment["TEMP"] = temporary;
+            using Process process = Process.Start(start);
+            Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+            Task<string> stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(20000))
+            {
+                process.Kill(true);
+                throw new Exception("Emitted update script fixture timed out: " + name);
+            }
+            AssertApply(process.ExitCode == 0, "script finishes without scheduler execution: " + stdout.Result + stderr.Result);
+            AssertApply(File.ReadAllText(Path.Combine(installed, ".dsh", "sessions", "user.json")) == "user data",
+                "sessions preserved");
+            AssertApply(File.ReadAllText(Path.Combine(installed, "launcher.json")) == "user settings", "settings preserved");
+            AssertApply(File.ReadAllText(Path.Combine(oldHelper, "keep.dll")) == "new dependency", "new files copied");
+            AssertApply(File.Exists(Path.Combine(oldHelper, "runtime", "obsolete.dll")) == (!validHelper || failCopy),
+                "obsolete helper files removed only after a complete valid update");
+            AssertApply(Directory.GetFiles(temporary, "obsolete.dll", SearchOption.AllDirectories).Length == 1,
+                "old helper backed up before cleanup");
+            AssertApply(File.ReadAllText(Path.Combine(root, "apply.log")).Contains("failed=" + (failCopy ? "1" : "0")),
+                "copy failures recorded accurately");
+            void AssertApply(bool pass, string message) => Check(pass, name + ": " + message);
+        }
+        RunApplyCase("success", true, false);
+        RunApplyCase("copy-failure", true, true);
+        RunApplyCase("missing-helper", false, false);
+    }
+    finally { Directory.Delete(applyRoot, true); }
+}
+
+Console.WriteLine($"PASS {checks} update metadata/apply checks; loopback HTTP and isolated file fixtures only.");
 
 sealed record FixtureResponse(byte[] Body, int DelayMilliseconds, bool Hang)
 {

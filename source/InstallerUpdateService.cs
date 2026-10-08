@@ -56,14 +56,27 @@ namespace DeepSeekHarnessLauncher
         /// </summary>
         internal static InstallerUpdatePackage FetchLatestRelease(
             LauncherSettings settings,
-            out string error)
+            out string error,
+            bool forceRefresh = false)
+        {
+            return FetchReleaseWithCache(() =>
+            {
+                InstallerUpdatePackage package = FetchFromApi(settings, out string fetchError);
+                if (package == null) throw new InvalidDataException(fetchError ?? "安装器 Release 信息无效。");
+                return package;
+            }, () => TryResolveVersionWithoutApi(settings, out string version) ? version : null,
+                out error, forceRefresh);
+        }
+
+        internal static InstallerUpdatePackage FetchReleaseWithCache(Func<InstallerUpdatePackage> fetch,
+            Func<string> resolveVersion, out string error, bool forceRefresh)
         {
             error = null;
 
             // 先吃本地缓存。api.github.com 对未登录请求只有 60 次/小时，而设置页每次打开、
             // 每次点「立即检查」都会来一发 —— 撞上就是界面里那句英文的
             // "(403) rate limit exceeded"，用户完全不知道该怎么办。
-            InstallerUpdatePackage fresh = ReadCache(true);
+            InstallerUpdatePackage fresh = forceRefresh ? null : ReadCache(true);
             if (fresh != null)
             {
                 return fresh;
@@ -71,7 +84,7 @@ namespace DeepSeekHarnessLauncher
 
             try
             {
-                InstallerUpdatePackage package = FetchFromApi(settings, out error);
+                InstallerUpdatePackage package = fetch();
                 if (package == null)
                 {
                     return null;
@@ -92,14 +105,14 @@ namespace DeepSeekHarnessLauncher
                 InstallerUpdatePackage stale = ReadCache(false);
                 if (stale != null)
                 {
-                    error = null;
+                    error = "安装器在线检查失败，显示上次缓存的版本：" + DescribeError(exception);
                     return stale;
                 }
 
                 // 连缓存都没有：绕开 API，直接问 GitHub 要最新 tag（走 302 跳转，不吃配额）。
                 // 只能拿到版本号，拿不到可信 SHA-256，所以只够判断"要不要更新"。
-                string version;
-                if (TryResolveVersionWithoutApi(settings, out version))
+                string version = resolveVersion();
+                if (ProductVersion.IsValid(version))
                 {
                     return new InstallerUpdatePackage { Version = version };
                 }
@@ -287,6 +300,7 @@ namespace DeepSeekHarnessLauncher
                         "s",
                         CultureInfo.InvariantCulture)));
                 text.Append('}');
+                Directory.CreateDirectory(LauncherSettingsStore.DirectoryPath);
                 File.WriteAllText(
                     CachePath,
                     text.ToString(),

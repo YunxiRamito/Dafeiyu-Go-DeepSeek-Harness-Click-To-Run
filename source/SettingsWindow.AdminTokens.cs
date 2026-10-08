@@ -51,6 +51,7 @@ namespace DeepSeekHarnessLauncher
         private void RefreshDeveloperCredentialStatus()
         {
             if (DeveloperCredentialsInfoBar == null || _settings == null) return;
+            _host.DeveloperCredentialsChanged();
             bool missingGitHub = String.IsNullOrWhiteSpace(LauncherSettingsStore.ReadGitHubToken(_settings));
             bool missingAdmin = String.IsNullOrWhiteSpace(LauncherSettingsStore.ReadAdminToken(_settings));
             DeveloperCredentialsInfoBar.Message = missingGitHub && missingAdmin ? "GitHub / 管理员 Token 未填写。"

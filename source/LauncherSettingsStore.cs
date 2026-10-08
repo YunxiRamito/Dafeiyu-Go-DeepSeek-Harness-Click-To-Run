@@ -450,6 +450,12 @@ namespace DeepSeekHarnessLauncher
                 "Install",
                 "Check",
                 "Off");
+            settings.InstallerUpdateMode = NormalizeChoice(
+                settings.InstallerUpdateMode,
+                "Install",
+                "Install",
+                "Check",
+                "Off");
             settings.PluginUpdateMode = NormalizeChoice(
                 settings.PluginUpdateMode,
                 "Check",

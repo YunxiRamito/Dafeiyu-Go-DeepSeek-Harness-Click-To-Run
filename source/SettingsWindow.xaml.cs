@@ -43,6 +43,7 @@ namespace DeepSeekHarnessLauncher
         private ClientNoticeSettings _clientNoticeSettings;
         private bool _authorAvatarLoading;
         private bool _initializing = true;
+        private bool _settingsClosed;
         private bool _suppressNavigation;
         private readonly DispatcherQueueTimer _serverMetricsTimer;
         private readonly DispatcherQueueTimer _presenceRefreshTimer;
@@ -56,7 +57,7 @@ namespace DeepSeekHarnessLauncher
         private int _versionTapCount;
         private DateTime _lastVersionTapUtc = DateTime.MinValue;
 
-        // 数据备份(常规页那张卡):两个面板各自的勾选状态和进度
+        // DYM backup/import state; the UI lives in About > Backup and Import.
         private readonly List<BackupGroup> _backupExportGroups =
             new List<BackupGroup>();
 
@@ -141,7 +142,6 @@ namespace DeepSeekHarnessLauncher
                 ResolveMaterial(_settings.Material));
             UpdatePortModeControls();
             UpdateUpdateOptions();
-            LoadPluginCardSamples();
             RefreshComponents();
             WireSettingsEvents();
             InitializeDownloadCenter();
@@ -256,6 +256,9 @@ namespace DeepSeekHarnessLauncher
             AddGroupTab(UpdatesTabs, "Updates", "更新", UpdatesPage);
             AddGroupTab(UpdatesTabs, "Patches", "补丁", PatchesPage);
             AddGroupTab(AboutTabs, "About", "关于", AboutPage);
+            GeneralPage.Children.Remove(DymBackupSection);
+            BackupImportPage.Children.Insert(2, DymBackupSection);
+            AddGroupTab(AboutTabs, "BackupImport", "备份与导入", BackupImportPage);
             AddGroupTab(AboutTabs, "Feedback", "反馈与建议", FeedbackPage);
             MovePatchManagementToSubpage();
             SetDeveloperTabVisible(false);
@@ -290,6 +293,7 @@ namespace DeepSeekHarnessLauncher
         private void SetDeveloperTabVisible(bool visible)
         {
             DeveloperNavItem.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+            if (visible) _host.DeveloperIdentityActivated();
             if (visible && _settingsSearchIndex.Count > 0)
                 BuildSettingsSearchIndex();
         }
@@ -331,6 +335,7 @@ namespace DeepSeekHarnessLauncher
                 case "Patches":
                     return "UpdatesGroup";
                 case "About":
+                case "BackupImport":
                 case "Feedback":
                     return "AboutGroup";
                 default:
@@ -378,6 +383,9 @@ namespace DeepSeekHarnessLauncher
             CollectSearchEntries(PatchesPage, "Patches", "补丁", "更新");
             CollectSearchEntries(DownloadsPage, "Downloads", "下载任务", null);
             CollectSearchEntries(AboutPage, "About", "关于", null);
+            CollectSearchEntry("BackupImport:Dym", "DYM 文件", "导入导出配置、技能和插件的 .dym 备份文件。", "BackupImport", "备份与导入", "数据备份 恢复 dym 导入 导出", DymBackupSection);
+            CollectSearchEntry("BackupImport:Dsh", "DSH 会话、插件与 Skill", "导入已有 DeepSeek Harness 数据文件夹，导出可覆盖官方数据目录的 ZIP 文件。", "BackupImport", "备份与导入", "对话 会话 插件 技能 skill 官方 dsh zip 迁移", DshDataSection);
+            CollectSearchEntry("BackupImport:Discover", "自动查找", "查找其他 DYM 备份和 DSH 数据目录。", "BackupImport", "备份与导入", "扫描 其他磁盘 自动查找 dym dsh", DshDataFindSection);
             CollectSearchEntries(FeedbackPage, "Feedback", "反馈与建议", "关于");
             CollectSearchEntry("Feedback:Mine", "我的提交", "按本机匿名机器标识筛选自己提交的反馈。", "Feedback", "反馈与建议", "反馈 建议 需求 漏洞 补充 我的提交", FeedbackScopePivot);
             CollectPatchSearchEntries();
@@ -713,6 +721,8 @@ namespace DeepSeekHarnessLauncher
                     return "开发者 developer 推荐 公告";
                 case "About":
                     return "关于 版本 开源 许可 about";
+                case "BackupImport":
+                    return "备份 导入 导出 dym dsh zip 对话 会话 skill 技能 插件 迁移";
                 case "Feedback":
                     return "反馈 建议 需求 漏洞 补充 我的提交 feedback suggestion bug";
                 default:
@@ -1084,6 +1094,7 @@ namespace DeepSeekHarnessLauncher
                 LauncherUpdateModeComboBox,
                 _settings.LauncherUpdateMode);
             SelectTaggedItem(DshUpdateModeComboBox, _settings.DshUpdateMode);
+            SelectTaggedItem(InstallerUpdateModeComboBox, _settings.InstallerUpdateMode);
             SelectTaggedItem(
                 UpdateIntervalComboBox,
                 _settings.UpdateInterval);
@@ -1098,7 +1109,9 @@ namespace DeepSeekHarnessLauncher
                     ? "Check"
                     : _settings.PatchUpdateMode);
 
-            UpdateReminderToggle.IsOn = _settings.UpdateReminder;            PluginUpdateReminderToggle.IsOn = _settings.PluginUpdateReminder;
+            NotificationMutedToggle.IsOn = _settings.NotificationMuted;
+            UpdateReminderToggle.IsOn = _settings.UpdateReminder;
+            PluginUpdateReminderToggle.IsOn = _settings.PluginUpdateReminder;
             RechargeReminderToggle.IsOn = _settings.RechargeReminder;
 
             _proxyUiReady = false;
@@ -1402,6 +1415,7 @@ namespace DeepSeekHarnessLauncher
             HomeCheckUpdateButton.Click += delegate
             {
                 _host.CheckLauncherUpdate();
+                _host.CheckInstallerUpdate();
                 _host.CheckDshUpdate();
                 _host.CheckPluginUpdates();
                 RefreshHomeSummary();
@@ -1427,16 +1441,19 @@ namespace DeepSeekHarnessLauncher
                 LoadChangelog(true);
             };
 
-            // 安装器独立更新：平时不自动重装，版本读不出来时给一条显式修复路径。
+            CheckInstallerUpdateButton.Click += delegate
+            {
+                if (_host.GetInstallerUpdateState().Activity == UpdateUiActivity.Available)
+                    _host.InstallInstallerUpdate();
+                else _host.CheckInstallerUpdate();
+            };
             RepairInstallerButton.Click += delegate
             {
-                InstallerResultInfoBar.Title = "正在修复安装器";
-                InstallerResultInfoBar.Message = "将下载安装器 Release 并替换当前安装器与卸载器，请稍候。";
-                InstallerResultInfoBar.IsOpen = true;
                 _host.RepairInstaller();
             };
             RefreshInstallerVersion();
 
+            NotificationMutedToggle.Toggled += ReminderToggle_Toggled;
             UpdateReminderToggle.Toggled += ReminderToggle_Toggled;
             PluginUpdateReminderToggle.Toggled += ReminderToggle_Toggled;
             RechargeReminderToggle.Toggled += ReminderToggle_Toggled;
@@ -1781,6 +1798,7 @@ namespace DeepSeekHarnessLauncher
 
             _lastPluginStateSignature = signature;
             if (pluginState != null
+                && _pluginCardsLoaded
                 && (pluginState.Activity == UpdateUiActivity.Completed
                     || pluginState.Activity == UpdateUiActivity.UpToDate
                     || pluginState.Activity == UpdateUiActivity.Failed))
@@ -1793,6 +1811,7 @@ namespace DeepSeekHarnessLauncher
         {
             RefreshServiceState();
             RefreshHomeSummary();
+            RefreshDshDataControls();
         }
 
         private void RefreshUpdateStates()
@@ -1819,6 +1838,15 @@ namespace DeepSeekHarnessLauncher
                 DshUpdateProgressText,
                 DshUpdateProgressBar,
                 DshUpdateResultInfoBar);
+            ApplyUpdateState(
+                _host.GetInstallerUpdateState(),
+                CheckInstallerUpdateButton,
+                InstallerUpdateProgressPanel,
+                InstallerUpdateProgressText,
+                InstallerUpdateProgressBar,
+                InstallerResultInfoBar);
+            RepairInstallerButton.IsEnabled = _host.GetInstallerUpdateState().Activity != UpdateUiActivity.Checking
+                && _host.GetInstallerUpdateState().Activity != UpdateUiActivity.Installing;
             ApplyUpdateState(
                 _host.GetPluginUpdateState(),
                 CheckPluginUpdateButton,
@@ -1908,6 +1936,7 @@ namespace DeepSeekHarnessLauncher
             {
                 _host.GetLauncherUpdateState(),
                 _host.GetDshUpdateState(),
+                _host.GetInstallerUpdateState(),
                 _host.GetPluginUpdateState()
             };
             for (int index = 0; index < states.Length; index++)
@@ -2243,6 +2272,7 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
+            _settings.NotificationMuted = NotificationMutedToggle.IsOn;
             _settings.UpdateReminder = UpdateReminderToggle.IsOn;
             _settings.PluginUpdateReminder = PluginUpdateReminderToggle.IsOn;
             _settings.RechargeReminder = RechargeReminderToggle.IsOn;
@@ -2560,8 +2590,12 @@ namespace DeepSeekHarnessLauncher
         /// <summary>
         /// 三个插件分页共用的首次加载入口。
         /// </summary>
-        private void LoadPluginCardSamples()
+        private bool _pluginCardsLoaded;
+
+        private void EnsurePluginCardsLoaded()
         {
+            if (_pluginCardsLoaded) return;
+            _pluginCardsLoaded = true;
             LoadLocalPlugins();
             LoadFeaturedPlugins(false);
             LoadOnlinePlugins(false);
@@ -2585,6 +2619,7 @@ namespace DeepSeekHarnessLauncher
                     _host.Log);
                 DispatcherQueue.TryEnqueue(delegate
                 {
+                    if (_settingsClosed) return;
                     _featuredItems = result == null
                         ? new List<PluginCatalogItem>()
                         : result.Items;
@@ -2817,6 +2852,7 @@ namespace DeepSeekHarnessLauncher
 
         private void ApplyCatalog(PluginCatalogService.CatalogResult result)
         {
+            if (_settingsClosed) return;
             _catalogItems = result == null
                 ? new List<PluginCatalogItem>()
                 : result.Items;
@@ -4384,8 +4420,8 @@ namespace DeepSeekHarnessLauncher
                     string path = Path.Combine(directory, names[index]);
                     if (File.Exists(path))
                     {
-                        return new BitmapImage(
-                            new Uri("file:///" + path.Replace('\\', '/')));
+                        return new BitmapImage { DecodePixelWidth = 128,
+                            UriSource = new Uri("file:///" + path.Replace('\\', '/')) };
                     }
                 }
                 catch
@@ -4799,6 +4835,7 @@ namespace DeepSeekHarnessLauncher
 
             if (target == "Plugins")
             {
+                EnsurePluginCardsLoaded();
                 if (_pluginInstallationState != null && !_pluginInstallationState.IsForRoot(_settings.DshRoot)) LoadLocalPlugins();
                 if (!String.IsNullOrEmpty(pluginTab)) SelectPluginTab(pluginTab);
             }
@@ -4847,10 +4884,15 @@ namespace DeepSeekHarnessLauncher
                 RefreshComponents();
             }
 
-            // 预览用：--settings-preview=General:Backup / General:Restore 直接展开那一半，
-            // 好让 VM 里点验的人不用先找卡片再点按钮
-            if (target == "General" && !String.IsNullOrEmpty(pluginTab))
+            // Keep the previous preview links valid after moving backup tools.
+            if ((target == "General" || target == "BackupImport") && !String.IsNullOrEmpty(pluginTab))
             {
+                if (target == "General" && (pluginTab.Equals("Backup", StringComparison.OrdinalIgnoreCase)
+                    || pluginTab.Equals("Restore", StringComparison.OrdinalIgnoreCase)))
+                {
+                    SelectPage("BackupImport:" + pluginTab);
+                    return;
+                }
                 if (String.Equals(
                         pluginTab,
                         "Backup",
@@ -4865,11 +4907,25 @@ namespace DeepSeekHarnessLauncher
                 {
                     BeginBackupImport();
                 }
+                else if (String.Equals(pluginTab, "DshImport", StringComparison.OrdinalIgnoreCase))
+                {
+                    _ = BeginDshDataImportAsync();
+                }
+                else if (String.Equals(pluginTab, "DshExport", StringComparison.OrdinalIgnoreCase))
+                {
+                    _ = BeginDshDataExport();
+                }
             }
 
             if (target == "Developer")
             {
                 LoadDeveloperCenter();
+                if (String.Equals(pluginTab, "Feedback", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (ListViewItem module in DeveloperModuleList.Items)
+                        if (String.Equals(module.Tag as string, "Feedback", StringComparison.OrdinalIgnoreCase))
+                        { DeveloperModuleList.SelectedItem = module; break; }
+                }
             }
         }
 
@@ -5619,6 +5675,7 @@ namespace DeepSeekHarnessLauncher
             _settings.DshUpdateMode = GetSelectedTag(
                 DshUpdateModeComboBox,
                 "Check");
+            _settings.InstallerUpdateMode = GetSelectedTag(InstallerUpdateModeComboBox, "Install");
             _settings.PluginUpdateMode = GetSelectedTag(
                 PluginUpdateModeComboBox,
                 "Check");
@@ -5717,10 +5774,8 @@ namespace DeepSeekHarnessLauncher
             if (InstallerVersionText != null)
             {
                 InstallerVersionText.Text = known
-                    ? "本机安装器 " + version
-                        + "。与启动器独立更新，不要求两边版本号一致。"
-                    : "没读到本机安装器版本（可能不是用安装器装的）。"
-                        + "与启动器独立更新；需要时可点「修复安装器」重装一份。";
+                    ? "当前 v" + version
+                    : "未检测到本机安装器版本";
             }
 
             // 关于页把两行版本合在一张卡里，这里只放版本号本身。
@@ -5753,16 +5808,20 @@ namespace DeepSeekHarnessLauncher
 
             if (PluginUpdateSummaryText != null)
             {
+                int installedPlugins = _pluginCardsLoaded ? _localPlugins.Count
+                    : (DshProfileService.ReadProfile(_settings.DshRoot)?["dependencies"] as System.Text.Json.Nodes.JsonObject)?.Count ?? 0;
                 PluginUpdateSummaryText.Text = "已安装 "
-                    + _localPlugins.Count
+                    + installedPlugins
                     + " 个插件 · 更新走在线插件页";
             }
+            RefreshInstallerVersion();
         }
 
         private void UpdateUpdateOptions()
         {
             bool launcherUpdatesEnabled =
                 GetSelectedTag(LauncherUpdateModeComboBox, "Install") != "Off";
+            bool installerUpdatesEnabled = GetSelectedTag(InstallerUpdateModeComboBox, "Install") != "Off";
             bool dshUpdatesEnabled =
                 GetSelectedTag(DshUpdateModeComboBox, "Off") != "Off";
             bool pluginUpdatesEnabled =
@@ -5770,6 +5829,7 @@ namespace DeepSeekHarnessLauncher
             bool patchUpdatesEnabled =
                 GetSelectedTag(PatchUpdateModeComboBox, "Check") != "Off";
             bool anyUpdatesEnabled = launcherUpdatesEnabled
+                || installerUpdatesEnabled
                 || dshUpdatesEnabled
                 || pluginUpdatesEnabled
                 || patchUpdatesEnabled;
@@ -6038,6 +6098,15 @@ namespace DeepSeekHarnessLauncher
 
         private void SettingsWindow_Closed(object sender, WindowEventArgs args)
         {
+            _settingsClosed = true;
+            _dshDataFindCancellation?.Cancel();
+            _dshDataPreviewCancellation?.Cancel();
+            _backupCancellation?.Cancel();
+            _settingsSearchTimer?.Stop();
+            _feedbackBanCountdown?.Stop();
+            DeveloperFeedbackBans_Unloaded(null, null);
+            CancelDetailTranslation();
+            _dshDataCancellation?.Cancel();
             _feedbackCancellation?.Cancel();
             _feedbackCancellation?.Dispose();
             _feedbackCancellation = null;
@@ -11300,26 +11369,39 @@ namespace DeepSeekHarnessLauncher
             return DateTime.Now.ToString("yyyy-MM-dd");
         }
 
-        // ============================================================ 数据备份
-        //
-        // 入口只有常规页那张「数据备份」卡上的两个按钮。点点开各自的面板 ——
-        // 内核在 Backup/ 下(DymArchive + UserDataBackup，谁也不动)，这里只接进度和文案：
-        //   导出：勾组 → 选目录(默认桌面) → 打包，文件名带时间戳
-        //   导入：选 .dym → 按包里内容列组 → 撞车策略 → 「正在恢复 技能 (2/12) · xxx」
+        // ============================================================ DYM backup/import
 
-        private void BackupExportButton_Click(object sender, RoutedEventArgs args)
+        private async void BackupExportButton_Click(object sender, RoutedEventArgs args)
         {
-            BeginBackupExport();
+            if (_settingsClosed || _backupBusy || _dshDataBusy) return;
+            _backupExportDirectory = null;
+            await PickDymExportFolderAsync();
+            if (_settingsClosed) return;
+            if (!String.IsNullOrWhiteSpace(_backupExportDirectory))
+            {
+                BeginBackupExport();
+                await ShowBackupOperationDialogAsync(BackupExportPanel, "导出 DYM", "导出", ExportDymAsync);
+            }
+            if (!_settingsClosed) BackupExportPanel.Visibility = Visibility.Collapsed;
         }
 
-        private void BackupImportButton_Click(object sender, RoutedEventArgs args)
+        private async void BackupImportButton_Click(object sender, RoutedEventArgs args)
         {
+            if (_settingsClosed || _backupBusy || _dshDataBusy) return;
             BeginBackupImport();
+            BackupImportPanel.Visibility = Visibility.Collapsed;
+            _backupImportArchive = null;
+            await PickDymImportFileAsync();
+            if (_settingsClosed) return;
+            if (!String.IsNullOrWhiteSpace(_backupImportArchive) && _backupImportGroups.Count > 0)
+                await ShowBackupOperationDialogAsync(BackupImportPanel, "导入 DYM", "导入", ImportDymAsync);
+            if (!_settingsClosed) BackupImportPanel.Visibility = Visibility.Collapsed;
         }
 
         /// <summary>展开导出面板。第一次点才去扫这台机器上有什么能带走的。</summary>
         private void BeginBackupExport()
         {
+            if (_backupBusy || _dshDataBusy) return;
             BackupImportPanel.Visibility = Visibility.Collapsed;
             BackupExportPanel.Visibility = Visibility.Visible;
             BackupInfoBar.IsOpen = false;
@@ -11339,6 +11421,7 @@ namespace DeepSeekHarnessLauncher
 
         private void BeginBackupImport()
         {
+            if (_backupBusy || _dshDataBusy) return;
             BackupExportPanel.Visibility = Visibility.Collapsed;
             BackupImportPanel.Visibility = Visibility.Visible;
             BuildBackupConflictChoices();
@@ -11379,6 +11462,8 @@ namespace DeepSeekHarnessLauncher
                 CheckBox box = new CheckBox();
                 box.Content = group.Display(true);
                 box.IsChecked = group.SelectedByDefault;
+                box.Checked += delegate { RefreshBackupOperationDialog(); };
+                box.Unchecked += delegate { RefreshBackupOperationDialog(); };
                 _backupExportBoxes[group.Id] = box;
                 BackupExportGroupsHost.Children.Add(box);
             }
@@ -11399,20 +11484,23 @@ namespace DeepSeekHarnessLauncher
             object sender,
             RoutedEventArgs args)
         {
-            if (_backupBusy)
+            await PickDymExportFolderAsync();
+        }
+
+        private async System.Threading.Tasks.Task PickDymExportFolderAsync()
+        {
+            if (_settingsClosed || _backupBusy || _dshDataBusy)
             {
                 return;
             }
 
+            SetDshDataBusy(true);
             try
             {
-                FolderPicker picker = new FolderPicker();
-                picker.FileTypeFilter.Add("*");
-                InitializeWithWindow.Initialize(picker, _windowHandle);
-
-                Windows.Storage.StorageFolder folder =
+                var picker = new Microsoft.Windows.Storage.Pickers.FolderPicker(_appWindow.Id);
+                var folder =
                     await picker.PickSingleFolderAsync();
-                if (folder == null)
+                if (_settingsClosed || folder == null)
                 {
                     return;
                 }
@@ -11422,15 +11510,21 @@ namespace DeepSeekHarnessLauncher
             }
             catch (Exception exception)
             {
-                await ShowMessageDialogAsync("无法选择目录", exception.Message);
+                ShowBackupInfo(InfoBarSeverity.Error, "无法选择目录：" + exception.Message);
             }
+            finally { SetDshDataBusy(false); }
         }
 
         private async void BackupExportStartButton_Click(
             object sender,
             RoutedEventArgs args)
         {
-            if (_backupBusy)
+            await ExportDymAsync();
+        }
+
+        private async System.Threading.Tasks.Task ExportDymAsync()
+        {
+            if (_backupBusy || _dshDataBusy)
             {
                 return;
             }
@@ -11447,6 +11541,13 @@ namespace DeepSeekHarnessLauncher
             if (String.IsNullOrWhiteSpace(_backupExportDirectory))
             {
                 BackupExportDetail.Text = "还没选导出到哪个文件夹。";
+                return;
+            }
+
+            bool transferHeld = _host.TryBeginDshDataTransfer();
+            if (!transferHeld)
+            {
+                ShowBackupInfo(InfoBarSeverity.Warning, "请先停止 DSH 服务，并等待更新任务结束后再导出。");
                 return;
             }
 
@@ -11475,13 +11576,17 @@ namespace DeepSeekHarnessLauncher
 
                 DispatcherQueue.TryEnqueue(delegate
                 {
+                    if (_settingsClosed) return;
                     BackupExportDetail.Text = "正在打包 " + file;
                 });
             };
 
-            BackupResult result = await System.Threading.Tasks.Task.Run(delegate
+            BackupResult result;
+            try
             {
-                return BackupFlow.Export(
+                result = await System.Threading.Tasks.Task.Run(delegate
+                {
+                    return BackupFlow.Export(
                     dshRoot,
                     chosen,
                     directory,
@@ -11489,23 +11594,35 @@ namespace DeepSeekHarnessLauncher
                     {
                         DispatcherQueue.TryEnqueue(delegate
                         {
+                            if (_settingsClosed) return;
                             BackupExportProgress.Value =
                                 Math.Max(0, Math.Min(100, percent));
                         });
                     },
                     packingLog,
-                    cancellation.Token);
-            });
+                        cancellation.Token);
+                });
+            }
+            finally
+            {
+                _host.EndDshDataTransfer();
+                cancellation.Dispose();
+                _backupBusy = false;
+                _backupCancellation = null;
+                SetBackupBusy(false);
+            }
 
             _backupBusy = false;
             _backupCancellation = null;
             SetBackupBusy(false);
 
+            if (_settingsClosed) return;
+
             if (result.Ok)
             {
                 BackupExportProgress.Value = 100;
-                BackupExportDetail.Text = result.Summary;
-                ShowBackupInfo(InfoBarSeverity.Success, "导出好了。");
+                BackupExportDetail.Text = result.Summary + "\n" + result.ArchivePath;
+                ShowBackupInfo(InfoBarSeverity.Success, BackupExportDetail.Text);
                 return;
             }
 
@@ -11524,20 +11641,24 @@ namespace DeepSeekHarnessLauncher
             object sender,
             RoutedEventArgs args)
         {
-            if (_backupBusy)
+            await PickDymImportFileAsync();
+        }
+
+        private async System.Threading.Tasks.Task PickDymImportFileAsync()
+        {
+            if (_settingsClosed || _backupBusy || _dshDataBusy)
             {
                 return;
             }
 
+            SetDshDataBusy(true);
             try
             {
-                FileOpenPicker picker = new FileOpenPicker();
+                var picker = new Microsoft.Windows.Storage.Pickers.FileOpenPicker(_appWindow.Id);
                 picker.FileTypeFilter.Add(DymArchive.Extension);
-                InitializeWithWindow.Initialize(picker, _windowHandle);
-
-                Windows.Storage.StorageFile file =
+                var file =
                     await picker.PickSingleFileAsync();
-                if (file == null)
+                if (_settingsClosed || file == null)
                 {
                     return;
                 }
@@ -11570,13 +11691,17 @@ namespace DeepSeekHarnessLauncher
                         out error);
                 });
 
+                if (_settingsClosed) return;
                 BackupImportPickButton.IsEnabled = true;
                 FillBackupImportGroups(groups, error);
+                if (_backupImportGroups.Count == 0) ShowBackupInfo(InfoBarSeverity.Error, BackupImportDetail.Text);
             }
             catch (Exception exception)
             {
-                await ShowMessageDialogAsync("无法选择文件", exception.Message);
+                _backupImportArchive = null;
+                ShowBackupInfo(InfoBarSeverity.Error, "无法读取备份文件：" + exception.Message);
             }
+            finally { SetDshDataBusy(false); }
         }
 
         private void FillBackupImportGroups(List<BackupGroup> groups, string error)
@@ -11595,6 +11720,8 @@ namespace DeepSeekHarnessLauncher
                     CheckBox box = new CheckBox();
                     box.Content = group.Display(true);
                     box.IsChecked = group.SelectedByDefault;
+                    box.Checked += delegate { RefreshBackupOperationDialog(); };
+                    box.Unchecked += delegate { RefreshBackupOperationDialog(); };
                     _backupImportBoxes[group.Id] = box;
                     BackupImportGroupsHost.Children.Add(box);
                 }
@@ -11619,7 +11746,12 @@ namespace DeepSeekHarnessLauncher
             object sender,
             RoutedEventArgs args)
         {
-            if (_backupBusy)
+            await ImportDymAsync();
+        }
+
+        private async System.Threading.Tasks.Task ImportDymAsync()
+        {
+            if (_backupBusy || _dshDataBusy)
             {
                 return;
             }
@@ -11640,6 +11772,17 @@ namespace DeepSeekHarnessLauncher
             }
 
             ConflictPolicy policy = SelectedBackupConflict();
+            if (DshDataServiceIsActive())
+            {
+                ShowBackupInfo(InfoBarSeverity.Warning, "请先停止 DSH 服务，再导入备份。");
+                return;
+            }
+            bool transferHeld = _host.TryBeginDshDataTransfer();
+            if (!transferHeld)
+            {
+                ShowBackupInfo(InfoBarSeverity.Warning, "请先停止 DSH 服务，并等待更新任务结束后再导入。");
+                return;
+            }
 
             _backupBusy = true;
             SetBackupBusy(true);
@@ -11653,9 +11796,12 @@ namespace DeepSeekHarnessLauncher
                 new System.Threading.CancellationTokenSource();
             _backupCancellation = cancellation;
 
-            BackupResult result = await System.Threading.Tasks.Task.Run(delegate
+            BackupResult result;
+            try
             {
-                return BackupFlow.Import(
+                result = await System.Threading.Tasks.Task.Run(delegate
+                {
+                    return BackupFlow.Import(
                     archive,
                     dshRoot,
                     chosen,
@@ -11664,6 +11810,7 @@ namespace DeepSeekHarnessLauncher
                     {
                         DispatcherQueue.TryEnqueue(delegate
                         {
+                            if (_settingsClosed) return;
                             if (!String.IsNullOrWhiteSpace(text))
                             {
                                 // 内核给的就是「正在恢复 技能 (2/12) · xxx/SKILL.md」
@@ -11675,20 +11822,34 @@ namespace DeepSeekHarnessLauncher
                         });
                     },
                     _host.Log,
-                    cancellation.Token);
-            });
+                        cancellation.Token);
+                });
+            }
+            finally
+            {
+                _host.EndDshDataTransfer();
+                cancellation.Dispose();
+                _backupBusy = false;
+                _backupCancellation = null;
+                SetBackupBusy(false);
+            }
 
             _backupBusy = false;
             _backupCancellation = null;
             SetBackupBusy(false);
 
+            if (_settingsClosed) return;
+
             if (result.Ok)
             {
                 BackupImportProgress.Value = 100;
+                _backupExportGroups.Clear();
+                if (_skillsLoaded) LoadLocalSkills();
+                if (_pluginCardsLoaded) LoadLocalPlugins();
                 BackupImportDetail.Text = result.Summary;
                 ShowBackupInfo(
                     InfoBarSeverity.Success,
-                    "数据已经搬回来了。重启 DSH 后生效。");
+                    result.Summary + "\n启动 DSH 后生效。");
                 return;
             }
 
@@ -11782,10 +11943,12 @@ namespace DeepSeekHarnessLauncher
         /// <summary>搬运期间把两边的按钮都按住，免得同时跑两个 7z。</summary>
         private void SetBackupBusy(bool busy)
         {
+            if (_settingsClosed) return;
             BackupExportButton.IsEnabled = !busy;
             BackupImportButton.IsEnabled = !busy;
             BackupExportFolderButton.IsEnabled = !busy;
             BackupImportPickButton.IsEnabled = !busy;
+            RefreshDshDataControls();
             BackupExportCancelButton.Visibility =
                 busy ? Visibility.Visible : Visibility.Collapsed;
             BackupImportCancelButton.Visibility =
@@ -11804,6 +11967,7 @@ namespace DeepSeekHarnessLauncher
 
         private void ShowBackupInfo(InfoBarSeverity severity, string message)
         {
+            if (_settingsClosed) return;
             BackupInfoBar.Severity = severity;
             BackupInfoBar.Message = message;
             BackupInfoBar.IsOpen = true;

@@ -199,6 +199,13 @@ foreach (string query in new[] { "补丁策略", "bdcl", "已安装补丁", "yaz
 }
 var expectedSearches = new (string Query, string Id, string Page, string Anchor)[]
 {
+    ("dym", "BackupImport:Dym", "BackupImport", "DymBackupSection"),
+    ("数据备份", "BackupImport:Dym", "BackupImport", "DymBackupSection"),
+    ("DSH 会话", "BackupImport:Dsh", "BackupImport", "DshDataSection"),
+    ("zip", "BackupImport:Dsh", "BackupImport", "DshDataSection"),
+    ("迁移", "BackupImport:Dsh", "BackupImport", "DshDataSection"),
+    ("自动查找", "BackupImport:Discover", "BackupImport", "DshDataFindSection"),
+    ("其他磁盘", "BackupImport:Discover", "BackupImport", "DshDataFindSection"),
     ("我的提交", "Feedback:Mine", "Feedback", "FeedbackScopePivot"),
     ("wdtj", "Feedback:Mine", "Feedback", "FeedbackScopePivot"),
     ("后端服务器加速", "General:BackendSource", "General", "UpdateSourceComboBox"),
@@ -248,6 +255,12 @@ foreach (var expected in expectedSearches)
 }
 Check(windowSource.Contains("SelectPage(entry.NavigationTarget);"),
     "production search activation uses the tested route including feedback subview");
+Check(windowSource.Contains("GeneralPage.Children.Remove(DymBackupSection);")
+    && windowSource.Contains("BackupImportPage.Children.Insert(2, DymBackupSection);")
+    && windowSource.Contains("AddGroupTab(AboutTabs, \"BackupImport\", \"备份与导入\", BackupImportPage);"),
+    "DYM backup moves into the About backup/import tab");
+Check(windowSource.Contains("SelectPage(\"BackupImport:\" + pluginTab);"),
+    "previous General backup/restore links route to the moved tab");
 Check(windowSource.Contains("bool feedbackMine = target == \"Feedback\"")
     && windowSource.Contains("if (feedbackMine && FeedbackScopePivot != null) FeedbackScopePivot.SelectedIndex = 3;"),
     "feedback mine route selects the actual my submissions pivot");

@@ -12,7 +12,8 @@ using DeepSeekHarnessLauncher;
 namespace DafeiyuGo.InfoHost
 {
     internal sealed record Message(string Command, string Title = "", string Detail = "", double Percent = -1,
-        string Outcome = "", bool Dark = false, string Theme = "System", string Material = "Mica", string WindowStyle = "System", string NoticeId = "", string PublishedAt = "", string[] Buttons = null, bool PlayChime = false);
+        string Outcome = "", bool Dark = false, string Theme = "System", string Material = "Mica", string WindowStyle = "System", string NoticeId = "", string PublishedAt = "", string[] Buttons = null, bool PlayChime = false,
+        bool Muted = false, bool IsLocal = false, bool AutoDismiss = false);
 
     internal static class Program
     {
@@ -27,7 +28,6 @@ namespace DafeiyuGo.InfoHost
             string windowStyle = InfoApplication.GetOption(args, "--window-style", "System");
             try
             {
-            InfoApplication.Log(new Exception("stage: before Application.Start"));
             WinRT.ComWrappersSupport.InitializeComWrappers();
             Application.Start(parameters =>
             {
@@ -75,6 +75,7 @@ namespace DafeiyuGo.InfoHost
             ApplyAppearance(_theme, _material, _windowStyle);
             _window = new InfoWindow(DispatcherQueue.GetForCurrentThread());
             _window.NoticeAction += (id, index) => { _ = SendNoticeAction(id, index); };
+            _window.NoticeDisplayed += id => { _ = SendNoticeAction(id, null, "Displayed"); };
             var monitor = DispatcherQueue.GetForCurrentThread().CreateTimer();
             monitor.Interval = TimeSpan.FromMilliseconds(100);
             monitor.Tick += (_, _) =>
@@ -120,11 +121,8 @@ namespace DafeiyuGo.InfoHost
                         if (line.Length > 524288) return;
                         Message message = JsonSerializer.Deserialize<Message>(line);
                         if (message == null) continue;
-                        Log(new Exception("stage: received " + message.Command));
                         ApplyAppearance(message);
-                        Log(new Exception("stage: appearance applied"));
                         if (!received) { _window.Show(); received = true; }
-                        Log(new Exception("stage: shown"));
                         switch (message.Command)
                         {
                             case "Close": _window.Close(); return;
@@ -133,14 +131,12 @@ namespace DafeiyuGo.InfoHost
                             case "Notice":
                                 if (message.NoticeId.Length <= 128 && message.Detail.Length <= 65536 && (message.Buttons?.Length ?? 0) <= 2)
                                 {
-                                    NotificationChime.Play();
-                                    _window.ShowNotice(message.NoticeId, message.Title, message.Detail, message.PublishedAt, message.Buttons);
-                                    DispatcherQueue.GetForCurrentThread().TryEnqueue(DispatcherQueuePriority.Low,
-                                        () => { _ = SendNoticeAction(message.NoticeId, null, "Displayed"); });
+                                    if (!message.Muted) NotificationChime.Play();
+                                    _window.ShowNotice(message.NoticeId, message.Title, message.Detail, message.PublishedAt, message.Buttons, message.IsLocal, message.AutoDismiss);
                                 }
                                 break;
                             case "Complete":
-                                if (message.PlayChime)
+                                if (message.PlayChime && !message.Muted)
                                     NotificationChime.Play();
                                 _window.CompleteInfo(Enum.TryParse(message.Outcome, out InfoOutcome outcome) ? outcome : InfoOutcome.Success,
                                     message.Title, message.Detail);
