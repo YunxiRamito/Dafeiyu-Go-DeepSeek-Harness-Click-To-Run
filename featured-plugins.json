@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAtUtc": "2026-10-08T08:04:01.9229660Z",
+  "updatedAtUtc": "2026-10-08T17:42:39.1867357Z",
   "items": [
     {
       "owner": "MeteorNOX",
@@ -9,7 +9,7 @@
       "language": "JavaScript",
       "license": "MIT",
       "pushedAt": "2026-10-07T15:24:21Z",
-      "category": "\u754C\u9762\u589E\u5F3A",
+      "category": "\u7F8E\u5316",
       "version": "fce34e3",
       "stars": 4230,
       "verified": false,
@@ -31,7 +31,7 @@
       ],
       "sourceSha": "fce34e3abd1fe8b616e287b9864305c7f0be81a0",
       "imageUrl": "https://avatars.githubusercontent.com/u/247166461?v=4",
-      "note": "",
+      "note": "\u8FD9\u4E2A\u5FC5\u88C5\u597D\u5427~",
       "order": 1
     },
     {
@@ -63,7 +63,7 @@
       ],
       "sourceSha": "",
       "imageUrl": "https://avatars.githubusercontent.com/u/4094054?v=4",
-      "note": "",
+      "note": "\u9CB8\u9C7C\u5A18BOT\u63A5\u5165",
       "order": 2
     },
     {
@@ -73,7 +73,7 @@
       "language": "JavaScript",
       "license": "MIT",
       "pushedAt": "2026-10-08T03:12:24Z",
-      "category": "\u5176\u4ED6\u5DE5\u5177",
+      "category": "\u7F8E\u5316",
       "version": "6a9b312",
       "stars": 157,
       "verified": false,
@@ -95,7 +95,7 @@
       ],
       "sourceSha": "6a9b31246c06d23b34d96b3f07fcfab0006c3c63",
       "imageUrl": "https://avatars.githubusercontent.com/u/52917381?v=4",
-      "note": "",
+      "note": "\u8BA9\u5927\u80A5\u9C7C\u56DE\u590D\u4F60\u7684\u65F6\u5019\u53EF\u4EE5\u53D1\u8868\u60C5",
       "order": 3
     },
     {
@@ -127,8 +127,40 @@
       ],
       "sourceSha": "",
       "imageUrl": "https://avatars.githubusercontent.com/u/57818063?v=4",
-      "note": "",
+      "note": "\u8FDC\u7A0B\u8FDE\u63A5",
       "order": 4
+    },
+    {
+      "owner": "lxj5820",
+      "repository": "dsh-boot-animation",
+      "description": "DSH \u542F\u52A8\u52A0\u8F7D\u52A8\u753B\uFF1A\u77ED\u7247\u7247\u5C3E\u4EA4\u53C9\u6EB6\u89E3\u8FDB\u754C\u9762\u3001\u591A\u7247\u968F\u673A\u3001\u542F\u52A8\u8FDB\u5EA6\u53EF\u89C1\u3001\u542F\u52A8\u5931\u8D25\u6709\u515C\u5E95\uFF0C\u6DE1\u5165\u65F6\u957F / \u8FDB\u5165\u65B9\u5F0F / \u7D20\u6750\u6C60\u90FD\u5728\u300C\u8BBE\u7F6E \u2192 \u63D2\u4EF6\u300D\u91CC\u53EF\u8C03\u3002\u4E0D\u6539 DSH \u672C\u4F53\u6E90\u7801\uFF0C\u5347\u7EA7 DSH \u4E0D\u53D7\u5F71\u54CD\u3002",
+      "language": "JavaScript",
+      "license": "NOASSERTION",
+      "pushedAt": "2026-10-07T16:40:51Z",
+      "category": "\u7F8E\u5316",
+      "version": "b8bfa8d",
+      "stars": 166,
+      "verified": false,
+      "verificationUrl": "",
+      "defaultBranch": "main",
+      "installSpecifier": "github:lxj5820/dsh-boot-animation#b8bfa8d9f879f14917033a7135e3964776865cad",
+      "installSource": "github",
+      "installExecutable": true,
+      "installStatus": "recognized",
+      "installCandidates": [
+        {
+          "source": "github",
+          "target": "lxj5820/dsh-boot-animation",
+          "action": "add",
+          "specifier": "github:lxj5820/dsh-boot-animation",
+          "executable": true,
+          "evidenceSource": "launcher"
+        }
+      ],
+      "sourceSha": "b8bfa8d9f879f14917033a7135e3964776865cad",
+      "imageUrl": "https://avatars.githubusercontent.com/u/38858374?v=4",
+      "note": "\uFF1F\uFF01\u9CB8\u9CB8\u542F\u52A8\u52A8\u753B\uFF01\uFF1F",
+      "order": 5
     }
   ]
 }
