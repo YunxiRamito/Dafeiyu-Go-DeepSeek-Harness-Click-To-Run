@@ -139,6 +139,94 @@ try
     Throws(() => DshDataImportService.ResolveSourceHome(empty), "unrecognized directory gives error");
     Write(source, "profiles/desktop/package.json", "{malformed-json");
     Throws(() => DshDataImportService.Preview(source, target, "desktop", "web", CancellationToken.None), "malformed plugin manifest rejected during preview");
+
+    string builtinHome = Path.Combine(fixture, "builtin-home");
+    string builtinTarget = Path.Combine(fixture, "builtin-target");
+    string builtinStore = Path.Combine(fixture, "external-builtin-store");
+    Write(builtinHome, "sessions/healthy/log.jsonl", "healthy conversation");
+    Write(builtinHome, "profiles/desktop/package.json", """{"dependencies":{"@deepseek-ai/dsh-base":"file:external","healthy-plugin":"1.0.0"},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","healthy-plugin"]}}}""");
+    Write(builtinHome, "profiles/desktop/node_modules/healthy-plugin/index.js", "healthy plugin");
+    Write(builtinStore, "index.js", "application bundle outside selected data home");
+    string builtinLink = Path.Combine(builtinHome, "profiles", "desktop", "node_modules", "@deepseek-ai", "dsh-base");
+    Directory.CreateDirectory(Path.GetDirectoryName(builtinLink));
+    Link(builtinLink, builtinStore);
+    try
+    {
+        var builtinPlan = DshDataImportService.Preview(builtinHome, builtinTarget, "desktop", "web", CancellationToken.None);
+        Check(builtinPlan.Files.Any(file => file.Group == "sessions") && builtinPlan.Files.Any(file => file.Relative.Contains("healthy-plugin")), "external built-in bundle cannot block healthy user data preview");
+        Check(!builtinPlan.Files.Any(file => file.Relative.Contains("dsh-base") || file.Source.StartsWith(builtinStore, StringComparison.OrdinalIgnoreCase)), "built-in bundle excluded before resolving external link");
+        Check(DshDataImportService.Import(builtinPlan, new[] { "sessions" }, null, CancellationToken.None).Ok, "sessions import succeeds with external built-in bundle");
+        Check(File.ReadAllText(Path.Combine(builtinTarget, "sessions/healthy/log.jsonl")) == "healthy conversation" && !Directory.Exists(Path.Combine(builtinTarget, "profiles")), "sessions-only import copies healthy conversation without plugin side effects");
+        Check(File.ReadAllText(Path.Combine(builtinStore, "index.js")) == "application bundle outside selected data home", "external built-in source remains unchanged");
+    }
+    finally { Directory.Delete(builtinLink); }
+
+    string brokenHome = Path.Combine(fixture, "broken-plugin-home");
+    string brokenTarget = Path.Combine(fixture, "broken-plugin-target");
+    string brokenStore = Path.Combine(fixture, "missing-plugin-store");
+    Write(brokenHome, "sessions/healthy/log.jsonl", "healthy conversation");
+    Write(brokenHome, "profiles/desktop/package.json", """{"dependencies":{"healthy-plugin":"1.0.0","bad-plugin":"file:node_modules/bad-plugin"},"dsh":{"profile":{"bundles":["healthy-plugin","bad-plugin"]}}}""");
+    Write(brokenHome, "profiles/desktop/node_modules/healthy-plugin/index.js", "healthy plugin");
+    Directory.CreateDirectory(brokenStore);
+    string brokenLink = Path.Combine(brokenHome, "profiles", "desktop", "node_modules", "bad-plugin");
+    Link(brokenLink, brokenStore);
+    Directory.Delete(brokenStore);
+    try
+    {
+        var brokenPlan = DshDataImportService.Preview(brokenHome, brokenTarget, "desktop", "web", CancellationToken.None);
+        Check(brokenPlan.Files.Any(file => file.Group == "sessions") && brokenPlan.Files.Any(file => file.Relative.Contains("healthy-plugin")), "broken custom plugin preserves healthy session and plugin groups");
+        Check(!brokenPlan.Files.Any(file => file.Relative.Contains("bad-plugin")), "broken plugin contributes no incomplete module files");
+        Check(brokenPlan.Warnings.Any(warning => warning.Contains("bad-plugin", StringComparison.Ordinal)), "broken plugin warning names skipped module");
+        Check(DshDataImportService.Import(brokenPlan, new[] { "sessions", "plugins" }, null, CancellationToken.None).Ok, "healthy data imports despite broken custom plugin");
+        var brokenManifest = JsonNode.Parse(File.ReadAllText(Path.Combine(brokenTarget, "profiles/web/package.json")));
+        Check(brokenManifest["dependencies"]?["bad-plugin"] == null && !brokenManifest["dsh"]["profile"]["bundles"].AsArray().Any(node => node.GetValue<string>() == "bad-plugin"), "import cannot install or enable omitted local plugin dependency");
+        Check(File.ReadAllText(Path.Combine(brokenTarget, "sessions/healthy/log.jsonl")) == "healthy conversation", "broken-plugin import keeps complete healthy conversation");
+    }
+    finally { Directory.Delete(brokenLink); }
+
+    string lockedHome = Path.Combine(fixture, "locked-plugin-home");
+    string lockedTarget = Path.Combine(fixture, "locked-plugin-target");
+    Write(lockedHome, "sessions/healthy/log.jsonl", "healthy conversation");
+    Write(lockedHome, "profiles/desktop/package.json", """{"dependencies":{"healthy-plugin":"1.0.0","locked-plugin":"file:node_modules/locked-plugin"},"dsh":{"profile":{"bundles":["healthy-plugin","locked-plugin"]}}}""");
+    Write(lockedHome, "profiles/desktop/node_modules/healthy-plugin/index.js", "healthy plugin");
+    Write(lockedHome, "profiles/desktop/node_modules/locked-plugin/a-readable.js", "must not publish partial module");
+    Write(lockedHome, "profiles/desktop/node_modules/locked-plugin/z-locked.js", "locked plugin file");
+    using (var lockedFile = new FileStream(Path.Combine(lockedHome, "profiles/desktop/node_modules/locked-plugin/z-locked.js"), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+    {
+        var lockedPlan = DshDataImportService.Preview(lockedHome, lockedTarget, "desktop", "web", CancellationToken.None);
+        Check(lockedPlan.Files.Any(file => file.Group == "sessions") && lockedPlan.Files.Any(file => file.Relative.Contains("healthy-plugin")), "locked plugin cannot block healthy data preview");
+        Check(!lockedPlan.Files.Any(file => file.Relative.Contains("locked-plugin")), "plugin read failure removes every collected file from its module");
+        Check(lockedPlan.Warnings.Any(warning => warning.Contains("locked-plugin", StringComparison.Ordinal)), "locked plugin produces actionable module warning");
+        Check(DshDataImportService.Import(lockedPlan, new[] { "sessions", "plugins" }, null, CancellationToken.None).Ok, "healthy session and plugin import succeeds while other plugin is locked");
+        var lockedManifest = JsonNode.Parse(File.ReadAllText(Path.Combine(lockedTarget, "profiles/web/package.json")));
+        Check(lockedManifest["dependencies"]?["locked-plugin"] == null && !Directory.Exists(Path.Combine(lockedTarget, "profiles/web/node_modules/locked-plugin")), "locked plugin neither partially publishes nor survives in target manifest");
+    }
+
+    string finalCancelHome = Path.Combine(fixture, "final-cancel-home");
+    Write(finalCancelHome, "profiles/desktop/package.json", """{"dependencies":{"last-plugin":"1.0.0"},"dsh":{"profile":{"bundles":["last-plugin"]}}}""");
+    Write(finalCancelHome, "profiles/desktop/node_modules/last-plugin/index.js", "complete last plugin");
+    foreach (bool existingManifest in new[] { false, true })
+    {
+        string finalCancelTarget = Path.Combine(fixture, existingManifest ? "final-cancel-existing-target" : "final-cancel-new-target");
+        string finalTargetManifest = Path.Combine(finalCancelTarget, "profiles/web/package.json");
+        byte[] original = null;
+        if (existingManifest)
+        {
+            Write(finalCancelTarget, "profiles/web/package.json", """{"name":"original","dependencies":{},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app"]}}}""");
+            original = File.ReadAllBytes(finalTargetManifest);
+        }
+        var finalCancelPlan = DshDataImportService.Preview(finalCancelHome, finalCancelTarget, "desktop", "web", CancellationToken.None);
+        using var finalCancel = new CancellationTokenSource();
+        var finalCanceled = DshDataImportService.Import(finalCancelPlan, new[] { "plugins" }, (text, _) =>
+        {
+            if (text.StartsWith("已导入", StringComparison.Ordinal)) finalCancel.Cancel();
+        }, finalCancel.Token);
+        Check(finalCanceled.Canceled && !finalCanceled.Ok && finalCanceled.Imported == 1 && finalCanceled.Summary.Contains("已导入 1"), "last published unit cancellation reports retained file count; existing manifest=" + existingManifest);
+        Check(File.ReadAllText(Path.Combine(finalCancelTarget, "profiles/web/node_modules/last-plugin/index.js")) == "complete last plugin", "last-unit cancellation preserves complete published module; existing manifest=" + existingManifest);
+        Check(existingManifest ? File.ReadAllBytes(finalTargetManifest).SequenceEqual(original) : !File.Exists(finalTargetManifest), "last-unit cancellation cannot commit or replace plugin manifest; existing manifest=" + existingManifest);
+        Check(!Directory.EnumerateFiles(Path.Combine(finalCancelTarget, "profiles/web"), "package.json.before-import-*.json").Any(), "last-unit cancellation creates no manifest rollback backup; existing manifest=" + existingManifest);
+        Check(!Directory.EnumerateDirectories(finalCancelTarget, ".dafeiyu-import-*").Any(), "last-unit cancellation removes staging; existing manifest=" + existingManifest);
+    }
 }
 finally { if (Directory.Exists(fixture)) Directory.Delete(fixture, true); }
 Console.WriteLine($"PASS {checks} DSH data import checks; isolated source and target fixtures.");

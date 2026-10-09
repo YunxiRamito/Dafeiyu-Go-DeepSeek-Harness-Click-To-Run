@@ -1844,7 +1844,8 @@ namespace DeepSeekHarnessLauncher
                 InstallerUpdateProgressPanel,
                 InstallerUpdateProgressText,
                 InstallerUpdateProgressBar,
-                InstallerResultInfoBar);
+                InstallerResultInfoBar,
+                conciseUpToDate: true);
             RepairInstallerButton.IsEnabled = _host.GetInstallerUpdateState().Activity != UpdateUiActivity.Checking
                 && _host.GetInstallerUpdateState().Activity != UpdateUiActivity.Installing;
             ApplyUpdateState(
@@ -2064,7 +2065,8 @@ namespace DeepSeekHarnessLauncher
             StackPanel progressPanel,
             TextBlock progressText,
             ProgressBar progressBar,
-            InfoBar resultBar)
+            InfoBar resultBar,
+            bool conciseUpToDate = false)
         {
             if (state == null)
             {
@@ -2118,8 +2120,12 @@ namespace DeepSeekHarnessLauncher
                     break;
                 case UpdateUiActivity.UpToDate:
                     actionButton.Content = "立即检查";
-                    resultBar.Title = "已是新版本";
-                    resultBar.Message = ComposeVersionMessage(state);
+                    resultBar.Title = conciseUpToDate && !String.IsNullOrWhiteSpace(state.Version)
+                        ? "已是新版本 v" + state.Version
+                        : "已是新版本";
+                    resultBar.Message = conciseUpToDate
+                        ? String.Empty
+                        : ComposeVersionMessage(state);
                     break;
                 case UpdateUiActivity.Available:
                     actionButton.Content = "立即更新";
@@ -6435,17 +6441,44 @@ namespace DeepSeekHarnessLauncher
             }
 
             _skillMarketLoading = true;
+            SkillMarketService.MarketResult staleCache = null;
+            if (!forceRefresh)
+            {
+                SkillMarketService.MarketResult freshCache = SkillMarketService.TryReadCache();
+                if (freshCache != null)
+                {
+                    _skillMarketLoading = false;
+                    _host.Log("技能目录：命中缓存 " + freshCache.Items.Count + " 条");
+                    ApplySkillCatalog(freshCache);
+                    return;
+                }
+
+                staleCache = SkillMarketService.TryReadCache(true);
+                if (staleCache != null && staleCache.Items.Count > 0)
+                {
+                    ApplySkillCatalog(staleCache);
+                    SkillCatalogInfoBar.Severity = InfoBarSeverity.Informational;
+                    SkillCatalogInfoBar.Title = "正在更新技能目录";
+                    SkillCatalogInfoBar.Message = "先显示本地缓存的 " + staleCache.Items.Count
+                        + " 条技能，正在后台连接 GitHub 刷新…";
+                    SkillCatalogInfoBar.IsOpen = true;
+                }
+            }
+
             SkillCatalogInfoBar.Severity = InfoBarSeverity.Informational;
-            SkillCatalogInfoBar.Title = "正在读取技能目录";
-            SkillCatalogInfoBar.Message = "正在从 GitHub 搜索带 SKILL.md 的仓库…";
+            SkillCatalogInfoBar.Title = staleCache == null ? "正在读取技能目录" : "正在更新技能目录";
+            SkillCatalogInfoBar.Message = staleCache == null
+                ? "正在从 GitHub 搜索带 SKILL.md 的仓库…"
+                : "本地缓存已显示，正在后台刷新目录…";
             SkillCatalogInfoBar.IsOpen = true;
 
             _ = System.Threading.Tasks.Task.Run(delegate
             {
                 SkillMarketService.MarketResult result =
-                    SkillMarketService.Load(_settings, forceRefresh, _host.Log);
+                    SkillMarketService.Load(_settings, forceRefresh || staleCache != null, _host.Log);
                 DispatcherQueue.TryEnqueue(delegate
                 {
+                    if (_settingsClosed) return;
                     _skillMarketLoading = false;
                     ApplySkillCatalog(result);
                 });
@@ -11452,7 +11485,8 @@ namespace DeepSeekHarnessLauncher
 
             List<BackupGroup> groups = BackupFlow.ListExportGroups(
                 _settings.DshRoot,
-                _host.Log);
+                _host.Log,
+                DshPluginCliService.ResolveDshHome(_settings.DshRoot));
 
             for (int index = 0; index < groups.Count; index++)
             {
@@ -11556,9 +11590,11 @@ namespace DeepSeekHarnessLauncher
             BackupInfoBar.IsOpen = false;
             BackupExportProgress.Value = 0;
             BackupExportDetail.Text = "准备中…";
+            ReportBackupOperationProgress("正在准备导出 DYM…", 0);
 
             string dshRoot = _settings.DshRoot;
             string directory = _backupExportDirectory;
+            string dshHome = DshPluginCliService.ResolveDshHome(dshRoot);
             System.Threading.CancellationTokenSource cancellation =
                 new System.Threading.CancellationTokenSource();
             _backupCancellation = cancellation;
@@ -11576,8 +11612,9 @@ namespace DeepSeekHarnessLauncher
 
                 DispatcherQueue.TryEnqueue(delegate
                 {
-                    if (_settingsClosed) return;
+                    if (_settingsClosed || _backupCancellation != cancellation) return;
                     BackupExportDetail.Text = "正在打包 " + file;
+                    ReportBackupOperationProgress(BackupExportDetail.Text, BackupExportProgress.Value);
                 });
             };
 
@@ -11594,13 +11631,16 @@ namespace DeepSeekHarnessLauncher
                     {
                         DispatcherQueue.TryEnqueue(delegate
                         {
-                            if (_settingsClosed) return;
+                            if (_settingsClosed || _backupCancellation != cancellation) return;
+                            if (!String.IsNullOrWhiteSpace(text)) BackupExportDetail.Text = text;
                             BackupExportProgress.Value =
                                 Math.Max(0, Math.Min(100, percent));
+                            ReportBackupOperationProgress(BackupExportDetail.Text, percent);
                         });
                     },
                     packingLog,
-                        cancellation.Token);
+                        cancellation.Token,
+                        dshHome);
                 });
             }
             finally
@@ -11621,8 +11661,9 @@ namespace DeepSeekHarnessLauncher
             if (result.Ok)
             {
                 BackupExportProgress.Value = 100;
-                BackupExportDetail.Text = result.Summary + "\n" + result.ArchivePath;
-                ShowBackupInfo(InfoBarSeverity.Success, BackupExportDetail.Text);
+                BackupExportDetail.Text = result.Summary + (_backupOperationDialog == null ? "\n" + result.ArchivePath : String.Empty);
+                ShowBackupInfo(InfoBarSeverity.Success, result.Summary + "\n" + result.ArchivePath);
+                ReportBackupOperationProgress("导出 DYM 完成。", 100);
                 return;
             }
 
@@ -11630,11 +11671,12 @@ namespace DeepSeekHarnessLauncher
             {
                 BackupExportDetail.Text =
                     "已取消。导出目录里可能留了半个包，可以自己删掉。";
+                ShowBackupInfo(InfoBarSeverity.Informational, BackupExportDetail.Text);
                 return;
             }
 
             BackupExportDetail.Text = result.Error;
-            ShowBackupInfo(InfoBarSeverity.Error, "导出失败，原因看下面这行和日志。");
+            ShowBackupInfo(InfoBarSeverity.Error, "导出失败：\n" + result.Error);
         }
 
         private async void BackupImportPickButton_Click(
@@ -11789,9 +11831,11 @@ namespace DeepSeekHarnessLauncher
             BackupInfoBar.IsOpen = false;
             BackupImportProgress.Value = 0;
             BackupImportDetail.Text = "准备中…";
+            ReportBackupOperationProgress("正在准备导入 DYM…", 0);
 
             string archive = _backupImportArchive;
             string dshRoot = _settings.DshRoot;
+            string dshHome = DshPluginCliService.ResolveDshHome(dshRoot);
             System.Threading.CancellationTokenSource cancellation =
                 new System.Threading.CancellationTokenSource();
             _backupCancellation = cancellation;
@@ -11810,7 +11854,7 @@ namespace DeepSeekHarnessLauncher
                     {
                         DispatcherQueue.TryEnqueue(delegate
                         {
-                            if (_settingsClosed) return;
+                            if (_settingsClosed || _backupCancellation != cancellation) return;
                             if (!String.IsNullOrWhiteSpace(text))
                             {
                                 // 内核给的就是「正在恢复 技能 (2/12) · xxx/SKILL.md」
@@ -11819,10 +11863,12 @@ namespace DeepSeekHarnessLauncher
 
                             BackupImportProgress.Value =
                                 Math.Max(0, Math.Min(100, percent));
+                            ReportBackupOperationProgress(BackupImportDetail.Text, percent);
                         });
                     },
                     _host.Log,
-                        cancellation.Token);
+                        cancellation.Token,
+                        dshHome);
                 });
             }
             finally
@@ -11847,6 +11893,7 @@ namespace DeepSeekHarnessLauncher
                 if (_skillsLoaded) LoadLocalSkills();
                 if (_pluginCardsLoaded) LoadLocalPlugins();
                 BackupImportDetail.Text = result.Summary;
+                ReportBackupOperationProgress("导入 DYM 完成。", 100);
                 ShowBackupInfo(
                     InfoBarSeverity.Success,
                     result.Summary + "\n启动 DSH 后生效。");
@@ -11856,11 +11903,12 @@ namespace DeepSeekHarnessLauncher
             if (result.Canceled)
             {
                 BackupImportDetail.Text = "已取消。已经恢复的文件不会自己退回去。";
+                ShowBackupInfo(InfoBarSeverity.Informational, BackupImportDetail.Text);
                 return;
             }
 
             BackupImportDetail.Text = result.Error;
-            ShowBackupInfo(InfoBarSeverity.Error, "恢复失败，原因看下面这行和日志。");
+            ShowBackupInfo(InfoBarSeverity.Error, "导入失败：\n" + result.Error);
         }
 
         private void BackupCancel_Click(object sender, RoutedEventArgs args)
@@ -11968,9 +12016,13 @@ namespace DeepSeekHarnessLauncher
         private void ShowBackupInfo(InfoBarSeverity severity, string message)
         {
             if (_settingsClosed) return;
-            BackupInfoBar.Severity = severity;
-            BackupInfoBar.Message = message;
-            BackupInfoBar.IsOpen = true;
+            if (_backupOperationDialog == null)
+            {
+                BackupInfoBar.Severity = severity;
+                BackupInfoBar.Message = message;
+                BackupInfoBar.IsOpen = true;
+            }
+            ShowBackupOperationResult(severity, message);
         }
 
         // ================================================================ 补丁页

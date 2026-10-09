@@ -223,6 +223,18 @@ PluginStoreService.InstallResult exemptionResult = new PluginStoreService.Instal
     ExemptionPackageVersion = "koffi@3.1.1",
     ExemptionDshVersion = "0.2.1-alpha.1"
 };
+var officialOutputEvents = new List<string>();
+Action<string, double> officialProgress = (text, _) => officialOutputEvents.Add(text);
+PluginStoreService.ForwardOfficialOutput(
+    officialProgress,
+    text => officialProgress(text, -1),
+    "@scope/plugin · 正在下载");
+Check(officialOutputEvents.Count == 1 && officialOutputEvents[0] == "@scope/plugin · 正在下载",
+    "official output already routed by its consumer is dispatched only once");
+officialOutputEvents.Clear();
+PluginStoreService.ForwardOfficialOutput(officialProgress, null, "@scope/plugin · 校验完成");
+Check(officialOutputEvents.Count == 1 && officialOutputEvents[0] == "@scope/plugin · 校验完成",
+    "official output without a separate consumer still reaches progress once");
 Check(exemptionResult.NeedsVersionExemption, "安装结果能带版本豁免标记");
 Check(
     exemptionResult.ExemptionPackageVersion == "koffi@3.1.1",

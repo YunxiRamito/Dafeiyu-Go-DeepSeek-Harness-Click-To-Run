@@ -114,7 +114,12 @@ namespace DeepSeekHarnessLauncher
         private const int TreeFetchConcurrency = 8;
 
         /// <summary>单个仓库 tree 的超时。大仓库（awesome-* 那种）以前能耗掉一分钟。</summary>
-        private const int TreeFetchTimeoutMs = 15000;
+        private const int SearchFetchTimeoutMs = 8000;
+        private const int SearchBudgetMs = 20000;
+        private const int TreeFetchTimeoutMs = 8000;
+        private const int TreeBudgetMs = 25000;
+        private const int RawFetchTimeoutMs = 4000;
+        private const int RawBudgetMs = 10000;
 
         private static readonly TimeSpan CacheLifetime = TimeSpan.FromHours(4);
 
@@ -183,6 +188,7 @@ namespace DeepSeekHarnessLauncher
 
             if (items.Count > 0)
             {
+                result.Items = items;
                 WriteCache(items);
                 if (log != null)
                 {
@@ -231,7 +237,7 @@ namespace DeepSeekHarnessLauncher
                 Stars = 0
             };
 
-            FetchRepositoryMeta(repository, @base, token, log);
+            FetchRepositoryMeta(repository, @base, settings, token, log);
             string error;
             List<SkillMarketItem> items = ReadRepositorySkills(
                 repository,
@@ -278,15 +284,23 @@ namespace DeepSeekHarnessLauncher
         {
             string @base = ApiBase(settings);
             List<RepositoryInfo> repositories = new List<RepositoryInfo>();
+            using var searchTimeout = new CancellationTokenSource(SearchBudgetMs);
             for (int topicIndex = 0; topicIndex < Topics.Length; topicIndex++)
             {
+                if (searchTimeout.IsCancellationRequested)
+                {
+                    result.Error ??= "GitHub 搜索超时。";
+                    break;
+                }
+
                 string url = @base + "/search/repositories"
                     + "?q=topic:" + Uri.EscapeDataString(Topics[topicIndex])
                     + "&sort=stars&order=desc&per_page=100";
                 string json;
                 HttpStatusCode status;
                 string error;
-                if (!TryFetch(url, settings, token, out json, out status, out error))
+                if (!TryFetch(url, settings, token, out json, out status, out error,
+                    SearchFetchTimeoutMs, searchTimeout.Token))
                 {
                     if (status == HttpStatusCode.Forbidden
                         || status == (HttpStatusCode)429)
@@ -413,6 +427,7 @@ namespace DeepSeekHarnessLauncher
         private static void FetchRepositoryMeta(
             RepositoryInfo repository,
             string apiBase,
+            LauncherSettings settings,
             string token,
             Action<string> log)
         {
@@ -420,7 +435,7 @@ namespace DeepSeekHarnessLauncher
             string json;
             HttpStatusCode status;
             string error;
-            if (!TryFetch(url, null, token, out json, out status, out error))
+            if (!TryFetch(url, settings, token, out json, out status, out error))
             {
                 if (log != null)
                 {
@@ -473,6 +488,7 @@ namespace DeepSeekHarnessLauncher
             List<SkillMarketItem>[] results =
                 new List<SkillMarketItem>[repositories.Count];
             List<string>[] failures = new List<string>[repositories.Count];
+            using var treeTimeout = new CancellationTokenSource(TreeBudgetMs);
             int next = -1;
             object gate = new object();
             int workers = Math.Min(TreeFetchConcurrency, repositories.Count);
@@ -481,7 +497,7 @@ namespace DeepSeekHarnessLauncher
             {
                 Thread thread = new Thread(delegate()
                 {
-                    while (true)
+                    while (!treeTimeout.IsCancellationRequested)
                     {
                         int current;
                         lock (gate)
@@ -505,7 +521,8 @@ namespace DeepSeekHarnessLauncher
                                 token,
                                 settings,
                                 false,
-                                out error);
+                                out error,
+                                treeTimeout.Token);
                         }
                         catch (Exception exception)
                         {
@@ -523,16 +540,7 @@ namespace DeepSeekHarnessLauncher
                 thread.Start();
             }
 
-            for (int index = 0; index < threads.Count; index++)
-            {
-                try
-                {
-                    threads[index].Join(60000);
-                }
-                catch
-                {
-                }
-            }
+            JoinThreads(threads, TreeBudgetMs + 2000);
 
             for (int index = 0; index < repositories.Count; index++)
             {
@@ -542,7 +550,7 @@ namespace DeepSeekHarnessLauncher
                     failures[index] = new List<string>
                     {
                         repositories[index].FullName,
-                        "读取超时"
+                        treeTimeout.IsCancellationRequested ? "读取超时，已保留其他结果" : "读取超时"
                     };
                 }
             }
@@ -655,7 +663,8 @@ namespace DeepSeekHarnessLauncher
             string token,
             LauncherSettings settings,
             bool fillFrontmatter,
-            out string error)
+            out string error,
+            CancellationToken cancellationToken = default)
         {
             error = null;
             List<SkillMarketItem> items = new List<SkillMarketItem>();
@@ -670,12 +679,13 @@ namespace DeepSeekHarnessLauncher
             string fetchError;
             if (!TryFetch(
                 url,
-                null,
+                settings,
                 token,
                 out json,
                 out status,
                 out fetchError,
-                TreeFetchTimeoutMs))
+                TreeFetchTimeoutMs,
+                cancellationToken))
             {
                 error = (status == HttpStatusCode.Forbidden
                     || status == (HttpStatusCode)429)
@@ -829,7 +839,7 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
-            int pending = items.Count;
+            using var rawTimeout = new CancellationTokenSource(RawBudgetMs);
             int next = -1;
             object gate = new object();
             int workers = Math.Min(RawFetchConcurrency, items.Count);
@@ -838,7 +848,7 @@ namespace DeepSeekHarnessLauncher
             {
                 Thread thread = new Thread(delegate()
                 {
-                    while (true)
+                    while (!rawTimeout.IsCancellationRequested)
                     {
                         int current;
                         lock (gate)
@@ -854,16 +864,12 @@ namespace DeepSeekHarnessLauncher
 
                         try
                         {
-                            FillOne(items[current], settings);
+                            FillOne(items[current], settings, rawTimeout.Token);
                         }
                         catch
                         {
                         }
 
-                        lock (gate)
-                        {
-                            pending--;
-                        }
                     }
                 });
                 thread.IsBackground = true;
@@ -871,21 +877,13 @@ namespace DeepSeekHarnessLauncher
                 thread.Start();
             }
 
-            for (int index = 0; index < threads.Count; index++)
-            {
-                try
-                {
-                    threads[index].Join(20000);
-                }
-                catch
-                {
-                }
-            }
+            JoinThreads(threads, RawBudgetMs + 2000);
         }
 
         private static void FillOne(
             SkillMarketItem item,
-            LauncherSettings settings)
+            LauncherSettings settings,
+            CancellationToken cancellationToken = default)
         {
             string repositoryPath = String.IsNullOrWhiteSpace(item.RepositoryPath)
                 ? SkillStore.SkillFileName
@@ -893,8 +891,9 @@ namespace DeepSeekHarnessLauncher
             string text;
             if (!TryFetchText(
                     RawCandidates(settings, item.FullName, item.DefaultBranch, repositoryPath),
-                    12000,
-                    out text))
+                    RawFetchTimeoutMs,
+                    out text,
+                    cancellationToken))
             {
                 return;
             }
@@ -912,6 +911,18 @@ namespace DeepSeekHarnessLauncher
                 && !String.IsNullOrWhiteSpace(description))
             {
                 item.Description = description.Trim();
+            }
+        }
+
+        private static void JoinThreads(List<Thread> threads, int timeoutMs)
+        {
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(0, timeoutMs));
+            for (int index = 0; index < threads.Count; index++)
+            {
+                int remaining = (int)Math.Max(0, (deadline - DateTime.UtcNow).TotalMilliseconds);
+                if (remaining <= 0) return;
+                try { threads[index].Join(remaining); }
+                catch { }
             }
         }
 
@@ -954,9 +965,8 @@ namespace DeepSeekHarnessLauncher
         // ---------------------------------------------------------------- 传输
 
         /// <summary>
-        /// GitHub API 根。API 永远直连 api.github.com —— 第三方加速域名对搜索和
-        /// tree 接口支持不稳定，国外线路本来也不该套镜像。线路差异由全局代理设置
-        /// 和下面 raw / 压缩包那几条候选地址负责。
+        /// GitHub API 的原始根地址。加速档位下，匿名 API 元数据由 TryFetchOnce
+        /// 改走自有后端的 /api/fetch；官方档位和带 Token 的请求仍访问这里。
         /// </summary>
         private static string ApiBase(LauncherSettings settings)
         {
@@ -987,8 +997,17 @@ namespace DeepSeekHarnessLauncher
             out string json,
             out HttpStatusCode status,
             out string error,
-            int timeoutMs = 25000)
+            int timeoutMs = 25000,
+            CancellationToken cancellationToken = default)
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                json = null;
+                status = HttpStatusCode.RequestTimeout;
+                error = "技能目录请求超时。";
+                return false;
+            }
+
             if (TryFetchOnce(
                 url,
                 settings,
@@ -996,7 +1015,8 @@ namespace DeepSeekHarnessLauncher
                 out json,
                 out status,
                 out error,
-                timeoutMs))
+                timeoutMs,
+                cancellationToken))
             {
                 return true;
             }
@@ -1013,7 +1033,8 @@ namespace DeepSeekHarnessLauncher
                     out json,
                     out status,
                     out error,
-                    timeoutMs))
+                    timeoutMs,
+                    cancellationToken))
                 {
                     error = null;
                     return true;
@@ -1027,12 +1048,24 @@ namespace DeepSeekHarnessLauncher
 
         private static bool TryFetchOnce(
             string url, LauncherSettings settings, string token, out string json,
-            out HttpStatusCode status, out string error, int timeoutMs)
+            out HttpStatusCode status, out string error, int timeoutMs,
+            CancellationToken cancellationToken = default)
         {
-            if (BackendDownloadSource.IsSelected(settings) && String.IsNullOrWhiteSpace(token)
-                && TryFetchDirect(BackendDownloadSource.WrapMetadata(url), settings, null,
-                    out json, out status, out error, timeoutMs)) return true;
-            return TryFetchDirect(url, settings, token, out json, out status, out error, timeoutMs);
+            string metadataProxyUrl = GitHubAccelerator.MetadataProxyUrl(
+                url,
+                settings,
+                !String.IsNullOrWhiteSpace(token));
+            if (!String.IsNullOrWhiteSpace(metadataProxyUrl)
+                && TryFetchDirect(metadataProxyUrl, settings, null,
+                    out json, out status, out error, Math.Min(timeoutMs, 3500), cancellationToken)) return true;
+            if (cancellationToken.IsCancellationRequested)
+            {
+                json = null;
+                status = HttpStatusCode.RequestTimeout;
+                error = "技能目录请求超时。";
+                return false;
+            }
+            return TryFetchDirect(url, settings, token, out json, out status, out error, timeoutMs, cancellationToken);
         }
 
         private static bool TryFetchDirect(
@@ -1042,14 +1075,24 @@ namespace DeepSeekHarnessLauncher
             out string json,
             out HttpStatusCode status,
             out string error,
-            int timeoutMs)
+            int timeoutMs,
+            CancellationToken cancellationToken = default)
         {
             json = null;
             error = null;
             status = HttpStatusCode.OK;
+            CancellationTokenRegistration abortRegistration = default;
             try
             {
                 HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+                if (cancellationToken.CanBeCanceled)
+                {
+                    abortRegistration = cancellationToken.Register(() =>
+                    {
+                        try { request.Abort(); }
+                        catch { }
+                    });
+                }
                 BackendDownloadSource.Apply(request);
                 request.Method = "GET";
                 request.Accept = "application/vnd.github+json";
@@ -1089,21 +1132,27 @@ namespace DeepSeekHarnessLauncher
                     response.Close();
                 }
 
-                error = exception.Message;
+                error = cancellationToken.IsCancellationRequested
+                    ? "技能目录请求超时。"
+                    : exception.Message;
                 return false;
             }
             catch (Exception exception)
             {
-                error = exception.Message;
+                error = cancellationToken.IsCancellationRequested
+                    ? "技能目录请求超时。"
+                    : exception.Message;
                 return false;
             }
+            finally { abortRegistration.Dispose(); }
         }
 
         /// <summary>raw 文件按候选地址逐个试，全失败返回 false。不用 API 配额。</summary>
         private static bool TryFetchText(
             List<string> urls,
             int timeoutMs,
-            out string text)
+            out string text,
+            CancellationToken cancellationToken = default)
         {
             text = null;
             if (urls == null)
@@ -1113,10 +1162,20 @@ namespace DeepSeekHarnessLauncher
 
             for (int index = 0; index < urls.Count; index++)
             {
+                if (cancellationToken.IsCancellationRequested) return false;
+                CancellationTokenRegistration abortRegistration = default;
                 try
                 {
                     HttpWebRequest request =
                         (HttpWebRequest)WebRequest.Create(urls[index]);
+                    if (cancellationToken.CanBeCanceled)
+                    {
+                        abortRegistration = cancellationToken.Register(() =>
+                        {
+                            try { request.Abort(); }
+                            catch { }
+                        });
+                    }
                     request.Method = "GET";
                     request.UserAgent = Constants.UserAgent;
                     request.Timeout = timeoutMs;
@@ -1135,6 +1194,7 @@ namespace DeepSeekHarnessLauncher
                 catch
                 {
                 }
+                finally { abortRegistration.Dispose(); }
             }
 
             return false;
@@ -1142,7 +1202,7 @@ namespace DeepSeekHarnessLauncher
 
         // ---------------------------------------------------------------- 缓存
 
-        private static MarketResult TryReadCache(bool ignoreExpiry = false)
+        internal static MarketResult TryReadCache(bool ignoreExpiry = false)
         {
             try
             {

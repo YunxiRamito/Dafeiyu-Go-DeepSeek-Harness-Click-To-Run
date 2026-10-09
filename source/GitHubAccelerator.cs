@@ -11,8 +11,8 @@ namespace DeepSeekHarnessLauncher
     /// - 自动（默认）：启动时给每个源测一次延迟，候选按**实测最快的排前面**；
     /// - 自选：用户点了哪个源就把它排第一个，**不再做任何自动重排**，其余源只当兜底。
     ///
-    /// 唯一不参与加速的是 <c>api.github.com</c>：第三方加速域名对 API 不稳定，
-    /// 而且带 Token 的请求本来就不该交给第三方中转。
+    /// GitHub API 不套第三方 CDN 前缀；匿名元数据请求在加速档位下经自有后端代理，
+    /// 官方档位和带 Token 的请求则保持直连。
     ///
     /// 候选顺序不是拍脑袋来的，见 HANDOVER「加速候选顺序」那张实测表。
     /// </summary>
@@ -232,6 +232,23 @@ namespace DeepSeekHarnessLauncher
 
             return url.StartsWith("https://api.github.com/", StringComparison.OrdinalIgnoreCase)
                 || url.StartsWith("https://uploads.github.com/", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// 在大陆加速档位下，GitHub API 元数据也先走自有后端代理；官方源和带 Token
+        /// 的请求保持直连，避免把用户凭据转交给代理服务器。
+        /// </summary>
+        internal static string MetadataProxyUrl(
+            string url,
+            LauncherSettings settings,
+            bool hasGitHubToken)
+        {
+            return IsEnabled(settings)
+                && !hasGitHubToken
+                && url != null
+                && url.StartsWith("https://api.github.com/", StringComparison.OrdinalIgnoreCase)
+                    ? BackendDownloadSource.WrapMetadata(url)
+                    : null;
         }
 
         /// <summary>这条地址能不能套加速前缀（单文件、归档、raw 都可以；API 不行）。</summary>

@@ -77,9 +77,10 @@ namespace DeepSeekHarnessLauncher
         /// <summary>这台机器上有什么可以带走(不存在的组不会出现)。</summary>
         public static List<BackupGroup> ListExportGroups(
             string dshRoot,
-            Action<string> log)
+            Action<string> log,
+            string dshHome = null)
         {
-            List<BackupGroup> groups = UserDataBackup.Describe(dshRoot);
+            List<BackupGroup> groups = UserDataBackup.Describe(dshRoot, dshHome);
             if (log != null)
             {
                 log("数据备份:可导出 "
@@ -164,7 +165,8 @@ namespace DeepSeekHarnessLauncher
             string directory,
             Action<string, double> progress,
             Action<string> log,
-            CancellationToken token)
+            CancellationToken token,
+            string dshHome = null)
         {
             BackupResult result = new BackupResult();
 
@@ -192,6 +194,7 @@ namespace DeepSeekHarnessLauncher
 
             // 内核把 7z 的原话交给 log(失败原因就在最后一行),这里留一份给用户看
             string lastLine = null;
+            double currentProgress = 0;
             Action<string> sink = delegate(string message)
             {
                 if (!String.IsNullOrWhiteSpace(message))
@@ -211,9 +214,14 @@ namespace DeepSeekHarnessLauncher
                     dshRoot,
                     chosen,
                     archive,
-                    progress,
+                    delegate(string text, double percent)
+                    {
+                        if (!Double.IsNaN(percent)) currentProgress = Math.Max(0, Math.Min(100, percent));
+                        if (progress != null) progress(text, currentProgress);
+                    },
                     sink,
-                    token);
+                    token,
+                    dshHome);
             }
             catch (OperationCanceledException)
             {
@@ -257,7 +265,7 @@ namespace DeepSeekHarnessLauncher
             {
             }
 
-            result.Summary = "已导出 " + FormatSize(size) + " · " + archive;
+            result.Summary = "已导出 " + FormatSize(size);
             return result;
         }
 
@@ -272,7 +280,8 @@ namespace DeepSeekHarnessLauncher
             ConflictPolicy policy,
             Action<string, double> progress,
             Action<string> log,
-            CancellationToken token)
+            CancellationToken token,
+            string dshHome = null)
         {
             BackupResult result = new BackupResult { ArchivePath = archive };
 
@@ -296,6 +305,7 @@ namespace DeepSeekHarnessLauncher
 
             // 内核收尾会把"覆盖 / 跳过 / 另存"各几个写在日志里,捞出来给界面当结果
             string summary = null;
+            double currentProgress = 0;
             Action<string> sink = delegate(string message)
             {
                 if (!String.IsNullOrWhiteSpace(message)
@@ -320,10 +330,15 @@ namespace DeepSeekHarnessLauncher
                     chosen,
                     policy,
                     delegate { return ConflictChoice.KeepBoth; },
-                    progress,
+                    delegate(string text, double percent)
+                    {
+                        if (!Double.IsNaN(percent)) currentProgress = Math.Max(0, Math.Min(100, percent));
+                        if (progress != null) progress(text, currentProgress);
+                    },
                     sink,
                     token,
-                    out error);
+                    out error,
+                    dshHome);
             }
             catch (OperationCanceledException)
             {

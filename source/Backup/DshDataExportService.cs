@@ -35,15 +35,14 @@ namespace DeepSeekHarnessLauncher.Backup
         internal static OfficialExportPlan Preview(string dshHome, string profile, CancellationToken token, string legacyRoot = null)
         {
             // The import plan already materializes pnpm links and validates source paths.
-            string unusedTarget = Path.Combine(Path.GetTempPath(), "dafeiyu-export-plan-" + Guid.NewGuid().ToString("N"));
-            var source = DshDataImportService.Preview(dshHome, unusedTarget, profile, profile, token, legacyRoot);
+            var source = DshDataImportService.Preview(dshHome, dshHome, profile, profile, token, legacyRoot, forExport: true);
             var plan = new OfficialExportPlan { Source = source };
             foreach (var group in source.Groups)
             {
                 bool manifest = group.Id == "plugins" && source.ManifestExists;
                 plan.Groups.Add(new OfficialExportGroup { Id = group.Id, Name = group.Name,
                     Files = group.Files + (manifest ? 1 : 0),
-                    Bytes = group.Bytes + (manifest ? Encoding.UTF8.GetByteCount(PortableManifest(source.Manifest)) : 0) });
+                    Bytes = group.Bytes + (manifest ? Encoding.UTF8.GetByteCount(PortableManifest(DshDataImportService.PortableManifest(source))) : 0) });
             }
             return plan;
         }
@@ -66,9 +65,17 @@ namespace DeepSeekHarnessLauncher.Backup
                 string archivePath = Path.Combine(output, name);
                 temporary = archivePath + ".partial";
                 var files = plan.Source.Files.Where(file => selected.Contains(file.Group)).ToList();
+                long totalBytes = files.Sum(file => file.Length);
+                long completedBytes = 0;
                 bool includeManifest = selected.Contains("plugins") && plan.Source.ManifestExists;
+                byte[] manifestBytes = includeManifest
+                    ? Encoding.UTF8.GetBytes(PortableManifest(DshDataImportService.PortableManifest(plan.Source))) : null;
+                totalBytes += manifestBytes?.Length ?? 0;
                 int total = files.Count + (includeManifest ? 1 : 0);
+                var progressClock = System.Diagnostics.Stopwatch.StartNew();
+                long lastProgress = -100;
                 token.ThrowIfCancellationRequested();
+                progress?.Invoke("正在准备导出 " + total + " 个文件 · " + FormatBytes(totalBytes), 0);
                 using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 using (var archive = new ZipArchive(stream, ZipArchiveMode.Create))
                 {
@@ -91,10 +98,20 @@ namespace DeepSeekHarnessLauncher.Backup
                             target.Write(buffer, 0, read);
                             hash.AppendData(buffer, 0, read);
                             bytes += read;
+                            completedBytes += read;
+                            if (progressClock.ElapsedMilliseconds - lastProgress >= 100)
+                            {
+                                lastProgress = progressClock.ElapsedMilliseconds;
+                                progress?.Invoke("正在导出 (" + (index + 1) + "/" + total + ") · "
+                                    + FormatBytes(completedBytes) + "/" + FormatBytes(totalBytes) + " · " + file.Relative,
+                                    totalBytes == 0 ? 0 : completedBytes * 95d / totalBytes);
+                            }
                         }
                         if (bytes != file.Length || !hash.GetHashAndReset().SequenceEqual(file.Hash))
                             throw new IOException("来源文件在预览后发生变化，请停止 DSH 后重新预览：" + file.Relative);
-                        progress?.Invoke("正在导出 " + file.Relative, (index + 1) * 95.0 / Math.Max(1, total));
+                        progress?.Invoke("已导出 (" + (index + 1) + "/" + total + ") · "
+                            + FormatBytes(completedBytes) + "/" + FormatBytes(totalBytes) + " · " + file.Relative,
+                            totalBytes == 0 ? (index + 1) * 95d / Math.Max(1, total) : completedBytes * 95d / totalBytes);
                     }
                     if (includeManifest)
                     {
@@ -104,10 +121,16 @@ namespace DeepSeekHarnessLauncher.Backup
                         if (File.ReadAllText(manifestPath) != plan.Source.Manifest) throw new IOException("来源插件清单已变化，请重新预览。");
                         var entry = archive.CreateEntry(relative.Replace('\\', '/'), CompressionLevel.Optimal);
                         using var target = entry.Open();
-                        byte[] json = Encoding.UTF8.GetBytes(PortableManifest(plan.Source.Manifest));
-                        target.Write(json, 0, json.Length);
+                        target.Write(manifestBytes, 0, manifestBytes.Length);
+                        completedBytes += manifestBytes.Length;
+                        progress?.Invoke("已导出 (" + total + "/" + total + ") · "
+                            + FormatBytes(completedBytes) + "/" + FormatBytes(totalBytes) + " · " + relative.Replace('\\', '/'), 95);
                     }
+                    token.ThrowIfCancellationRequested();
+                    progress?.Invoke("正在完成 ZIP 文件…", 97);
                 }
+                token.ThrowIfCancellationRequested();
+                progress?.Invoke("正在完成 ZIP 文件与校验…", 98);
                 token.ThrowIfCancellationRequested();
                 DshDataImportService.RequirePlainAncestors(output);
                 File.Move(temporary, archivePath, false);
@@ -144,5 +167,10 @@ namespace DeepSeekHarnessLauncher.Backup
             }
             return manifest.ToJsonString(new JsonSerializerOptions(JsonSerializerOptions.Default) { WriteIndented = true });
         }
+
+        private static string FormatBytes(long bytes) => bytes >= 1024L * 1024L * 1024L
+            ? (bytes / 1073741824d).ToString("0.00") + " GiB"
+            : bytes >= 1024L * 1024L ? (bytes / 1048576d).ToString("0.0") + " MiB"
+            : bytes >= 1024L ? (bytes / 1024d).ToString("0.0") + " KiB" : bytes + " B";
     }
 }

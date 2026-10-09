@@ -1731,6 +1731,7 @@
                                     </Grid>
                                     <TextBlock
                                         x:Name="BackupExportDetail"
+                                        TextWrapping="Wrap"
                                         Style="{StaticResource SettingsRowDescriptionTextStyle}" />
                                 </StackPanel>
 
@@ -1813,6 +1814,7 @@
                                     </Grid>
                                     <TextBlock
                                         x:Name="BackupImportDetail"
+                                        TextWrapping="Wrap"
                                         Style="{StaticResource SettingsRowDescriptionTextStyle}" />
                                 </StackPanel>
                             </StackPanel>
@@ -4703,10 +4705,17 @@
                                                         </Button>
                                                         <InfoBar x:Name="DeveloperNotificationStatusBar" IsOpen="True" IsClosable="False" Severity="Informational" Title="当前推送" Message="尚未检测现有通知" />
                                                         <Grid ColumnSpacing="8">
-                                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                                                             <Button x:Name="DeveloperNotificationLoadButton" Content="检测现有通知" Click="DeveloperNotificationLoad_Click" HorizontalAlignment="Stretch" />
                                                             <Button x:Name="DeveloperNotificationStopButton" Grid.Column="1" Content="关闭推送" Click="DeveloperNotificationStop_Click" HorizontalAlignment="Stretch" />
+                                                            <Button x:Name="DeveloperNotificationPreviewButton" Grid.Column="2" Content="预览通知" Click="DeveloperNotificationPreview_Click" HorizontalAlignment="Stretch" IsEnabled="False" />
                                                         </Grid>
+                                                        <StackPanel x:Name="DeveloperNotificationContentPanel" Spacing="8" Visibility="Collapsed">
+                                                            <TextBlock x:Name="DeveloperNotificationTitleText" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                                            <TextBlock x:Name="DeveloperNotificationDateText" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                                            <ContentControl x:Name="DeveloperNotificationMarkdownHost" />
+                                                            <StackPanel x:Name="DeveloperNotificationButtonsHost" Spacing="4" />
+                                                        </StackPanel>
                                                         <TextBlock x:Name="DeveloperNotificationStatusText" Visibility="Collapsed" Text="尚未检测现有通知" TextWrapping="Wrap" />
                                                     </StackPanel>
                                                 </Border>

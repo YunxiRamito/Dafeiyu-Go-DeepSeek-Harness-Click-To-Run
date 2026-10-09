@@ -21,6 +21,27 @@ string ValidManifest(string version = "1.7.0")
 string ValidPatchFeed()
     => "{\"schemaVersion\":1,\"updatedAt\":\"2026-10-08T00:00:00Z\",\"patches\":[]}";
 
+string githubSearchUrl = "https://api.github.com/search/repositories?q=topic%3Aagent-skills";
+LauncherSettings acceleratedSettings = new LauncherSettings
+{
+    UpdateSource = "Accelerated",
+    MirrorSource = "Auto"
+};
+string proxiedSearchUrl = GitHubAccelerator.MetadataProxyUrl(
+    githubSearchUrl, acceleratedSettings, hasGitHubToken: false);
+Check(proxiedSearchUrl != null
+    && proxiedSearchUrl.StartsWith(BackendDownloadSource.BaseUrl + "/api/fetch?url=", StringComparison.Ordinal)
+    && proxiedSearchUrl.Contains(Uri.EscapeDataString(githubSearchUrl), StringComparison.Ordinal),
+    "accelerated anonymous GitHub search uses the domestic metadata proxy");
+Check(GitHubAccelerator.MetadataProxyUrl(githubSearchUrl,
+    new LauncherSettings { UpdateSource = "Official", MirrorSource = "backend" }, false) == null,
+    "official source keeps GitHub search direct");
+Check(GitHubAccelerator.MetadataProxyUrl(githubSearchUrl, acceleratedSettings, true) == null,
+    "GitHub token is never forwarded through the metadata proxy");
+Check(GitHubAccelerator.MetadataProxyUrl("https://raw.githubusercontent.com/o/r/main/SKILL.md",
+    acceleratedSettings, false) == null,
+    "raw skill content keeps using the configured CDN candidate route");
+
 using (var server = new FixtureServer())
 {
     server.Set("/slow", FixtureResponse.Delay(1200, ValidManifest("1.7.1")));

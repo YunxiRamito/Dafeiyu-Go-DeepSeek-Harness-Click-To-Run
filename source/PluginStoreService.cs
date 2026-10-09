@@ -466,7 +466,7 @@ namespace DeepSeekHarnessLauncher
                     control.Checkpoint();
                     result = InstallViaOfficialCliCore(settings, spec, specifier, expectedKey,
                         pushedAt, defaultBranch, sourceSha, progress, log,
-                        line => { Report(progress, line, -1); output?.Invoke(line); }, acceptVersionRisk, control);
+                        line => ForwardOfficialOutput(progress, output, line), acceptVersionRisk, control);
                     control.Checkpoint();
                     if (result != null && !result.Ok)
                         throw new OfficialInstallFailure(result.Error ?? "官方插件安装失败。", result.Retryable);
@@ -485,6 +485,18 @@ namespace DeepSeekHarnessLauncher
         {
             internal bool Retryable { get; }
             internal OfficialInstallFailure(string message, bool retryable) : base(message) { Retryable = retryable; }
+        }
+
+        internal static void ForwardOfficialOutput(
+            Action<string, double> progress,
+            Action<string> output,
+            string line)
+        {
+            // Callers that supply an output handler already route the text into their
+            // progress UI. Forward through only one route so each official CLI event
+            // cannot be dispatched twice to the same progress row.
+            if (output != null) output(line);
+            else Report(progress, line, -1);
         }
 
         private static InstallResult InstallViaOfficialCliCore(

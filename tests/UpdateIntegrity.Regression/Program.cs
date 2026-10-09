@@ -40,6 +40,8 @@ Assert(InstallerVersionPolicy.Decide("1.6.0", "1.5.4", false) == InstallerUpdate
 Assert(InstallerVersionPolicy.Decide("1.6.0-rc.1", "1.6.0", true) == InstallerUpdateAction.Update, "release beats own prerelease");
 Assert(InstallerVersionPolicy.Decide("1.5.4", "1.6.0-rc.1", true) == InstallerUpdateAction.Update, "prerelease ahead of stable updates");
 Assert(InstallerVersionPolicy.Decide("1.5.4.0", "1.5.4", true) == InstallerUpdateAction.UpToDate, "four-segment local version compares");
+Assert(InstallerVersionPolicy.Decide("1.7.1.0", "1.7.1", true) == InstallerUpdateAction.UpToDate, "installer file version 1.7.1.0 matches release tag 1.7.1");
+Assert(InstallerVersionPolicy.Decide("1.7.1.0", "1.7.2", true) == InstallerUpdateAction.Update, "auto-install still detects a newer installer release");
 
 // 本机版本读不出来：不能在每次更新时无条件重装。
 Assert(InstallerVersionPolicy.Decide(null, "1.6.0", true) == InstallerUpdateAction.UnknownLocal, "missing local version with files present needs explicit repair");

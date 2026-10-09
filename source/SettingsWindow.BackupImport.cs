@@ -27,6 +27,10 @@ namespace DeepSeekHarnessLauncher
         private ContentDialog _backupOperationDialog;
         private StackPanel _backupOperationPanel;
         private bool _backupOperationExecuting;
+        private bool _backupOperationFinished;
+        private TextBlock _backupOperationStatus;
+        private ProgressBar _backupOperationProgress;
+        private InfoBar _backupOperationResult;
 
         private async void DshDataFindButton_Click(object sender, RoutedEventArgs args) => await FindDshDataAsync(false);
         private async void DshDataFindDrivesButton_Click(object sender, RoutedEventArgs args) => await FindDshDataAsync(true);
@@ -217,7 +221,8 @@ namespace DeepSeekHarnessLauncher
                     _dshDataExportBoxes[group.Id] = box;
                     DshDataExportGroupsHost.Children.Add(box);
                 }
-                DshDataExportDetailText.Text = "已读取 " + home + "\nProfile：" + profile + "。";
+                DshDataExportDetailText.Text = "已读取 " + home + "\nProfile：" + profile + "。"
+                    + FormatDshDataWarnings(_dshDataExportPlan.Source.Warnings);
                 if (String.IsNullOrWhiteSpace(_dshDataExportDirectory))
                     _dshDataExportDirectory = BackupFlow.DefaultExportDirectory();
                 DshDataExportTargetBox.Text = _dshDataExportDirectory;
@@ -228,7 +233,7 @@ namespace DeepSeekHarnessLauncher
             {
                 if (_settingsClosed) return;
                 DshDataExportDetailText.Text = exception.Message;
-                ShowDshDataInfo(InfoBarSeverity.Error, "无法读取 DSH 数据。");
+                ShowDshDataInfo(InfoBarSeverity.Error, "无法读取 DSH 数据：\n" + exception.Message);
             }
             finally { _dshDataPreviewCancellation = null; SetDshDataBusy(false); }
             if (_dshDataExportPlan != null)
@@ -255,7 +260,7 @@ namespace DeepSeekHarnessLauncher
                 if (_settingsClosed) return;
                 ClearDshDataImportPlan();
                 DshDataImportDetailText.Text = exception.Message;
-                ShowDshDataInfo(InfoBarSeverity.Error, "无法读取所选 DSH 文件夹。");
+                ShowDshDataInfo(InfoBarSeverity.Error, "无法读取所选 DSH 文件夹：\n" + exception.Message);
             }
             finally { SetDshDataBusy(false); }
         }
@@ -293,7 +298,7 @@ namespace DeepSeekHarnessLauncher
                 if (_settingsClosed) return;
                 ClearDshDataImportPlan();
                 DshDataImportDetailText.Text = exception.Message;
-                ShowDshDataInfo(InfoBarSeverity.Error, "无法读取此 Profile。");
+                ShowDshDataInfo(InfoBarSeverity.Error, "无法读取此 Profile：\n" + exception.Message);
             }
             finally { SetDshDataBusy(false); }
         }
@@ -361,8 +366,12 @@ namespace DeepSeekHarnessLauncher
             var groups = _dshDataImportPlan.Groups.Where(group => ids.Contains(group.Id)).ToList();
             DshDataImportSummaryText.Text = "已选 " + groups.Count + " 类，" + groups.Sum(group => group.Files) + " 个文件，"
                 + DataSize(groups.Sum(group => group.Bytes)) + "。同名项目 " + groups.Sum(group => group.ExistingUnits)
-                + " 个将保留并跳过。";
+                + " 个将保留并跳过。" + FormatDshDataWarnings(_dshDataImportPlan.Warnings);
         }
+
+        private static string FormatDshDataWarnings(IList<string> warnings)
+            => warnings == null || warnings.Count == 0 ? String.Empty
+                : "\n\n读取警告：\n• " + String.Join("\n• ", warnings);
 
         private async void DshDataImportStartButton_Click(object sender, RoutedEventArgs args) => await ImportDshDataAsync(false);
 
@@ -408,16 +417,19 @@ namespace DeepSeekHarnessLauncher
                 RefreshDshDataControls();
                 DshDataInfoBar.IsOpen = false;
                 DshDataImportProgress.Value = 0;
+                ReportBackupOperationProgress("正在准备导入 DSH 数据…", 0);
                 var result = await Task.Run(() => DshDataImportService.Import(plan, chosen,
                     (text, percent) => DispatcherQueue.TryEnqueue(() =>
                     {
-                        if (_settingsClosed) return;
+                        if (_settingsClosed || _dshDataCancellation != cancellation) return;
                         DshDataImportDetailText.Text = text;
                         DshDataImportProgress.Value = Math.Clamp(percent, 0, 100);
+                        ReportBackupOperationProgress(text, percent);
                     }), cancellation.Token));
                 if (_settingsClosed) return;
                 DshDataImportDetailText.Text = (result.Ok ? String.Empty : result.Canceled
-                    ? "已取消，已导入的数据保留。\n" : result.Error + "\n") + result.Summary;
+                    ? "已取消，已导入的数据保留。\n" : result.Error + "\n") + result.Summary
+                    + FormatDshDataWarnings(plan.Warnings);
                 ShowDshDataInfo(result.Ok ? InfoBarSeverity.Success : result.Canceled ? InfoBarSeverity.Informational : InfoBarSeverity.Error,
                     DshDataImportDetailText.Text + (result.Ok ? "\n启动 DSH 后生效。" : String.Empty));
                 if (result.Ok)
@@ -432,7 +444,7 @@ namespace DeepSeekHarnessLauncher
             {
                 if (_settingsClosed) return;
                 DshDataImportDetailText.Text = exception.Message;
-                ShowDshDataInfo(InfoBarSeverity.Error, "导入失败。");
+                ShowDshDataInfo(InfoBarSeverity.Error, "导入失败：\n" + exception.Message);
             }
             finally
             {
@@ -461,7 +473,7 @@ namespace DeepSeekHarnessLauncher
             {
                 if (_settingsClosed) return;
                 DshDataExportDetailText.Text = exception.Message;
-                ShowDshDataInfo(InfoBarSeverity.Error, "无法选择输出文件夹。");
+                ShowDshDataInfo(InfoBarSeverity.Error, "无法选择输出文件夹：\n" + exception.Message);
             }
             finally { SetDshDataBusy(false); }
         }
@@ -490,6 +502,7 @@ namespace DeepSeekHarnessLauncher
             SetDshDataBusy(true);
             DshDataInfoBar.IsOpen = false;
             DshDataExportProgress.Value = 0;
+            ReportBackupOperationProgress("正在准备导出 DSH ZIP…", 0);
             try
             {
                 var plan = _dshDataExportPlan;
@@ -497,22 +510,27 @@ namespace DeepSeekHarnessLauncher
                 var result = await Task.Run(() => DshDataExportService.Export(plan, chosen, directory,
                     (text, percent) => DispatcherQueue.TryEnqueue(() =>
                     {
-                        if (_settingsClosed) return;
+                        if (_settingsClosed || _dshDataCancellation != cancellation) return;
                         DshDataExportDetailText.Text = text;
                         DshDataExportProgress.Value = Math.Clamp(percent, 0, 100);
+                        ReportBackupOperationProgress(text, percent);
                     }), cancellation.Token));
                 if (_settingsClosed) return;
-                DshDataExportDetailText.Text = result.Ok ? result.Summary + "\n" + result.ArchivePath
+                DshDataExportDetailText.Text = result.Ok ? result.Summary + (_backupOperationDialog == null ? "\n" + result.ArchivePath : String.Empty)
                     : result.Canceled ? "已取消导出。" : result.Error;
-                ShowDshDataInfo(result.Ok ? InfoBarSeverity.Success : result.Canceled ? InfoBarSeverity.Informational : InfoBarSeverity.Error,
-                    DshDataExportDetailText.Text);
+                string warnings = FormatDshDataWarnings(plan.Source.Warnings);
+                DshDataExportDetailText.Text += warnings;
+                ShowDshDataInfo(result.Ok
+                    ? String.IsNullOrEmpty(warnings) ? InfoBarSeverity.Success : InfoBarSeverity.Warning
+                    : result.Canceled ? InfoBarSeverity.Informational : InfoBarSeverity.Error,
+                    result.Ok ? result.Summary + "\n" + result.ArchivePath + warnings : DshDataExportDetailText.Text);
                 if (result.Ok) DshDataExportProgress.Value = 100;
             }
             catch (Exception exception)
             {
                 if (_settingsClosed) return;
                 DshDataExportDetailText.Text = exception.Message;
-                ShowDshDataInfo(InfoBarSeverity.Error, "导出失败。");
+                ShowDshDataInfo(InfoBarSeverity.Error, "导出失败：\n" + exception.Message);
             }
             finally
             {
@@ -564,23 +582,28 @@ namespace DeepSeekHarnessLauncher
             DshDataImportCancelButton.Visibility = _dshDataExecuting ? Visibility.Visible : Visibility.Collapsed;
             DshDataExportCancelButton.Visibility = _dshDataExecuting ? Visibility.Visible : Visibility.Collapsed;
             foreach (var box in _dshDataImportBoxes.Values.Concat(_dshDataExportBoxes.Values)) box.IsEnabled = available;
+            foreach (var box in _backupImportBoxes.Values.Concat(_backupExportBoxes.Values)) box.IsEnabled = available;
+            BackupImportConflictBox.IsEnabled = available;
             BackupExportButton.IsEnabled = available;
             BackupImportButton.IsEnabled = available;
             BackupExportFolderButton.IsEnabled = available;
             BackupImportPickButton.IsEnabled = available;
             BackupExportStartButton.IsEnabled = available && _backupExportGroups.Count > 0;
             BackupImportStartButton.IsEnabled = available && _backupImportGroups.Count > 0;
-            if (_dshDataBusy) RestartServiceButton.IsEnabled = false;
-            else RestartServiceButton.IsEnabled = true;
+            RestartServiceButton.IsEnabled = available;
             RefreshBackupOperationDialog();
         }
 
         private void ShowDshDataInfo(InfoBarSeverity severity, string message)
         {
             if (_settingsClosed) return;
-            DshDataInfoBar.Severity = severity;
-            DshDataInfoBar.Message = message;
-            DshDataInfoBar.IsOpen = true;
+            if (_backupOperationDialog == null)
+            {
+                DshDataInfoBar.Severity = severity;
+                DshDataInfoBar.Message = message;
+                DshDataInfoBar.IsOpen = true;
+            }
+            ShowBackupOperationResult(severity, message);
         }
 
         private async Task ShowBackupOperationDialogAsync(StackPanel panel, string title, string command, Func<Task> operation)
@@ -591,34 +614,82 @@ namespace DeepSeekHarnessLauncher
             int index = parent.Children.IndexOf(panel);
             parent.Children.Remove(panel);
             panel.Visibility = Visibility.Visible;
-            var scroller = new ScrollViewer { Content = panel, MaxHeight = 480, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            var scroller = new ScrollViewer { Content = panel, MaxHeight = 380, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            var status = new TextBlock
+            {
+                Style = SettingsRoot.Resources["SettingsRowDescriptionTextStyle"] as Style,
+                TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed
+            };
+            var progress = new ProgressBar { Minimum = 0, Maximum = 100, Visibility = Visibility.Collapsed };
+            var result = new InfoBar { IsClosable = false, IsOpen = false };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(status, "BackupOperationStatus");
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(progress, "BackupOperationProgress");
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(result, "BackupOperationResult");
+            var content = new StackPanel { Spacing = 10 };
+            content.Children.Add(status);
+            content.Children.Add(progress);
+            content.Children.Add(new ScrollViewer { Content = result, MaxHeight = 180, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+            content.Children.Add(scroller);
             var dialog = new ContentDialog
             {
-                XamlRoot = SettingsRoot.XamlRoot, Title = title, Content = scroller,
+                XamlRoot = SettingsRoot.XamlRoot, Title = title, Content = content,
                 PrimaryButtonText = command, CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close
             };
             _backupOperationDialog = dialog;
             _backupOperationPanel = panel;
+            _backupOperationStatus = status;
+            _backupOperationProgress = progress;
+            _backupOperationResult = result;
+            _backupOperationFinished = false;
             RefreshBackupOperationDialog();
             dialog.PrimaryButtonClick += async (sender, args) =>
             {
-                var deferral = args.GetDeferral();
                 args.Cancel = true;
                 _backupOperationExecuting = true;
                 dialog.IsPrimaryButtonEnabled = false;
-                dialog.IsSecondaryButtonEnabled = false;
-                dialog.CloseButtonText = String.Empty;
+                dialog.CloseButtonText = "取消操作";
+                status.Visibility = Visibility.Visible;
+                progress.Visibility = Visibility.Visible;
+                progress.IsIndeterminate = true;
+                status.Text = "正在准备" + command + "…";
                 try
                 {
                     await operation();
-                    if (!_settingsClosed) dialog.Hide();
                 }
                 catch (Exception exception)
                 {
-                    ShowBackupInfo(InfoBarSeverity.Error, exception.Message);
-                    if (!_settingsClosed) dialog.Hide();
+                    if (panel == BackupImportPanel || panel == BackupExportPanel)
+                        ShowBackupInfo(InfoBarSeverity.Error, command + "失败：\n" + exception.Message);
+                    else ShowDshDataInfo(InfoBarSeverity.Error, command + "失败：\n" + exception.Message);
                 }
-                finally { _backupOperationExecuting = false; deferral.Complete(); }
+                finally
+                {
+                    _backupOperationExecuting = false;
+                    _backupOperationFinished = true;
+                    if (!_settingsClosed)
+                    {
+                        progress.IsIndeterminate = false;
+                        status.Text = result.IsOpen ? result.Severity == InfoBarSeverity.Success
+                            ? command + "完成" : result.Severity == InfoBarSeverity.Error
+                                ? command + "失败" : command + "已结束" : command + "已结束";
+                        dialog.PrimaryButtonText = String.Empty;
+                        dialog.CloseButtonText = "关闭";
+                        scroller.MaxHeight = 240;
+                        scroller.ChangeView(null, 0, null);
+                    }
+                }
+            };
+            dialog.CloseButtonClick += (sender, args) =>
+            {
+                if (!_backupOperationExecuting) return;
+                args.Cancel = true;
+                CancelBackupOperation();
+            };
+            dialog.Closing += (sender, args) =>
+            {
+                if (!_backupOperationExecuting || _settingsClosed) return;
+                args.Cancel = true;
+                CancelBackupOperation();
             };
             try { await dialog.ShowAsync(); }
             catch (Exception exception) { ShowBackupInfo(InfoBarSeverity.Error, exception.Message); }
@@ -626,8 +697,40 @@ namespace DeepSeekHarnessLauncher
             {
                 _backupOperationDialog = null;
                 _backupOperationPanel = null;
+                _backupOperationStatus = null;
+                _backupOperationProgress = null;
+                _backupOperationResult = null;
                 if (!_settingsClosed)
                 {
+                    if (result.IsOpen)
+                    {
+                        if (panel == BackupExportPanel)
+                        {
+                            BackupExportDetail.Text = result.Message;
+                            BackupInfoBar.Severity = result.Severity;
+                            BackupInfoBar.Message = result.Message;
+                            BackupInfoBar.IsOpen = true;
+                        }
+                        else if (panel == DshDataExportPanel)
+                        {
+                            DshDataExportDetailText.Text = result.Message;
+                            DshDataInfoBar.Severity = result.Severity;
+                            DshDataInfoBar.Message = result.Message;
+                            DshDataInfoBar.IsOpen = true;
+                        }
+                        else if (panel == DshDataImportPanel)
+                        {
+                            DshDataInfoBar.Severity = result.Severity;
+                            DshDataInfoBar.Message = result.Message;
+                            DshDataInfoBar.IsOpen = true;
+                        }
+                        else if (panel == BackupImportPanel)
+                        {
+                            BackupInfoBar.Severity = result.Severity;
+                            BackupInfoBar.Message = result.Message;
+                            BackupInfoBar.IsOpen = true;
+                        }
+                    }
                     scroller.Content = null;
                     panel.Visibility = Visibility.Collapsed;
                     parent.Children.Insert(index, panel);
@@ -637,7 +740,7 @@ namespace DeepSeekHarnessLauncher
 
         private void RefreshBackupOperationDialog()
         {
-            if (_settingsClosed || _backupOperationDialog == null || _backupOperationExecuting) return;
+            if (_settingsClosed || _backupOperationDialog == null || _backupOperationExecuting || _backupOperationFinished) return;
             bool selected = _backupOperationPanel == BackupExportPanel
                 ? CollectBackupGroups(_backupExportGroups, _backupExportBoxes).Count > 0
                 : _backupOperationPanel == BackupImportPanel
@@ -646,6 +749,30 @@ namespace DeepSeekHarnessLauncher
                         ? _dshDataImportPlan != null && SelectedDataGroups(_dshDataImportBoxes).Count > 0
                         : _dshDataExportPlan != null && SelectedDataGroups(_dshDataExportBoxes).Count > 0;
             _backupOperationDialog.IsPrimaryButtonEnabled = !_backupBusy && !_dshDataBusy && selected;
+        }
+
+        private void ReportBackupOperationProgress(string message, double percent)
+        {
+            if (_settingsClosed || _backupOperationProgress == null || _backupOperationFinished) return;
+            _backupOperationProgress.IsIndeterminate = false;
+            _backupOperationProgress.Value = Math.Clamp(percent, 0, 100);
+            _backupOperationStatus.Text = Math.Clamp(percent, 0, 100).ToString("0.#") + "% · " + message;
+        }
+
+        private void ShowBackupOperationResult(InfoBarSeverity severity, string message)
+        {
+            if (_settingsClosed || _backupOperationResult == null) return;
+            _backupOperationResult.Severity = severity;
+            _backupOperationResult.Message = message;
+            _backupOperationResult.IsOpen = true;
+        }
+
+        private void CancelBackupOperation()
+        {
+            _backupCancellation?.Cancel();
+            _dshDataCancellation?.Cancel();
+            if (!_settingsClosed && _backupOperationStatus != null)
+                _backupOperationStatus.Text = "正在取消操作…";
         }
     }
 }
