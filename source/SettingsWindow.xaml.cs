@@ -6171,6 +6171,7 @@ namespace DeepSeekHarnessLauncher
             if (!custom)
             {
                 SettingsRoot.Resources.Remove("AccentFillColorDefaultBrush");
+                FeedbackAccentChanged();
                 return;
             }
 
@@ -6178,6 +6179,7 @@ namespace DeepSeekHarnessLauncher
             SettingsRoot.Resources["AccentFillColorDefaultBrush"] =
                 new SolidColorBrush(color);
             AccentColorSwatch.Background = new SolidColorBrush(color);
+            FeedbackAccentChanged();
         }
 
         private void MaterialComboBox_SelectionChanged(

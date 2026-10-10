@@ -160,13 +160,15 @@ namespace DeepSeekHarnessLauncher
         }
         // UpdatedAt also changes when a user adds a supplement or a developer changes status.
         // Deduplicate by reply text so those changes do not masquerade as new replies.
-        internal bool TryMarkFeedbackReplySeen(string feedbackId, string reply, DateTimeOffset updatedAt)
+        internal bool TryMarkFeedbackReplySeen(string feedbackId, string reply, DateTimeOffset updatedAt, string replyId = null)
         {
             if (String.IsNullOrWhiteSpace(feedbackId) || feedbackId.Length > 128)
                 throw new ArgumentException("Invalid feedback ID.", nameof(feedbackId));
             if (String.IsNullOrWhiteSpace(reply) || reply.Trim().Length > 12000)
                 throw new ArgumentException("Invalid feedback reply.", nameof(reply));
-            string fingerprint = FeedbackReplyFingerprint(reply, updatedAt);
+            if (replyId != null && (!Guid.TryParse(replyId, out Guid parsedReplyId) || parsedReplyId == Guid.Empty))
+                throw new ArgumentException("Invalid reply ID.", nameof(replyId));
+            string fingerprint = FeedbackReplyFingerprint(reply, updatedAt, replyId);
             lock (Gate)
             {
                 var state = Load();
@@ -177,9 +179,10 @@ namespace DeepSeekHarnessLauncher
                 return true;
             }
         }
-        internal static string FeedbackReplyFingerprint(string reply, DateTimeOffset updatedAt)
+        internal static string FeedbackReplyFingerprint(string reply, DateTimeOffset updatedAt, string replyId = null)
         {
-            byte[] bytes = Encoding.UTF8.GetBytes((reply ?? String.Empty).Trim());
+            string identity = replyId == null ? String.Empty : Guid.Parse(replyId).ToString("D") + "\n";
+            byte[] bytes = Encoding.UTF8.GetBytes(identity + (reply ?? String.Empty).Trim());
             return Convert.ToHexString(SHA256.HashData(bytes));
         }
         private ClientNoticeState Load()

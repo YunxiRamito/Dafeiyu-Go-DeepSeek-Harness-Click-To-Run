@@ -29,9 +29,11 @@ namespace DeepSeekHarnessLauncher
             internal bool Picking;
         }
 
-        private FeedbackAttachmentEditor CreateFeedbackAttachmentEditor()
+        private FeedbackAttachmentEditor CreateFeedbackAttachmentEditor(bool includeLogs = FeedbackPresentation.SupplementIncludeLogs)
         {
             var editor = new FeedbackAttachmentEditor();
+            editor.UploadLogs.IsChecked = includeLogs;
+            AutomationProperties.SetName(editor.UploadLogs, includeLogs ? "随反馈上传启动器日志" : "随补充上传启动器日志");
             var choose = new Button { Content = "添加图片", Style = SettingsRoot.Resources["SettingsCompactButtonStyle"] as Style };
             var hint = new TextBlock { Text = "最多 5 张，每张不超过 5 MiB · JPG、PNG、WebP",
                 Style = SettingsRoot.Resources["SettingsRowDescriptionTextStyle"] as Style, TextWrapping = TextWrapping.Wrap };

@@ -7,13 +7,18 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Shapes;
+using Windows.Foundation;
 
 namespace DeepSeekHarnessLauncher
 {
     internal sealed partial class SettingsWindow
     {
         private const string FeedbackEndpoint = "https://202.189.21.218:8787";
+        private event Action FeedbackAccentChanged = delegate { };
         private List<FeedbackModel> _feedbackItems = new List<FeedbackModel>();
         private CancellationTokenSource _feedbackCancellation;
         private bool _feedbackLoading;
@@ -28,6 +33,8 @@ namespace DeepSeekHarnessLauncher
         private int _developerFeedbackPage = 1;
         private int? _developerFeedbackTotalCount;
         private long _developerFeedbackRequestId;
+        private readonly Dictionary<string, FeedbackConversationPager> _feedbackConversations = new Dictionary<string, FeedbackConversationPager>();
+        private readonly Dictionary<string, FeedbackConversationPager> _developerFeedbackConversations = new Dictionary<string, FeedbackConversationPager>();
 
         private async void LoadFeedbackAsync()
         {
@@ -77,6 +84,7 @@ namespace DeepSeekHarnessLauncher
             FeedbackInfoBar.IsOpen = false;
             FeedbackRows.Children.Clear();
             FeedbackEmptyText.Visibility = Visibility.Collapsed;
+            _feedbackConversations.Clear();
             _feedbackPage = Math.Max(1, pageNumber ?? _feedbackPage);
             _feedbackTotalCount = null;
             _feedbackNextOffset = null;
@@ -172,16 +180,13 @@ namespace DeepSeekHarnessLauncher
             previousButton.IsEnabled = !busy && current > 1;
             nextButton.IsEnabled = !busy && next.HasValue;
             pageText.Text = total.HasValue ? "第 " + current + " / " + FeedbackPagination.PageCount(total.Value) + " 页" : "第 " + current + " 页";
-            countText.Text = "每页 20 条" + (total.HasValue ? " · 共 " + total.Value + " 条" : String.Empty);
+            countText.Text = "每页 " + FeedbackResponseBudget.PageSize + " 条" + (total.HasValue ? " · 共 " + total.Value + " 条" : String.Empty);
         }
 
         private FrameworkElement BuildFeedbackCard(FeedbackModel item, bool developer)
         {
             var body = BuildFeedbackCardContent(item, developer);
-            if (!String.IsNullOrWhiteSpace(item.Reply)) body.Children.Add(BuildFeedbackSubBox("开发者回复", item.Reply));
-            foreach (FeedbackSupplementModel supplement in item.Supplements ?? new List<FeedbackSupplementModel>())
-                body.Children.Add(BuildFeedbackSubBox("补充 · " + FormatFeedbackDate(supplement.CreatedAt), supplement.Body, supplement.Images, developer));
-            AddMoreSupplementsButton(body, item, developer);
+            body.Children.Add(BuildFeedbackConversation(item, developer));
             if (!developer && item.CanAddSupplement)
             {
                 var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
@@ -193,6 +198,7 @@ namespace DeepSeekHarnessLauncher
                     IsEnabled = !_feedbackBanStatus.IsActive(DateTimeOffset.UtcNow)
                 };
                 supplementButton.Click += async delegate { await AddFeedbackSupplementAsync(item); };
+                AutomationProperties.SetName(supplementButton, "添加补充 · " + FeedbackPresentation.NumberLabel(item));
                 actions.Children.Add(supplementButton);
                 body.Children.Add(actions);
             }
@@ -208,30 +214,164 @@ namespace DeepSeekHarnessLauncher
             header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             header.Children.Add(new TextBlock
             {
-                Text = FeedbackCategoryLabel(item.Category), FontSize = 14,
+                Text = FeedbackCategoryLabel(item.Category) + " " + FeedbackPresentation.NumberLabel(item), FontSize = 14,
                 FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center,
-                TextWrapping = TextWrapping.Wrap
+                TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true
             });
             var status = new Border
             {
                 Style = SettingsRoot.Resources["SettingsTagPillStyle"] as Style,
                 Child = new TextBlock { Text = FeedbackStatusLabel(item.Status), FontSize = 12 }
             };
+            void ApplyStatusColors()
+            {
+                bool dark = status.ActualTheme == ElementTheme.Dark;
+                status.Background = FeedbackStatusBrush(FeedbackPresentation.StatusBackground(item.Status, dark));
+                ((TextBlock)status.Child).Foreground = FeedbackStatusBrush(FeedbackPresentation.StatusForeground(item.Status, dark));
+            }
+            status.ActualThemeChanged += delegate { ApplyStatusColors(); };
+            status.Loaded += delegate { ApplyStatusColors(); };
+            ApplyStatusColors();
             Grid.SetColumn(status, 1);
             header.Children.Add(status);
             body.Children.Add(header);
-            body.Children.Add(new TextBlock
-            {
-                Text = item.Body, FontSize = 14, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true
-            });
+            body.Children.Add(BuildCollapsibleFeedbackBody(item.Body, 14, "正文 · " + FeedbackPresentation.NumberLabel(item)));
             if (item.Images?.Count > 0) body.Children.Add(BuildFeedbackImages(item.Images, developer));
-            body.Children.Add(new TextBlock
+            var footer = new Grid { ColumnSpacing = 12 };
+            footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            footer.Children.Add(new TextBlock
             {
                 Text = FormatFeedbackDate(item.CreatedAt) + " · v" + (item.LauncherVersion ?? "未知"),
                 Style = SettingsRoot.Resources["SettingsRowDescriptionTextStyle"] as Style,
-                TextWrapping = TextWrapping.Wrap
+                TextWrapping = TextWrapping.Wrap,
+                VerticalAlignment = VerticalAlignment.Center
             });
+            var upvote = BuildFeedbackUpvoteButton(item, developer);
+            Grid.SetColumn(upvote, 1);
+            footer.Children.Add(upvote);
+            body.Children.Add(footer);
             return body;
+        }
+
+        private FrameworkElement BuildFeedbackUpvoteButton(FeedbackModel item, bool developer)
+        {
+            var icon = new Canvas { Width = 24, Height = 24, IsHitTestVisible = false };
+            var head = new Ellipse { Width = 8, Height = 8, StrokeThickness = 1.8 };
+            Canvas.SetLeft(head, 5);
+            Canvas.SetTop(head, 2);
+            var shoulders = new PathFigure { StartPoint = new Point(2.5, 21), IsFilled = true };
+            shoulders.Segments.Add(new LineSegment { Point = new Point(2.5, 18) });
+            shoulders.Segments.Add(new BezierSegment
+            {
+                Point1 = new Point(2.5, 14), Point2 = new Point(5, 12), Point3 = new Point(9, 12)
+            });
+            shoulders.Segments.Add(new BezierSegment
+            {
+                Point1 = new Point(13, 12), Point2 = new Point(15.5, 14), Point3 = new Point(15.5, 18)
+            });
+            shoulders.Segments.Add(new LineSegment { Point = new Point(15.5, 21) });
+            var bodyGeometry = new PathGeometry();
+            bodyGeometry.Figures.Add(shoulders);
+            var silhouette = new Microsoft.UI.Xaml.Shapes.Path { Data = bodyGeometry, StrokeThickness = 1.8,
+                StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round };
+            var plusGeometry = new PathGeometry();
+            var horizontal = new PathFigure { StartPoint = new Point(16, 10), IsFilled = false };
+            horizontal.Segments.Add(new LineSegment { Point = new Point(22, 10) });
+            var vertical = new PathFigure { StartPoint = new Point(19, 7), IsFilled = false };
+            vertical.Segments.Add(new LineSegment { Point = new Point(19, 13) });
+            plusGeometry.Figures.Add(horizontal);
+            plusGeometry.Figures.Add(vertical);
+            var plus = new Microsoft.UI.Xaml.Shapes.Path { Data = plusGeometry, StrokeThickness = 1.8,
+                StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round };
+            icon.Children.Add(silhouette);
+            icon.Children.Add(head);
+            icon.Children.Add(plus);
+            var count = new TextBlock { VerticalAlignment = VerticalAlignment.Center, FontSize = 12 };
+            var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+            content.Children.Add(new Viewbox { Width = 16, Height = 16, Child = icon, IsHitTestVisible = false });
+            content.Children.Add(count);
+            var button = new Button { Content = content, HorizontalAlignment = HorizontalAlignment.Right,
+                Style = SettingsRoot.Resources["SettingsCompactButtonStyle"] as Style,
+                MinWidth = 0, MinHeight = 0, Padding = new Thickness(6, 3, 6, 3) };
+            AutomationProperties.SetAutomationId(button, "FeedbackUpvote-" + item.Id);
+            void RefreshAppearance()
+            {
+                Brush foreground = item.HasUpvoted ? ResolveAccentBrush() : button.Foreground;
+                foreach (Shape shape in new Shape[] { head, silhouette })
+                {
+                    shape.Stroke = foreground;
+                    shape.Fill = item.HasUpvoted ? foreground : null;
+                }
+                plus.Stroke = foreground;
+                count.Text = item.UpvoteCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                count.Foreground = foreground;
+                string action = item.HasUpvoted ? "取消支持反馈 " : "支持反馈 ";
+                AutomationProperties.SetName(button, action + FeedbackPresentation.NumberLabel(item) + "，" + count.Text + " 人");
+                ToolTipService.SetToolTip(button, item.HasUpvoted ? "已 +1，点击取消支持" : "+1 支持这条反馈");
+            }
+            button.ActualThemeChanged += delegate { RefreshAppearance(); };
+            bool accentSubscribed = false;
+            button.Loaded += delegate
+            {
+                if (!accentSubscribed)
+                {
+                    FeedbackAccentChanged += RefreshAppearance;
+                    accentSubscribed = true;
+                }
+                RefreshAppearance();
+            };
+            button.Unloaded += delegate
+            {
+                if (accentSubscribed)
+                {
+                    FeedbackAccentChanged -= RefreshAppearance;
+                    accentSubscribed = false;
+                }
+            };
+            button.Click += async delegate { await ToggleFeedbackUpvoteAsync(item, developer, button, RefreshAppearance); };
+            RefreshAppearance();
+            return button;
+        }
+
+        private async Task ToggleFeedbackUpvoteAsync(FeedbackModel item, bool developer, Button button, Action refreshAppearance)
+        {
+            if (!button.IsEnabled || (developer ? _developerFeedbackLoading : _feedbackLoading)) return;
+            button.IsEnabled = false;
+            long requestId = developer ? _developerFeedbackRequestId : _feedbackRequestId;
+            try
+            {
+                using var client = new FeedbackClient(_clientNoticeStore,
+                    () => _clientNoticeSettings ?? _clientNoticeStore.LoadSettings());
+                var response = item.HasUpvoted
+                    ? await client.CancelUpvoteAsync(item.Id, CancellationToken.None)
+                    : await client.UpvoteAsync(item.Id, CancellationToken.None);
+                item.UpvoteCount = response.UpvoteCount;
+                item.HasUpvoted = response.HasUpvoted;
+                refreshAppearance();
+                if (requestId == (developer ? _developerFeedbackRequestId : _feedbackRequestId))
+                {
+                    if (developer) await LoadDeveloperFeedbackCoreAsync(_developerFeedbackPage);
+                    else await LoadFeedbackCoreAsync(pageNumber: _feedbackPage);
+                }
+            }
+            catch (Exception exception)
+            {
+                LogFeedbackFailure("更新反馈支持", exception);
+                if (developer)
+                {
+                    DeveloperFeedbackInfoBar.Severity = InfoBarSeverity.Error;
+                    DeveloperFeedbackInfoBar.Title = "支持操作失败";
+                    DeveloperFeedbackInfoBar.Message = exception.Message;
+                    DeveloperFeedbackInfoBar.IsOpen = true;
+                }
+                else ShowFeedbackError(exception.Message);
+            }
+            finally
+            {
+                refreshAppearance();
+                button.IsEnabled = true;
+            }
         }
 
         private FrameworkElement BuildFeedbackCardBorder(FrameworkElement content)
@@ -241,73 +381,147 @@ namespace DeepSeekHarnessLauncher
             return card;
         }
 
+        private static SolidColorBrush FeedbackStatusBrush(uint argb)
+            => new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb((byte)(argb >> 24),
+                (byte)(argb >> 16), (byte)(argb >> 8), (byte)argb));
+
         private FrameworkElement BuildFeedbackSubBox(string title, string text,
-            IReadOnlyList<FeedbackImageModel> images = null, bool developer = false)
+            IReadOnlyList<FeedbackImageModel> images = null, bool developer = false, string automationContext = null, bool hasLogs = false)
         {
             var panel = new StackPanel { Spacing = 3 };
             panel.Children.Add(new TextBlock
             {
                 Text = title,
                 FontSize = 12,
-                FontWeight = FontWeights.SemiBold
-            });
-            panel.Children.Add(new TextBlock
-            {
-                Text = text ?? String.Empty,
+                FontWeight = FontWeights.SemiBold,
                 TextWrapping = TextWrapping.Wrap,
-                FontSize = 13,
                 IsTextSelectionEnabled = true
             });
+            panel.Children.Add(BuildCollapsibleFeedbackBody(text, 13, automationContext));
             if (images?.Count > 0) panel.Children.Add(BuildFeedbackImages(images, developer));
-            var box = new Border { Child = panel, Padding = new Thickness(10, 7, 10, 7) };
-            box.Style = SettingsRoot.Resources["SettingsTagPillStyle"] as Style;
-            box.CornerRadius = new CornerRadius(6);
-            return box;
+            if (hasLogs) panel.Children.Add(new TextBlock { Text = "附启动器日志", FontSize = 12 });
+            panel.Margin = new Thickness(10, 7, 0, 7);
+            return panel;
         }
 
-        private void AddMoreSupplementsButton(StackPanel panel, FeedbackModel item, bool developer)
+        private FrameworkElement BuildCollapsibleFeedbackBody(string text, double fontSize, string automationContext)
         {
-            if (!item.NextSupplementOffset.HasValue) return;
-            var button = new Button { Content = "加载更多补充（共 " + item.SupplementCount + " 条）", Style = SettingsRoot.Resources["SettingsCompactButtonStyle"] as Style };
-            button.Click += async delegate
+            text ??= String.Empty;
+            bool collapsible = FeedbackPresentation.NeedsCollapse(text);
+            var panel = new StackPanel { Spacing = 3 };
+            var body = new TextBlock { Text = collapsible ? FeedbackPresentation.Preview(text) : text,
+                FontSize = fontSize, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
+            panel.Children.Add(body);
+            if (!collapsible) return panel;
+            bool expanded = false;
+            var toggle = new Button { Content = "展开", HorizontalAlignment = HorizontalAlignment.Left,
+                Style = SettingsRoot.Resources["SettingsCompactButtonStyle"] as Style };
+            AutomationProperties.SetName(toggle, "展开" + automationContext);
+            toggle.Click += delegate
             {
-                button.IsEnabled = false;
-                CancellationToken token = developer ? _developerFeedbackCancellation?.Token ?? CancellationToken.None
-                    : _feedbackCancellation?.Token ?? CancellationToken.None;
+                expanded = !expanded;
+                body.Text = expanded ? text : FeedbackPresentation.Preview(text);
+                toggle.Content = expanded ? "收起" : "展开";
+                AutomationProperties.SetName(toggle, (expanded ? "收起" : "展开") + automationContext);
+            };
+            panel.Children.Add(toggle);
+            return panel;
+        }
+
+        private FrameworkElement BuildFeedbackConversation(FeedbackModel item, bool developer)
+        {
+            var conversations = developer ? _developerFeedbackConversations : _feedbackConversations;
+            if (!conversations.TryGetValue(item.Id, out var pager))
+            {
+                pager = new FeedbackConversationPager(item);
+                conversations[item.Id] = pager;
+            }
+            var panel = new StackPanel { Spacing = 8 };
+            var messages = new StackPanel { Spacing = 8 };
+            var navigation = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            var previous = new Button { Content = "上一页（较新）", Style = SettingsRoot.Resources["SettingsCompactButtonStyle"] as Style };
+            var next = new Button { Content = "下一页（较早）", Style = SettingsRoot.Resources["SettingsCompactButtonStyle"] as Style };
+            var pageText = new TextBlock { VerticalAlignment = VerticalAlignment.Center, FontSize = 12 };
+            string number = FeedbackPresentation.NumberLabel(item);
+            AutomationProperties.SetName(previous, "对话上一页 · " + number);
+            AutomationProperties.SetName(next, "对话下一页 · " + number);
+            navigation.Children.Add(previous);
+            navigation.Children.Add(pageText);
+            navigation.Children.Add(next);
+            panel.Children.Add(messages);
+            panel.Children.Add(navigation);
+            CancellationToken token = developer ? _developerFeedbackCancellation?.Token ?? CancellationToken.None
+                : _feedbackCancellation?.Token ?? CancellationToken.None;
+
+            void RenderPage()
+            {
+                messages.Children.Clear();
+                foreach (var entry in pager.VisibleEntries())
+                {
+                    var message = entry.Message;
+                    string title = message.IsDeveloperReply ? "开发者回复" : "用户补充";
+                    if (entry.IsLegacyReply) title += "（旧版，时间估计）";
+                    messages.Children.Add(BuildFeedbackSubBox(title + " · " + FormatFeedbackDate(message.CreatedAt),
+                        message.Body, message.Images, developer, "消息 · " + number + " · " + (entry.IsLegacyReply ? "legacy" : message.Id), message.HasLogs));
+                }
+                previous.IsEnabled = !pager.IsLoading && pager.CanPrevious;
+                next.IsEnabled = !pager.IsLoading && pager.CanNext;
+                pageText.Text = "第 " + pager.PageNumber + " 页";
+                navigation.Visibility = pager.CanPrevious || pager.CanNext ? Visibility.Visible : Visibility.Collapsed;
+            }
+
+            previous.Click += delegate
+            {
+                if (pager.IsLoading || token.IsCancellationRequested) return;
+                pager.Previous();
+                RenderPage();
+            };
+            next.Click += async delegate
+            {
+                if (pager.IsLoading || !pager.CanNext || token.IsCancellationRequested) return;
+                if (pager.NextCached()) { RenderPage(); return; }
+                pager.IsLoading = true;
+                previous.IsEnabled = false;
+                next.IsEnabled = false;
                 try
                 {
                     using var client = new FeedbackClient(_clientNoticeStore, () => _clientNoticeSettings ?? _clientNoticeStore.LoadSettings());
-                    FeedbackSupplementListResponse page = await client.SupplementsPageAsync(item.Id, item.NextSupplementOffset.Value, token);
+                    FeedbackSupplementListResponse page = await client.SupplementsPageAsync(item.Id, pager.NextOffset.Value, token);
                     token.ThrowIfCancellationRequested();
-                    item.Supplements.AddRange(page.Supplements.Where(value => !item.Supplements.Any(existing => existing.Id == value.Id)));
-                    item.NextSupplementOffset = page.NextOffset;
-                    if (developer) RenderDeveloperFeedbackRows(); else RenderFeedbackRows();
+                    pager.AcceptNextPage(page);
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested) { }
                 catch (Exception exception)
                 {
-                    LogFeedbackFailure("加载反馈补充", exception);
+                    LogFeedbackFailure("加载反馈对话", exception);
                     if (developer)
                     {
                         DeveloperFeedbackInfoBar.Severity = InfoBarSeverity.Error;
-                        DeveloperFeedbackInfoBar.Title = "补充加载失败";
+                        DeveloperFeedbackInfoBar.Title = "对话加载失败";
                         DeveloperFeedbackInfoBar.Message = exception.Message;
                         DeveloperFeedbackInfoBar.IsOpen = true;
                     }
                     else ShowFeedbackError(exception.Message);
                 }
-                finally { if (!token.IsCancellationRequested) button.IsEnabled = true; }
+                finally
+                {
+                    pager.IsLoading = false;
+                    if (!token.IsCancellationRequested) RenderPage();
+                }
             };
-            panel.Children.Add(button);
+            RenderPage();
+            return panel;
         }
 
         private void ShowFeedbackReplyNotifications()
         {
             foreach (FeedbackModel item in _feedbackItems ?? new List<FeedbackModel>())
             {
-                if (!item.Mine || String.IsNullOrWhiteSpace(item.Reply)
-                    || !_clientNoticeStore.TryMarkFeedbackReplySeen(item.Id, item.Reply, item.UpdatedAt)) continue;
-                string detail = item.Reply.Trim();
+                var latest = item.LatestDeveloperReply;
+                string replyBody = latest?.Body ?? item.Reply;
+                if (!item.Mine || String.IsNullOrWhiteSpace(replyBody)
+                    || !_clientNoticeStore.TryMarkFeedbackReplySeen(item.Id, replyBody, latest?.CreatedAt ?? item.UpdatedAt, latest?.Id)) continue;
+                string detail = replyBody.Trim();
                 if (detail.Length > 180) detail = detail.Substring(0, 180) + "…";
                 EnsureSettingsInfoPreview().NotifyFeedbackReply("反馈有新回复", detail);
             }
@@ -334,13 +548,13 @@ namespace DeepSeekHarnessLauncher
             var panel = new StackPanel { Spacing = 12, MinWidth = 360, MaxWidth = 620 };
             panel.Children.Add(category);
             panel.Children.Add(body);
-            var attachments = CreateFeedbackAttachmentEditor();
+            var attachments = CreateFeedbackAttachmentEditor(FeedbackPresentation.InitialIncludeLogs);
             panel.Children.Add(attachments.Panel);
             var dialog = new ContentDialog
             {
                 XamlRoot = SettingsRoot.XamlRoot,
                 Title = "提交反馈与建议",
-                Content = panel,
+                Content = new ScrollViewer { Content = panel, MaxHeight = 480, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
                 PrimaryButtonText = "提交",
                 CloseButtonText = "取消",
                 DefaultButton = ContentDialogButton.Primary
@@ -393,7 +607,7 @@ namespace DeepSeekHarnessLauncher
                 MinHeight = 130,
                 MaxLength = 12000
             };
-            var attachments = CreateFeedbackAttachmentEditor();
+            var attachments = CreateFeedbackAttachmentEditor(FeedbackPresentation.SupplementIncludeLogs);
             var panel = new StackPanel { Spacing = 12, MinWidth = 360, MaxWidth = 620 };
             panel.Children.Add(body);
             panel.Children.Add(attachments.Panel);
@@ -401,7 +615,7 @@ namespace DeepSeekHarnessLauncher
             {
                 XamlRoot = SettingsRoot.XamlRoot,
                 Title = "添加反馈补充",
-                Content = panel,
+                Content = new ScrollViewer { Content = panel, MaxHeight = 480, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
                 PrimaryButtonText = "提交补充",
                 CloseButtonText = "取消",
                 DefaultButton = ContentDialogButton.Primary
@@ -478,6 +692,7 @@ namespace DeepSeekHarnessLauncher
             DeveloperFeedbackInfoBar.IsOpen = false;
             DeveloperFeedbackRows.Children.Clear();
             DeveloperFeedbackLoadingRing.IsActive = true;
+            _developerFeedbackConversations.Clear();
             DeveloperFeedbackLoadingRing.Visibility = Visibility.Visible;
             _developerFeedbackPage = Math.Max(1, pageNumber ?? _developerFeedbackPage);
             _developerFeedbackTotalCount = null;
@@ -496,7 +711,7 @@ namespace DeepSeekHarnessLauncher
                 while (true)
                 {
                     page = await client.ListPageAsync(FeedbackEndpoint, adminToken, token,
-                        FeedbackPagination.Offset(_developerFeedbackPage), category, status);
+                        FeedbackPagination.Offset(_developerFeedbackPage), category, status, machineId: _clientNoticeStore.GetMachineId());
                     if (requestId != _developerFeedbackRequestId || token.IsCancellationRequested) return;
                     if (page.Feedback.Count > 0 || _developerFeedbackPage == 1) break;
                     _developerFeedbackPage = FeedbackPagination.PreviousNonEmptyPage(_developerFeedbackPage, page.TotalCount);
@@ -552,17 +767,13 @@ namespace DeepSeekHarnessLauncher
         private FrameworkElement BuildDeveloperFeedbackCard(FeedbackModel item)
         {
             var content = BuildFeedbackCardContent(item, true);
-            if (!String.IsNullOrWhiteSpace(item.Reply)) content.Children.Add(BuildFeedbackSubBox("开发者回复", item.Reply));
-            foreach (FeedbackSupplementModel supplement in item.Supplements ?? new List<FeedbackSupplementModel>())
-                content.Children.Add(BuildFeedbackSubBox("用户补充 · " + FormatFeedbackDate(supplement.CreatedAt), supplement.Body, supplement.Images, true));
-            AddMoreSupplementsButton(content, item, true);
+            content.Children.Add(BuildFeedbackConversation(item, true));
             var category = CreateFeedbackCategoryCombo(item.Category);
             var status = CreateFeedbackStatusCombo(item.Status);
             var editContent = new StackPanel { Spacing = 10 };
             var reply = new TextBox
             {
-                Header = "回复",
-                Text = item.Reply ?? String.Empty,
+                Header = "新增开发者回复",
                 AcceptsReturn = true,
                 TextWrapping = TextWrapping.Wrap,
                 MaxLength = 12000,
@@ -575,7 +786,6 @@ namespace DeepSeekHarnessLauncher
             editors.Children.Add(category);
             editors.Children.Add(status);
             editContent.Children.Add(editors);
-            editContent.Children.Add(reply);
             var save = new Button
             {
                 Content = "保存处理结果",
@@ -584,11 +794,19 @@ namespace DeepSeekHarnessLauncher
             };
             save.Click += async delegate
             {
-                await SaveDeveloperFeedbackAsync(item, category, status, reply, save);
+                await SaveDeveloperFeedbackAsync(item, category, status, save);
             };
+            AutomationProperties.SetName(save, "保存处理结果 · " + FeedbackPresentation.NumberLabel(item));
             editContent.Children.Add(save);
+            editContent.Children.Add(reply);
+            AutomationProperties.SetName(reply, "新增开发者回复 · " + FeedbackPresentation.NumberLabel(item));
+            var sendReply = new Button { Content = "发送回复", Style = SettingsRoot.Resources["SettingsCompactButtonStyle"] as Style };
+            AutomationProperties.SetName(sendReply, "发送开发者回复 · " + FeedbackPresentation.NumberLabel(item));
+            sendReply.Click += async delegate { await AddDeveloperFeedbackReplyAsync(item, reply, sendReply); };
+            editContent.Children.Add(sendReply);
             var edit = new Expander { Header = "处理反馈", HorizontalAlignment = HorizontalAlignment.Stretch,
                 HorizontalContentAlignment = HorizontalAlignment.Stretch, Content = editContent };
+            AutomationProperties.SetName(edit, "处理反馈 · " + FeedbackPresentation.NumberLabel(item));
             edit.Expanding += delegate { RevealFeedbackExpander(edit); };
             content.Children.Add(edit);
             var delete = new Button
@@ -668,7 +886,7 @@ namespace DeepSeekHarnessLauncher
             return box;
         }
 
-        private async Task SaveDeveloperFeedbackAsync(FeedbackModel item, ComboBox category, ComboBox status, TextBox reply, Button save)
+        private async Task SaveDeveloperFeedbackAsync(FeedbackModel item, ComboBox category, ComboBox status, Button save)
         {
             if (_developerFeedbackLoading) return;
             string categoryTag = (category.SelectedItem as ComboBoxItem)?.Tag as string;
@@ -688,7 +906,7 @@ namespace DeepSeekHarnessLauncher
                 if (String.IsNullOrWhiteSpace(token)) throw new InvalidOperationException("管理员 Token 未填写。");
                 using var client = new DeveloperFeedbackAdminClient();
                 await client.UpdateAsync(FeedbackEndpoint, token, item.Id,
-                    selectedCategory, selectedStatus, reply.Text, CancellationToken.None);
+                    selectedCategory, selectedStatus, null, CancellationToken.None);
                 await LoadDeveloperFeedbackCoreAsync();
                 DeveloperFeedbackInfoBar.Severity = InfoBarSeverity.Success;
                 DeveloperFeedbackInfoBar.Title = "已保存";
@@ -706,6 +924,39 @@ namespace DeepSeekHarnessLauncher
             finally
             {
                 save.IsEnabled = true;
+            }
+        }
+
+        private async Task AddDeveloperFeedbackReplyAsync(FeedbackModel item, TextBox reply, Button send)
+        {
+            if (_developerFeedbackLoading) return;
+            send.IsEnabled = false;
+            reply.IsEnabled = false;
+            try
+            {
+                string token = LauncherSettingsStore.ReadAdminToken(_settings);
+                if (String.IsNullOrWhiteSpace(token)) throw new InvalidOperationException("管理员 Token 未填写。");
+                using var client = new DeveloperFeedbackAdminClient();
+                await client.AddReplyAsync(FeedbackEndpoint, token, item.Id, reply.Text, CancellationToken.None);
+                reply.Text = String.Empty;
+                await LoadDeveloperFeedbackCoreAsync();
+                DeveloperFeedbackInfoBar.Severity = InfoBarSeverity.Success;
+                DeveloperFeedbackInfoBar.Title = "回复已发送";
+                DeveloperFeedbackInfoBar.Message = "开发者回复已加入对话。";
+                DeveloperFeedbackInfoBar.IsOpen = true;
+            }
+            catch (Exception exception)
+            {
+                LogFeedbackFailure("发送开发者回复", exception);
+                DeveloperFeedbackInfoBar.Severity = InfoBarSeverity.Error;
+                DeveloperFeedbackInfoBar.Title = "回复发送失败";
+                DeveloperFeedbackInfoBar.Message = exception.Message;
+                DeveloperFeedbackInfoBar.IsOpen = true;
+            }
+            finally
+            {
+                send.IsEnabled = true;
+                reply.IsEnabled = true;
             }
         }
 

@@ -22,6 +22,7 @@ namespace DeepSeekHarnessLauncher
         public string Id { get; set; } = String.Empty;
         public string Body { get; set; } = String.Empty;
         public DateTimeOffset CreatedAt { get; set; }
+        public bool IsDeveloperReply { get; set; }
         public bool HasLogs { get; set; }
         public List<FeedbackImageModel> Images { get; set; } = new List<FeedbackImageModel>();
     }
@@ -38,6 +39,9 @@ namespace DeepSeekHarnessLauncher
     internal sealed class FeedbackModel
     {
         public string Id { get; set; } = String.Empty;
+        public long Number { get; set; }
+        public long UpvoteCount { get; set; }
+        public bool HasUpvoted { get; set; }
         public string Category { get; set; } = String.Empty;
         public string Status { get; set; } = String.Empty;
         public string Body { get; set; } = String.Empty;
@@ -45,6 +49,7 @@ namespace DeepSeekHarnessLauncher
         public DateTimeOffset CreatedAt { get; set; }
         public DateTimeOffset UpdatedAt { get; set; }
         public string Reply { get; set; }
+        public FeedbackSupplementModel LatestDeveloperReply { get; set; }
         public bool Mine { get; set; }
         public bool HasLogs { get; set; }
         public int SupplementCount { get; set; }
@@ -62,6 +67,13 @@ namespace DeepSeekHarnessLauncher
         public int? NextOffset { get; set; }
         public int? TotalCount { get; set; }
         public FeedbackBanStatus BanStatus { get; set; }
+    }
+    internal sealed class FeedbackUpvoteResponse
+    {
+        [System.Text.Json.Serialization.JsonRequired]
+        public long UpvoteCount { get; set; }
+        [System.Text.Json.Serialization.JsonRequired]
+        public bool HasUpvoted { get; set; }
     }
     internal sealed class FeedbackLogModel
     {
@@ -83,7 +95,7 @@ namespace DeepSeekHarnessLauncher
     internal static class FeedbackResponseBudget
     {
         internal const int MaximumBytes = 32 * 1024 * 1024;
-        internal const int PageSize = 20;
+        internal const int PageSize = 10;
     }
     internal sealed class FeedbackBanStatus
     {

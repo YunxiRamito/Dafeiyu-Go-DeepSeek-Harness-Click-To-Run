@@ -30,14 +30,16 @@ namespace DeepSeekHarnessLauncher
             => (await ListPageAsync(endpoint, token, cancellationToken).ConfigureAwait(false)).Feedback;
 
         internal async Task<FeedbackListResponse> ListPageAsync(string endpoint, string token, CancellationToken cancellationToken, int offset = 0,
-            FeedbackCategory? category = null, FeedbackStatus? status = null)
+            FeedbackCategory? category = null, FeedbackStatus? status = null, bool updatedOrder = false, string machineId = null)
         {
             if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
             if (category.HasValue && !Enum.IsDefined(typeof(FeedbackCategory), category.Value)) throw new ArgumentException("Invalid feedback category.", nameof(category));
             if (status.HasValue && !Enum.IsDefined(typeof(FeedbackStatus), status.Value)) throw new ArgumentException("Invalid feedback status.", nameof(status));
             string query = "api/admin/feedback?offset=" + offset + "&limit=" + FeedbackResponseBudget.PageSize
                 + (category.HasValue ? "&category=" + category.Value : String.Empty)
-                + (status.HasValue ? "&status=" + status.Value : String.Empty);
+                + (status.HasValue ? "&status=" + status.Value : String.Empty)
+                + (machineId != null ? "&machineId=" + Uri.EscapeDataString(machineId) : String.Empty)
+                + (updatedOrder ? "&sort=updated" : String.Empty);
             FeedbackListResponse response = await SendAsync<FeedbackListResponse>(endpoint, token, HttpMethod.Get, query, null, cancellationToken).ConfigureAwait(false);
             if (response == null || response.Feedback == null || response.Feedback.Count > FeedbackResponseBudget.PageSize
                 || response.TotalCount < 0 || response.TotalCount < response.Feedback.Count)
@@ -130,6 +132,16 @@ namespace DeepSeekHarnessLauncher
             return result;
         }
 
+        internal async Task AddReplyAsync(string endpoint, string token, string id, string body, CancellationToken cancellationToken)
+        {
+            if (!Guid.TryParse(id, out var feedbackId) || feedbackId == Guid.Empty)
+                throw new ArgumentException("A valid feedback ID is required.", nameof(id));
+            if (String.IsNullOrWhiteSpace(body) || body.Trim().Length > 12000)
+                throw new ArgumentException("回复正文需要 1-12000 个字符。", nameof(body));
+            await SendAsync<JsonElement>(endpoint, token, HttpMethod.Post,
+                "api/admin/feedback/" + feedbackId.ToString("D") + "/replies", new { body = body.Trim() }, cancellationToken).ConfigureAwait(false);
+        }
+
         private async Task<T> SendAsync<T>(string endpoint, string token, HttpMethod method, string path, object payload, CancellationToken cancellationToken)
         {
             if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var root) || root.Scheme != Uri.UriSchemeHttps
@@ -182,11 +194,19 @@ namespace DeepSeekHarnessLauncher
                 || (item.Status != "Submitted" && item.Status != "Processing" && item.Status != "Completed" && item.Status != "Deferred")
                 || item.LauncherVersion == null || item.LauncherVersion.Length > 64
                 || item.Reply != null && item.Reply.Length > 12000 || item.Supplements == null || item.Supplements.Count > 200
-                || item.SupplementCount < 0 || item.NextSupplementOffset < 0
+                || item.SupplementCount < 0 || item.NextSupplementOffset < 0 || item.UpvoteCount < 0
                 || item.Supplements.Any(s => s == null || !Guid.TryParse(s.Id, out _) || String.IsNullOrWhiteSpace(s.Body) || s.Body.Length > 12000))
                 throw new InvalidDataException("开发者反馈包含无效项目。");
             FeedbackImageSupport.ValidateImages(item.Images);
             foreach (var supplement in item.Supplements) FeedbackImageSupport.ValidateImages(supplement.Images);
+            if (item.LatestDeveloperReply != null)
+            {
+                var reply = item.LatestDeveloperReply;
+                if (!reply.IsDeveloperReply || !Guid.TryParse(reply.Id, out var replyId) || replyId == Guid.Empty
+                    || String.IsNullOrWhiteSpace(reply.Body) || reply.Body.Length > 12000)
+                    throw new InvalidDataException("最新开发者回复无效。");
+                FeedbackImageSupport.ValidateImages(reply.Images);
+            }
         }
 
         public void Dispose() { if (_ownsHttp) _http.Dispose(); }

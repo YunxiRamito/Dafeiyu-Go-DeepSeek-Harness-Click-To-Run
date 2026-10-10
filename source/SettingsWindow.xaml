@@ -4357,7 +4357,7 @@
                             </Grid>
                             <Grid ColumnSpacing="10">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                <TextBlock x:Name="FeedbackCountText" Text="每页 20 条" Style="{StaticResource SettingsRowDescriptionTextStyle}" VerticalAlignment="Center" />
+                                <TextBlock x:Name="FeedbackCountText" Text="每页 10 条" Style="{StaticResource SettingsRowDescriptionTextStyle}" VerticalAlignment="Center" />
                                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
                                     <Button x:Name="FeedbackPreviousPageButton" Content="上一页" Click="FeedbackPreviousPage_Click" IsEnabled="False" Style="{StaticResource SettingsCompactButtonStyle}" />
                                     <TextBlock x:Name="FeedbackPageText" Text="第 1 页" VerticalAlignment="Center" FontSize="12" />
@@ -4781,7 +4781,7 @@
                                     </Grid>
                                     <Grid ColumnSpacing="10">
                                         <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                        <TextBlock x:Name="DeveloperFeedbackCountText" Text="每页 20 条" Style="{StaticResource SettingsRowDescriptionTextStyle}" VerticalAlignment="Center" />
+                                        <TextBlock x:Name="DeveloperFeedbackCountText" Text="每页 10 条" Style="{StaticResource SettingsRowDescriptionTextStyle}" VerticalAlignment="Center" />
                                         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
                                             <Button x:Name="DeveloperFeedbackPreviousPageButton" Content="上一页" Click="DeveloperFeedbackPreviousPage_Click" IsEnabled="False" Style="{StaticResource SettingsCompactButtonStyle}" />
                                             <TextBlock x:Name="DeveloperFeedbackPageText" Text="第 1 页" VerticalAlignment="Center" FontSize="12" />

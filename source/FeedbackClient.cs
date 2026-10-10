@@ -38,7 +38,7 @@ namespace DeepSeekHarnessLauncher
             => (await ListPageAsync(cancellationToken, mine).ConfigureAwait(false)).Feedback;
 
         internal async Task<FeedbackListResponse> ListPageAsync(CancellationToken cancellationToken, bool mine = false, int offset = 0,
-            FeedbackCategory? category = null, FeedbackStatus? status = null)
+            FeedbackCategory? category = null, FeedbackStatus? status = null, bool updatedOrder = false)
         {
             if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
             if (category.HasValue && !Enum.IsDefined(typeof(FeedbackCategory), category.Value)) throw new ArgumentException("Invalid feedback category.", nameof(category));
@@ -49,7 +49,8 @@ namespace DeepSeekHarnessLauncher
             string query = "api/feedback?machineId=" + Uri.EscapeDataString(machineId)
                 + (mine ? "&mine=true" : String.Empty) + "&offset=" + offset + "&limit=" + FeedbackResponseBudget.PageSize
                 + (category.HasValue ? "&category=" + category.Value : String.Empty)
-                + (status.HasValue ? "&status=" + status.Value : String.Empty);
+                + (status.HasValue ? "&status=" + status.Value : String.Empty)
+                + (updatedOrder ? "&sort=updated" : String.Empty);
             var uri = new Uri(root, query);
             FeedbackListResponse response = await SendAsync<FeedbackListResponse>(HttpMethod.Get, uri, null, cancellationToken).ConfigureAwait(false);
             ValidateList(response);
@@ -134,6 +135,26 @@ namespace DeepSeekHarnessLauncher
             };
             return SendAsync<FeedbackModel>(HttpMethod.Post,
                 Endpoint("api/feedback/" + id.ToString("D") + "/supplements"), payload, cancellationToken, false);
+        }
+
+        internal Task<FeedbackUpvoteResponse> UpvoteAsync(string feedbackId, CancellationToken cancellationToken)
+            => SetUpvoteAsync(feedbackId, true, cancellationToken);
+
+        internal Task<FeedbackUpvoteResponse> CancelUpvoteAsync(string feedbackId, CancellationToken cancellationToken)
+            => SetUpvoteAsync(feedbackId, false, cancellationToken);
+
+        private async Task<FeedbackUpvoteResponse> SetUpvoteAsync(string feedbackId, bool upvote, CancellationToken cancellationToken)
+        {
+            if (!Guid.TryParse(feedbackId, out var id) || id == Guid.Empty)
+                throw new ArgumentException("Invalid feedback ID.", nameof(feedbackId));
+            string machineId = _store.GetMachineId();
+            string path = "api/feedback/" + id.ToString("D") + "/upvotes";
+            var response = await SendAsync<FeedbackUpvoteResponse>(upvote ? HttpMethod.Post : HttpMethod.Delete,
+                Endpoint(upvote ? path : path + "?machineId=" + Uri.EscapeDataString(machineId)),
+                upvote ? new { machineId } : null, cancellationToken).ConfigureAwait(false);
+            if (response.UpvoteCount < 0 || response.HasUpvoted != upvote || (response.HasUpvoted && response.UpvoteCount == 0))
+                throw new InvalidDataException("反馈 +1 响应无效。");
+            return response;
         }
 
         private static HttpContent CreateMultipart(Dictionary<string, string> fields, IReadOnlyList<FeedbackUploadImage> images, byte[] diagnostics)
@@ -263,9 +284,18 @@ namespace DeepSeekHarnessLauncher
 
         private static void ValidateModelImages(FeedbackModel item)
         {
+            if (item.UpvoteCount < 0) throw new InvalidDataException("反馈 +1 人数无效。");
             FeedbackImageSupport.ValidateImages(item.Images);
             if (item.Supplements == null) throw new InvalidDataException("反馈补充清单无效。");
             foreach (var supplement in item.Supplements) FeedbackImageSupport.ValidateImages(supplement.Images);
+            if (item.LatestDeveloperReply != null)
+            {
+                var reply = item.LatestDeveloperReply;
+                if (!reply.IsDeveloperReply || !Guid.TryParse(reply.Id, out var replyId) || replyId == Guid.Empty
+                    || String.IsNullOrWhiteSpace(reply.Body) || reply.Body.Length > 12000)
+                    throw new InvalidDataException("最新开发者回复无效。");
+                FeedbackImageSupport.ValidateImages(reply.Images);
+            }
         }
 
         private static void ValidateBody(string body)

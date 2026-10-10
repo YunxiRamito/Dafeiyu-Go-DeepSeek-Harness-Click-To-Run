@@ -43,7 +43,7 @@ namespace DeepSeekHarnessLauncher
     {
         public const string Title = "Dafeiyu-Go";
         public const string EnglishTitle = "Dafeiyu-Go";
-        public const string Version = "1.7.4";
+        public const string Version = "1.7.5";
         public const string Repository = "YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run";
         public const string LegacyRepository = "YunxiRamito/DSH-Launcher";
         public const string UserAgent = "Dafeiyu-Go/" + Version;
@@ -4330,12 +4330,15 @@ namespace DeepSeekHarnessLauncher
                         int? offset = 0;
                         do
                         {
-                            FeedbackListResponse page = await _feedbackReplyClient.ListPageAsync(token, true, offset.Value).ConfigureAwait(false);
+                            FeedbackListResponse page = await _feedbackReplyClient.ListPageAsync(token, true, offset.Value, updatedOrder: true).ConfigureAwait(false);
                             foreach (FeedbackModel item in page.Feedback)
                             {
-                                if (token.IsCancellationRequested || !item.Mine || String.IsNullOrWhiteSpace(item.Reply)
-                                    || !_noticeStore.TryMarkFeedbackReplySeen(item.Id, item.Reply, item.UpdatedAt)) continue;
-                                ClientNoticeMessage message = BuildFeedbackReplyNotice(item);
+                                FeedbackSupplementModel latest = item.LatestDeveloperReply;
+                                string reply = latest?.Body ?? item.Reply;
+                                DateTimeOffset repliedAt = latest?.CreatedAt ?? item.UpdatedAt;
+                                if (token.IsCancellationRequested || !item.Mine || String.IsNullOrWhiteSpace(reply)
+                                    || !_noticeStore.TryMarkFeedbackReplySeen(item.Id, reply, repliedAt, latest?.Id)) continue;
+                                ClientNoticeMessage message = BuildFeedbackReplyNotice(item, reply, repliedAt, latest?.Id);
                                 InvokeOnUi(() => ShowClientNotice(message));
                             }
                             offset = page.NextOffset;
@@ -4391,7 +4394,7 @@ namespace DeepSeekHarnessLauncher
                     int? offset = 0;
                     do
                     {
-                        var page = await client.ListPageAsync("https://202.189.21.218:8787", adminToken, token, offset.Value).ConfigureAwait(false);
+                        var page = await client.ListPageAsync("https://202.189.21.218:8787", adminToken, token, offset.Value, updatedOrder: true).ConfigureAwait(false);
                         token.ThrowIfCancellationRequested();
                         DeveloperFeedbackNotificationPage observed = tracker.ObservePage(page.Feedback);
                         IReadOnlyList<FeedbackModel> added = observed.NewItems;
@@ -4432,10 +4435,10 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        private static ClientNoticeMessage BuildFeedbackReplyNotice(FeedbackModel item)
+        private static ClientNoticeMessage BuildFeedbackReplyNotice(FeedbackModel item, string reply, DateTimeOffset repliedAt, string replyId)
         {
-            string reply = item.Reply.Trim();
-            string fingerprint = ClientNoticeStore.FeedbackReplyFingerprint(reply, item.UpdatedAt);
+            reply = reply.Trim();
+            string fingerprint = ClientNoticeStore.FeedbackReplyFingerprint(reply, repliedAt, replyId);
             string detail = reply.Length > 180 ? reply.Substring(0, 180) + "…" : reply;
             return new ClientNoticeMessage
             {
@@ -4444,7 +4447,7 @@ namespace DeepSeekHarnessLauncher
                 IsFeedbackReply = true,
                 Title = "反馈有新回复",
                 Markdown = detail,
-                PublishedAt = item.UpdatedAt == default ? DateTimeOffset.UtcNow : item.UpdatedAt,
+                PublishedAt = repliedAt == default ? DateTimeOffset.UtcNow : repliedAt,
                 ExpiresAt = DateTimeOffset.UtcNow.AddDays(7),
                 Buttons = new List<ClientNoticeButton>
                 {
@@ -5009,6 +5012,21 @@ namespace DeepSeekHarnessLauncher
             // 首次拉起服务：右下角信息窗口跟着走完 启动中 -> 已启动 / 启动失败。
             ShowServiceWindow(false, "正在解析 DSH 目录与端口");
 
+            string portFailureMessage;
+            try
+            {
+                if (!TryPrepareServicePort(true, out portFailureMessage))
+                {
+                    FailStartup(portFailureMessage, false);
+                    return;
+                }
+            }
+            catch (Exception exception)
+            {
+                FailStartup(DescribeDshStartupCause(exception), false);
+                return;
+            }
+
             if (IsServiceReady())
             {
                 WriteLog("服务已经在跑,直接接管,不再新建 node 进程。");
@@ -5019,7 +5037,7 @@ namespace DeepSeekHarnessLauncher
 
             // 端口被占但 HTTP 还没响应:多半是上一次的 DSH 正在启动或正忙。
             // 这时候再起一个 node 只会撞端口,等一会儿再看。
-            if (IsServicePortListening(_port))
+            if (DshPortResolver.LooksLikeDsh(_port))
             {
                 WriteLog("端口 " + _port + " 已被占用,等现有服务响应,不新建进程。");
                 UpdateServiceWindow("等待服务就绪（" + Program.BuildServiceUrl(_port) + "）");
@@ -5038,9 +5056,10 @@ namespace DeepSeekHarnessLauncher
             try
             {
                 UpdateServiceWindow("正在拉起 DSH 服务进程");
-                if (!StartService())
+                string startFailureMessage;
+                if (!StartService(out startFailureMessage))
                 {
-                    FailStartup("无法创建 DSH 服务进程。");
+                    FailStartup(startFailureMessage ?? "无法创建 DSH 服务进程。", startFailureMessage == null);
                     return;
                 }
 
@@ -5118,8 +5137,60 @@ namespace DeepSeekHarnessLauncher
             return false;
         }
 
-        private bool StartService()
+        private bool TryPrepareServicePort(bool allowExistingDsh, out string failureMessage)
         {
+            failureMessage = null;
+            if (!IsServicePortListening(_port))
+            {
+                return true;
+            }
+
+            bool randomMode = String.Equals(_settings.PortMode, "Random", StringComparison.OrdinalIgnoreCase);
+            bool occupiedByDsh = false;
+            if (allowExistingDsh || !randomMode)
+            {
+                occupiedByDsh = DshPortResolver.LooksLikeDsh(_port);
+                if (allowExistingDsh && occupiedByDsh) return true;
+            }
+
+            if (randomMode)
+            {
+                int occupiedPort = _port;
+                _port = DshPortResolver.ResolveConfiguredPort(_settings, ref _randomPort);
+                Program.ServicePort = _port;
+                _serviceUrl = null;
+                WriteLog("随机端口 " + occupiedPort.ToString() + " 已被占用，改选空闲端口 " + _port.ToString() + "。");
+                return true;
+            }
+
+            if (occupiedByDsh)
+            {
+                failureMessage = "端口 " + _port.ToString()
+                    + " 上的 DSH 服务仍在运行，已取消启动新进程。请先停止该服务，再重试。";
+                WriteLog(failureMessage);
+                return false;
+            }
+
+            failureMessage = "本机端口 " + _port.ToString()
+                + " 已被其他程序占用，或无法确认占用者是 DSH。已取消启动 DSH，不会使用该端口。"
+                + "\r\n\r\n请在设置中更换服务端口，或选择随机端口模式，然后重试。";
+            WriteLog(failureMessage);
+            string promptMessage = failureMessage;
+            InvokeOnUi(delegate()
+            {
+                WinFormsDialogResult result = WinFormsMessageBox.Show(
+                    promptMessage + "\r\n\r\n是否打开设置更换端口？",
+                    Constants.Title,
+                    WinFormsMessageBoxButtons.YesNo,
+                    WinFormsMessageBoxIcon.Warning);
+                if (result == WinFormsDialogResult.Yes) ShowSettings("General");
+            });
+            return false;
+        }
+
+        private bool StartService(out string failureMessage)
+        {
+            failureMessage = null;
             lock (_serviceStartupOutputLock) _serviceStartupOutput.Clear();
             _serviceOutputThread = null;
             _serviceErrorThread = null;
@@ -5135,6 +5206,8 @@ namespace DeepSeekHarnessLauncher
             {
                 throw new FileNotFoundException("找不到 DSH 入口文件：" + _dshBin);
             }
+
+            if (!TryPrepareServicePort(false, out failureMessage)) return false;
 
             ProcessStartInfo startInfo = new ProcessStartInfo();
             startInfo.FileName = _nodePath;
@@ -5466,7 +5539,7 @@ namespace DeepSeekHarnessLauncher
             });
         }
 
-        private void FailStartup(string message)
+        private void FailStartup(string message, bool exitAfterFailure = true)
         {
             _startupInProgress = false;
             _pendingUpdateNotification = String.Empty;
@@ -5476,6 +5549,8 @@ namespace DeepSeekHarnessLauncher
             InvokeOnUi(delegate()
             {
                 SetTrayState(false, Constants.Title + " 启动失败");
+
+                if (!exitAfterFailure) return;
 
                 DispatcherQueueTimer exitTimer = _dispatcherQueue.CreateTimer();
                 exitTimer.Interval = TimeSpan.FromSeconds(10);
@@ -5616,9 +5691,10 @@ namespace DeepSeekHarnessLauncher
                     UpdateWindow("正在更换 DSH 版本", startDetail, -1);
                 else
                     UpdateServiceWindow(startDetail);
-                if (!StartService())
+                string startFailureMessage;
+                if (!StartService(out startFailureMessage))
                 {
-                    FailRestart("无法重新创建 DSH 服务进程。");
+                    FailRestart(startFailureMessage ?? "无法重新创建 DSH 服务进程。");
                     return;
                 }
 
@@ -5716,7 +5792,7 @@ namespace DeepSeekHarnessLauncher
 
             if (processId <= 0)
             {
-                processId = FindPortProcessId();
+                processId = FindDshListenerProcessId();
             }
 
             if (processId <= 0)
@@ -5760,64 +5836,9 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        private int FindPortProcessId()
+        private int FindDshListenerProcessId()
         {
-            try
-            {
-                string netstat = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.System),
-                    "netstat.exe");
-
-                ProcessStartInfo startInfo = new ProcessStartInfo();
-                startInfo.FileName = netstat;
-                startInfo.Arguments = "-ano -p tcp";
-                startInfo.UseShellExecute = false;
-                startInfo.CreateNoWindow = true;
-                startInfo.RedirectStandardOutput = true;
-
-                using (Process process = Process.Start(startInfo))
-                {
-                    if (process == null)
-                    {
-                        return 0;
-                    }
-
-                    string output = process.StandardOutput.ReadToEnd();
-                    process.WaitForExit(5000);
-
-                    string[] lines = output.Split(
-                        new string[] { Environment.NewLine, "\n" },
-                        StringSplitOptions.RemoveEmptyEntries);
-                    for (int index = 0; index < lines.Length; index++)
-                    {
-                        string line = lines[index].Trim();
-                        string[] parts = line.Split(
-                            new char[] { ' ', '\t' },
-                            StringSplitOptions.RemoveEmptyEntries);
-                        if (parts.Length < 5)
-                        {
-                            continue;
-                        }
-
-                        string localEndpoint = parts[1];
-                        string state = parts[3];
-                        if (localEndpoint.EndsWith(":" + _port.ToString(), StringComparison.OrdinalIgnoreCase)
-                            && state.Equals("LISTENING", StringComparison.OrdinalIgnoreCase))
-                        {
-                            int processId;
-                            if (Int32.TryParse(parts[4], out processId))
-                            {
-                                return processId;
-                            }
-                        }
-                    }
-                }
-            }
-            catch
-            {
-            }
-
-            return 0;
+            return DshPortResolver.FindDshListenerProcessId(_port);
         }
 
         private void WaitForPortToClose(int timeoutMilliseconds)
@@ -5836,6 +5857,8 @@ namespace DeepSeekHarnessLauncher
 
         private bool IsServiceReady()
         {
+            if (!DshPortResolver.LooksLikeDsh(_port)) return false;
+
             try
             {
                 HttpWebRequest request = (HttpWebRequest)WebRequest.Create(Program.BuildServiceUrl(_port));

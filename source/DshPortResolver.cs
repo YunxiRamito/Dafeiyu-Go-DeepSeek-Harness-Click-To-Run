@@ -13,8 +13,8 @@ namespace DeepSeekHarnessLauncher
     ///
     /// 以前端口写死 8787,但别人的 DSH 可能是别的端口(手动启动时带了 --port,
     /// 或者装了多个实例)。这里的顺序:
-    ///   1. 问正在跑的 dsh 进程(读它命令行里的 --port)
-    ///   2. 试几个常见端口,能连上 DSH 就算
+    ///   1. 检查监听进程的命令行,确认 DSH 包身份并读取端口
+    ///   2. 试几个常见端口,只接受 DSH 包进程占用的端口
     ///   3. 都没有:先问安装器写下的配置,再自己挑一个空闲端口
     /// </summary>
     internal static class DshPortResolver
@@ -22,7 +22,7 @@ namespace DeepSeekHarnessLauncher
         /// <summary>“默认端口”选项使用的端口。</summary>
         public const int DefaultPort = 3080;
 
-        private static readonly int[] CommonPorts = new int[] { 8787, 8788, 8080, 3000, 5173, 9000 };
+        private static readonly int[] CommonPorts = new int[] { 8787, 8788, 5173, 9000 };
 
         private const string StateFileName = "launcher-path.txt";
         private const string ConfigFileName = "launcher.json";
@@ -42,7 +42,7 @@ namespace DeepSeekHarnessLauncher
             found = false;
             settingDeferred = false;
 
-            // 1) 运行中的 dsh 进程,命令行里的 --port
+            // 1) 运行中的 DSH 包进程,命令行里的 --port
             int fromProcess = ReadPortFromRunningDsh();
             if (fromProcess > 0)
             {
@@ -102,8 +102,12 @@ namespace DeepSeekHarnessLauncher
             int fromConfig = ReadConfiguredPort();
             if (fromConfig > 0)
             {
-                LauncherLog("来源=launcher.json -> " + fromConfig);
-                return fromConfig;
+                int selected = SelectAvailablePort(
+                    fromConfig,
+                    IsPortListening,
+                    FindFreePort);
+                LauncherLog("来源=launcher.json -> " + selected);
+                return selected;
             }
 
             // 6) 都没有:挑一个空闲端口
@@ -112,7 +116,56 @@ namespace DeepSeekHarnessLauncher
             return free;
         }
 
-        private static int ResolveConfiguredPort(
+        internal static int ResolveConfiguredPort(
+            LauncherSettings settings,
+            ref int randomPort)
+        {
+            int requestedPort = GetRequestedConfiguredPort(settings, ref randomPort);
+            if (!String.Equals(
+                settings.PortMode,
+                "Random",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                return requestedPort;
+            }
+
+            randomPort = SelectAvailablePort(
+                requestedPort,
+                IsPortListening,
+                FindFreePort);
+            return randomPort;
+        }
+
+        internal static int SelectAvailablePort(
+            int configuredPort,
+            Func<int, bool> isPortBusy,
+            Func<int> findFreePort)
+        {
+            if (isPortBusy == null)
+            {
+                throw new ArgumentNullException("isPortBusy");
+            }
+
+            if (findFreePort == null)
+            {
+                throw new ArgumentNullException("findFreePort");
+            }
+
+            int candidate = configuredPort;
+            for (int attempt = 0; attempt < 16; attempt++)
+            {
+                if (candidate >= 1024 && candidate <= 65535 && !isPortBusy(candidate))
+                {
+                    return candidate;
+                }
+
+                candidate = findFreePort();
+            }
+
+            throw new InvalidOperationException("无法找到可用的本机端口，请稍后重试或在设置中更换服务端口。");
+        }
+
+        private static int GetRequestedConfiguredPort(
             LauncherSettings settings,
             ref int randomPort)
         {
@@ -156,7 +209,7 @@ namespace DeepSeekHarnessLauncher
             }
 
             int ignoredRandomPort = 0;
-            return ResolveConfiguredPort(
+            return GetRequestedConfiguredPort(
                 settings,
                 ref ignoredRandomPort) != actualPort;
         }
@@ -309,14 +362,14 @@ namespace DeepSeekHarnessLauncher
             return list.ToArray();
         }
 
-        /// <summary>读 node 进程命令行里的 --port。</summary>
+        /// <summary>读取 DSH 包进程命令行里的 --port。</summary>
         private static int ReadPortFromRunningDsh()
         {
             try
             {
                 string output = PowerShellRunner.Run(
                     "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | " +
-                    "ForEach-Object { $_.CommandLine }",
+                    "ForEach-Object { \"{0}`t{1}\" -f $_.ProcessId, $_.CommandLine }",
                     10000);
 
                 if (string.IsNullOrEmpty(output))
@@ -328,13 +381,17 @@ namespace DeepSeekHarnessLauncher
                 for (int index = 0; index < lines.Length; index++)
                 {
                     string line = lines[index];
-                    if (line.IndexOf("dsh", StringComparison.OrdinalIgnoreCase) < 0)
+                    int separatorIndex = line.IndexOf('\t');
+                    if (separatorIndex < 0
+                        || !IsDshProcessCommandLine(line.Substring(separatorIndex + 1)))
                     {
                         continue;
                     }
 
-                    int port = ExtractPort(line);
-                    if (port > 0)
+                    int port = ExtractPort(line.Substring(separatorIndex + 1));
+                    if (port > 0
+                        && (!IsPortListening(port)
+                            || FindDshListenerProcessId(port) > 0))
                     {
                         return port;
                     }
@@ -373,38 +430,97 @@ namespace DeepSeekHarnessLauncher
             return -1;
         }
 
-        /// <summary>这个端口上是不是 DSH(任何 HTTP 响应都算,包括 401)。</summary>
+        /// <summary>这个端口的监听进程是否属于 DSH 包。</summary>
         internal static bool LooksLikeDsh(int port)
         {
+            return FindDshListenerProcessId(port) > 0;
+        }
+
+        internal static int FindDshListenerProcessId(int port)
+        {
+            if (port <= 0 || port > 65535 || !IsPortListening(port))
+            {
+                return 0;
+            }
+
             try
             {
-                HttpWebRequest request = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + port + "/");
-                request.Method = "GET";
-                request.Timeout = 700;
-                request.ReadWriteTimeout = 700;
-                request.AllowAutoRedirect = true;
-                request.Proxy = null;
+                string output = PowerShellRunner.Run(
+                    "try { $listeners = @(Get-NetTCPConnection -State Listen -LocalPort "
+                    + port.ToString()
+                    + " -ErrorAction Stop); "
+                    + "foreach ($listener in $listeners) { $owner = [int]$listener.OwningProcess; "
+                    + "try { $process = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $owner) -ErrorAction Stop; "
+                    + "if ($null -eq $process -or [string]::IsNullOrWhiteSpace($process.CommandLine)) { 'ERROR' } "
+                    + "else { \"OK`t{0}`t{1}\" -f $owner, $process.CommandLine } "
+                    + "} catch { 'ERROR' } } } catch { 'ERROR' }",
+                    10000);
 
-                using (WebResponse response = request.GetResponse())
+                if (String.IsNullOrWhiteSpace(output))
                 {
-                    return response != null;
-                }
-            }
-            catch (WebException exception)
-            {
-                // 有 HTTP 响应就说明端口上是个能说话的服务(DSH 未带 token 会回 401)
-                if (exception.Response != null)
-                {
-                    exception.Response.Close();
-                    return true;
+                    return 0;
                 }
 
-                return false;
+                int dshProcessId = 0;
+                bool uncertain = false;
+                string[] lines = output.Replace("\r\n", "\n").Split('\n');
+                for (int index = 0; index < lines.Length; index++)
+                {
+                    string line = lines[index];
+                    if (String.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+
+                    if (!line.StartsWith("OK\t", StringComparison.Ordinal))
+                    {
+                        uncertain = true;
+                        continue;
+                    }
+
+                    int separatorIndex = line.IndexOf('\t', 3);
+                    int processId;
+                    if (separatorIndex < 0
+                        || !int.TryParse(line.Substring(3, separatorIndex - 3), out processId)
+                        || processId <= 0)
+                    {
+                        uncertain = true;
+                        continue;
+                    }
+
+                    string commandLine = line.Substring(separatorIndex + 1);
+                    if (String.IsNullOrWhiteSpace(commandLine))
+                    {
+                        uncertain = true;
+                        continue;
+                    }
+
+                    if (dshProcessId == 0 && IsDshProcessCommandLine(commandLine))
+                    {
+                        dshProcessId = processId;
+                    }
+                }
+
+                return uncertain ? 0 : dshProcessId;
             }
             catch
             {
+                return 0;
+            }
+        }
+
+        internal static bool IsDshProcessCommandLine(string commandLine)
+        {
+            if (String.IsNullOrWhiteSpace(commandLine))
+            {
                 return false;
             }
+
+            string normalized = Regex.Replace(commandLine.Replace('\\', '/'), "/+", "/");
+            return Regex.IsMatch(
+                normalized,
+                @"(?:^|/)node_modules/@deepseek-ai/dsh(?:-host-webserver)?(?=$|/)|(?:^|/)\.pnpm/@deepseek-ai\+dsh(?:-host-webserver)?@[^/\s""']+/",
+                RegexOptions.IgnoreCase);
         }
 
         /// <summary>端口有没有人在听。</summary>
@@ -423,31 +539,28 @@ namespace DeepSeekHarnessLauncher
             }
             catch
             {
-                return false;
+                return true;
             }
         }
 
         /// <summary>挑一个空闲端口。</summary>
         private static int FindFreePort()
         {
+            TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
             try
             {
-                TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
                 listener.Start();
                 int port = ((IPEndPoint)listener.LocalEndpoint).Port;
-                listener.Stop();
-
-                // 避开受限端口段,免得看着奇怪
                 if (port < 1024)
                 {
-                    return DefaultPort;
+                    throw new InvalidOperationException("系统未分配可用的非特权端口。");
                 }
 
                 return port;
             }
-            catch
+            finally
             {
-                return DefaultPort;
+                listener.Stop();
             }
         }
 
