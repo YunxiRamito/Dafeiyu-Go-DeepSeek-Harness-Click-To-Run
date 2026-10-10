@@ -1,5 +1,14 @@
 # 交接：大肥鱼Go / Dafeiyu-Go Launcher
 
+## 2026-10-10 12:40 v1.7.3 已发布（本节优先）
+
+- Release：`https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/tag/v1.7.3`（id `408645592`，tag v1.7.3 → `b150b95`）。
+- 资产：`DeepSeekHarness-1.7.3.zip`（用户提供的 `Dafeiyu-Go-Launcher-1.7.3.zip`，按仓库既有 `DeepSeekHarness-<版本>.zip` 约定改名上传），23,969,701 字节，SHA-256 `BA9440FE10EE480C7D1861D35F2E8195ABB6CA2617D53D68F98A1D8814E7ED1C`。
+- `manifest.json` / `manifest-1.7.3.json` 已指向该哈希（提交 `a9ccc62`）；npm `@yunxiramito/dsh-launcher@1.7.3` 已发布。
+- 更新日志 1.7.3 已替换为用户给的合并文案并标「已发布」。
+- `.gitignore` 补了 `.build-temp/`：里面 `VBCSCompiler` 的超长路径会让 `git add -A` 直接以 128 失败。
+- tag CI run `38024487712` 已取消，避免 CI 自建 ZIP 覆盖 Release 资产、与 manifest 哈希不一致。
+
 ## 2026-10-10 主页通知按钮补修（优先于下方）
 
 上一轮将主页通知按钮禁用为预览，用户要求实际可用，已启用并接 `SettingsWindowHost.ExecuteNotificationAction`，真实主进程共用右下角通知的链接/设置/PowerShell 动作。主页仅浏览不确认，动作成功后记录 click/read，PowerShell 拒绝或失败不确认。真实 UIA 四类按钮派发 10 项通过，测试仅拦截执行边界。补修包 `../Temp_SetupandLauncher/IntegrationAcceptance-20261010/Dafeiyu-Go-Launcher-1.7.3-home-buttons-20261010.zip`；入口 `../Temp_SetupandLauncher/BootAnimation-20261010/Launcher-HomeButtons-20261010/DeepSeek Harness.exe`；23,969,701 字节，SHA-256 `BA9440FE10EE480C7D1861D35F2E8195ABB6CA2617D53D68F98A1D8814E7ED1C`。构建/verify/197 输入/121 ZIP 文件校验通过。此包替代上一轮 accepted 包。
