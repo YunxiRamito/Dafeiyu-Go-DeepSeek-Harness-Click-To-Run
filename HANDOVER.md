@@ -1,5 +1,14 @@
 # 交接：大肥鱼Go / Dafeiyu-Go Launcher
 
+## 2026-10-10 16:50 v1.7.4 已发布（本节优先）
+
+- Release：`https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/tag/v1.7.4`（id `408817960`，tag v1.7.4 → `caf7070`）。
+- 资产：`DeepSeekHarness-1.7.4.zip`，23,972,592 字节，SHA-256 `7C30E42A28B6E12FE7B43037837813516C92E52D7227226C3E460AB2ACD2643A`（本机 `release.ps1 -NoManifest` 从当前源码构建，`verify.ps1` 通过，121 个产物文件、版本均 `1.7.4.0`）。
+- `manifest.json` / `manifest-1.7.4.json` 已指向该哈希（提交 `95346af`）；npm `@yunxiramito/dsh-launcher@1.7.4` 已发布。
+- 更新日志已替换为用户当轮给的短文案并标「已发布」（原来那份详细草稿作废）。
+- 本轮只发启动器：安装器 Release 与网页预览都没动。
+- tag CI run `38039125249` 已取消，避免覆盖 Release 资产。
+
 ## 2026-10-10 本地修复版 1.7.4
 
 用户要求本次 DWM 修复版改为 1.7.4，已同步程序显示版本、核心/引导/信息窗口版本及三份清单，重编译和 verify 通过。新包 `../Temp_SetupandLauncher/IntegrationAcceptance-20261010/Dafeiyu-Go-Launcher-1.7.4.zip`，23,972,337 字节，SHA256 `8934FEC20E083C0FF46D151A520000B023E6B25D8E6E0FC5E0C7C540115AECCD`；引导与核心 FileVersion 1.7.4.0，198 输入/121 ZIP 文件校验一致。与已验收 DWM 快照仅七个版本信息文件不同，四轮测量沿用下方记录，未再次测量。安装器独立版本不变，未发布、未推送、未更新线上清单。
