@@ -32,6 +32,22 @@ namespace DeepSeekHarnessLauncher
         private ProgressBar _backupOperationProgress;
         private InfoBar _backupOperationResult;
 
+        private Action<string, double> BackupProgress(Action<string, double> update)
+        {
+            var gate = new object();
+            long lastUpdate = Environment.TickCount64 - 100;
+            return (text, percent) =>
+            {
+                lock (gate)
+                {
+                    long now = Environment.TickCount64;
+                    if (percent < 100 && now - lastUpdate < 100) return;
+                    lastUpdate = now;
+                    DispatcherQueue.TryEnqueue(() => update(text, percent));
+                }
+            };
+        }
+
         private async void DshDataFindButton_Click(object sender, RoutedEventArgs args) => await FindDshDataAsync(false);
         private async void DshDataFindDrivesButton_Click(object sender, RoutedEventArgs args) => await FindDshDataAsync(true);
         private void DshDataFindCancelButton_Click(object sender, RoutedEventArgs args) => _dshDataFindCancellation?.Cancel();
@@ -198,6 +214,8 @@ namespace DeepSeekHarnessLauncher
             await PickDshDataExportFolderAsync();
             if (_settingsClosed || String.IsNullOrWhiteSpace(_dshDataExportDirectory)) return;
             SetDshDataBusy(true);
+            DshDataExportPanel.Visibility = Visibility.Visible;
+            DshDataExportProgress.IsIndeterminate = true;
             DshDataExportDetailText.Text = "正在读取可导出的数据…";
             using var previewCancellation = new CancellationTokenSource();
             _dshDataPreviewCancellation = previewCancellation;
@@ -213,7 +231,12 @@ namespace DeepSeekHarnessLauncher
                     StringComparison.OrdinalIgnoreCase)
                     ? _settings.DshRoot
                     : null;
-                _dshDataExportPlan = await Task.Run(() => DshDataExportService.Preview(home, profile, previewCancellation.Token, legacyRoot));
+                _dshDataExportPlan = await Task.Run(() => DshDataExportService.Preview(home, profile, previewCancellation.Token, legacyRoot,
+                    (text, percent) => DispatcherQueue.TryEnqueue(() =>
+                    {
+                        if (!_settingsClosed && _dshDataPreviewCancellation == previewCancellation)
+                            DshDataExportDetailText.Text = text;
+                    })));
                 if (_settingsClosed) return;
                 foreach (var group in _dshDataExportPlan.Groups)
                 {
@@ -235,7 +258,16 @@ namespace DeepSeekHarnessLauncher
                 DshDataExportDetailText.Text = exception.Message;
                 ShowDshDataInfo(InfoBarSeverity.Error, "无法读取 DSH 数据：\n" + exception.Message);
             }
-            finally { _dshDataPreviewCancellation = null; SetDshDataBusy(false); }
+            finally
+            {
+                _dshDataPreviewCancellation = null;
+                if (!_settingsClosed)
+                {
+                    DshDataExportProgress.IsIndeterminate = false;
+                    DshDataExportPanel.Visibility = Visibility.Collapsed;
+                }
+                SetDshDataBusy(false);
+            }
             if (_dshDataExportPlan != null)
                 await ShowBackupOperationDialogAsync(DshDataExportPanel, "导出 DSH ZIP", "导出", ExportDshDataAsync);
             if (!_settingsClosed) DshDataExportPanel.Visibility = Visibility.Collapsed;
@@ -250,10 +282,9 @@ namespace DeepSeekHarnessLauncher
             SetDshDataBusy(true);
             try
             {
-                var picker = new Microsoft.Windows.Storage.Pickers.FolderPicker(_appWindow.Id);
-                var folder = await picker.PickSingleFolderAsync();
+                string folder = NativeFolderPicker.Pick(_windowHandle, "选择 DSH 数据文件夹");
                 if (_settingsClosed || folder == null) return;
-                await LoadDshDataSourceAsync(folder.Path);
+                await LoadDshDataSourceAsync(folder);
             }
             catch (Exception exception)
             {
@@ -307,6 +338,8 @@ namespace DeepSeekHarnessLauncher
         {
             if (_settingsClosed) return;
             ClearDshDataImportPlan();
+            DshDataImportPanel.Visibility = Visibility.Visible;
+            DshDataImportProgress.IsIndeterminate = true;
             DshDataInfoBar.IsOpen = false;
             DshDataImportDetailText.Text = "正在读取数据与同名项目…";
             string targetHome = DshPluginCliService.ResolveDshHome(_settings.DshRoot);
@@ -318,9 +351,21 @@ namespace DeepSeekHarnessLauncher
             try
             {
                 _dshDataImportPlan = await Task.Run(() => DshDataImportService.Preview(source, targetHome,
-                    sourceProfile, targetProfile, cancellation.Token));
+                    sourceProfile, targetProfile, cancellation.Token, progress: (text, percent) => DispatcherQueue.TryEnqueue(() =>
+                    {
+                        if (!_settingsClosed && _dshDataPreviewCancellation == cancellation)
+                            DshDataImportDetailText.Text = text;
+                    })));
             }
-            finally { _dshDataPreviewCancellation = null; }
+            finally
+            {
+                _dshDataPreviewCancellation = null;
+                if (!_settingsClosed)
+                {
+                    DshDataImportProgress.IsIndeterminate = false;
+                    DshDataImportPanel.Visibility = Visibility.Collapsed;
+                }
+            }
             if (_settingsClosed) return;
             DshDataImportTargetText.Text = "导入到：" + targetHome + "\n目标 Profile：" + targetProfile;
             foreach (var group in _dshDataImportPlan.Groups)
@@ -371,7 +416,9 @@ namespace DeepSeekHarnessLauncher
 
         private static string FormatDshDataWarnings(IList<string> warnings)
             => warnings == null || warnings.Count == 0 ? String.Empty
-                : "\n\n读取警告：\n• " + String.Join("\n• ", warnings);
+                : "\n\n读取警告（" + warnings.Distinct(StringComparer.Ordinal).Count() + " 项）：\n• "
+                    + String.Join("\n• ", warnings.Distinct(StringComparer.Ordinal).Take(6))
+                    + (warnings.Distinct(StringComparer.Ordinal).Count() > 6 ? "\n其余警告请查看启动器日志。" : String.Empty);
 
         private async void DshDataImportStartButton_Click(object sender, RoutedEventArgs args) => await ImportDshDataAsync(false);
 
@@ -419,7 +466,7 @@ namespace DeepSeekHarnessLauncher
                 DshDataImportProgress.Value = 0;
                 ReportBackupOperationProgress("正在准备导入 DSH 数据…", 0);
                 var result = await Task.Run(() => DshDataImportService.Import(plan, chosen,
-                    (text, percent) => DispatcherQueue.TryEnqueue(() =>
+                    BackupProgress((text, percent) =>
                     {
                         if (_settingsClosed || _dshDataCancellation != cancellation) return;
                         DshDataImportDetailText.Text = text;
@@ -455,27 +502,27 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        private async void DshDataExportFolderButton_Click(object sender, RoutedEventArgs args) => await PickDshDataExportFolderAsync();
+        private void DshDataExportFolderButton_Click(object sender, RoutedEventArgs args) => PickDshDataExportFolderAsync();
 
-        private async Task PickDshDataExportFolderAsync()
+        private Task PickDshDataExportFolderAsync()
         {
-            if (_backupBusy || _dshDataBusy) return;
+            if (_backupBusy || _dshDataBusy) return Task.CompletedTask;
             SetDshDataBusy(true);
             try
             {
-                var picker = new Microsoft.Windows.Storage.Pickers.FolderPicker(_appWindow.Id);
-                var folder = await picker.PickSingleFolderAsync();
-                if (_settingsClosed || folder == null) return;
-                _dshDataExportDirectory = folder.Path;
-                DshDataExportTargetBox.Text = folder.Path;
+                string folder = NativeFolderPicker.Pick(_windowHandle, "选择 DSH ZIP 输出文件夹");
+                if (_settingsClosed || folder == null) return Task.CompletedTask;
+                _dshDataExportDirectory = folder;
+                DshDataExportTargetBox.Text = folder;
             }
             catch (Exception exception)
             {
-                if (_settingsClosed) return;
+                if (_settingsClosed) return Task.CompletedTask;
                 DshDataExportDetailText.Text = exception.Message;
                 ShowDshDataInfo(InfoBarSeverity.Error, "无法选择输出文件夹：\n" + exception.Message);
             }
             finally { SetDshDataBusy(false); }
+            return Task.CompletedTask;
         }
 
         private async void DshDataExportStartButton_Click(object sender, RoutedEventArgs args) => await ExportDshDataAsync();
@@ -508,7 +555,7 @@ namespace DeepSeekHarnessLauncher
                 var plan = _dshDataExportPlan;
                 string directory = _dshDataExportDirectory;
                 var result = await Task.Run(() => DshDataExportService.Export(plan, chosen, directory,
-                    (text, percent) => DispatcherQueue.TryEnqueue(() =>
+                    BackupProgress((text, percent) =>
                     {
                         if (_settingsClosed || _dshDataCancellation != cancellation) return;
                         DshDataExportDetailText.Text = text;
@@ -625,7 +672,8 @@ namespace DeepSeekHarnessLauncher
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(status, "BackupOperationStatus");
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(progress, "BackupOperationProgress");
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(result, "BackupOperationResult");
-            var content = new StackPanel { Spacing = 10 };
+            var content = new StackPanel { Spacing = 10,
+                Width = Math.Max(240, Math.Min(520, SettingsRoot.ActualWidth - 100)) };
             content.Children.Add(status);
             content.Children.Add(progress);
             content.Children.Add(new ScrollViewer { Content = result, MaxHeight = 180, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
@@ -641,6 +689,7 @@ namespace DeepSeekHarnessLauncher
             _backupOperationProgress = progress;
             _backupOperationResult = result;
             _backupOperationFinished = false;
+            bool closeRequested = false;
             RefreshBackupOperationDialog();
             dialog.PrimaryButtonClick += async (sender, args) =>
             {
@@ -674,8 +723,10 @@ namespace DeepSeekHarnessLauncher
                                 ? command + "失败" : command + "已结束" : command + "已结束";
                         dialog.PrimaryButtonText = String.Empty;
                         dialog.CloseButtonText = "关闭";
-                        scroller.MaxHeight = 240;
-                        scroller.ChangeView(null, 0, null);
+                        scroller.Visibility = Visibility.Collapsed;
+                        if (result.Severity == InfoBarSeverity.Success || result.Severity == InfoBarSeverity.Warning)
+                            progress.Value = 100;
+                        if (closeRequested) dialog.Hide();
                     }
                 }
             };
@@ -683,12 +734,14 @@ namespace DeepSeekHarnessLauncher
             {
                 if (!_backupOperationExecuting) return;
                 args.Cancel = true;
+                closeRequested = true;
                 CancelBackupOperation();
             };
             dialog.Closing += (sender, args) =>
             {
                 if (!_backupOperationExecuting || _settingsClosed) return;
                 args.Cancel = true;
+                closeRequested = true;
                 CancelBackupOperation();
             };
             try { await dialog.ShowAsync(); }

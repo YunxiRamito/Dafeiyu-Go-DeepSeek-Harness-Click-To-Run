@@ -41,6 +41,22 @@ namespace DeepSeekHarnessLauncher
             /// </summary>
             public bool NeedsVersionExemption { get; set; }
 
+            /// <summary>官方插件安装被 pnpm 构建脚本策略拦截，供启动器弹出本地授权确认。</summary>
+            public List<string> PendingBuildScriptKeys { get; set; } = new List<string>();
+
+            public bool BuildScriptsBlocked { get; set; }
+
+            /// <summary>用户取消了安装或拒绝脚本授权。</summary>
+            public bool Cancelled { get; set; }
+
+            /// <summary>官方网络入口失败后，允许自动尝试一次启动器归档安装。</summary>
+            public bool LauncherFallbackAvailable { get; set; }
+            public string OfficialFailure { get; set; } = String.Empty;
+            public bool LauncherArchiveRequired { get; set; }
+            public string LauncherArchiveSourceSha { get; set; } = String.Empty;
+            public string LauncherArchiveDefaultBranch { get; set; } = String.Empty;
+            public string LauncherArchivePushedAt { get; set; } = String.Empty;
+
             /// <summary>需要豁免的包，形如 <c>@scope/name@1.2.3</c>；解析不到时为空。</summary>
             public string ExemptionPackageVersion { get; set; } = String.Empty;
 
@@ -124,43 +140,52 @@ namespace DeepSeekHarnessLauncher
             string archive = Path.Combine(
                 Path.GetTempPath(),
                 "DeepSeekHarnessUpdate",
-                "plugin-" + spec.FolderName + ".tar.gz");
+                "plugin-" + spec.FolderName + "-" + Guid.NewGuid().ToString("N") + ".tar.gz");
 
-            Report(progress, "准备下载…", 2);
-            string downloadError = DownloadSource(
-                settings,
-                spec,
-                defaultBranch,
-                archive,
-                delegate(DownloadProgressInfo info)
-                {
-                    if (detail != null)
-                    {
-                        detail(info);
-                    }
-
-                    // 拿不到总长度时（镜像/加速源常用 chunked）不能把 fraction 当 0——
-                    // 那样进度会永远停在 2%。改用「已下载量」做一条单调爬升的曲线，
-                    // 文案里带上实时速度和体积，用户能看出它在动。
-                    double fraction = info.TotalBytes > 0
-                        ? Math.Min(1.0, (double)info.BytesReceived / info.TotalBytes)
-                        : 1.0 - Math.Exp(-info.BytesReceived / (8.0 * 1024 * 1024));
-                    Report(
-                        progress,
-                        "下载中 · " + DownloadProgressInfo.Describe(info),
-                        2 + fraction * 68);
-                },
-                log);
-            if (downloadError != null)
+            string extractError;
+            try
             {
-                result.Error = downloadError;
-                return result;
+                Report(progress, "准备下载…", 2);
+                string downloadError = DownloadSource(
+                    settings,
+                    spec,
+                    defaultBranch,
+                    archive,
+                    delegate(DownloadProgressInfo info)
+                    {
+                        if (detail != null)
+                        {
+                            detail(info);
+                        }
+
+                        // 拿不到总长度时（镜像/加速源常用 chunked）不能把 fraction 当 0——
+                        // 那样进度会永远停在 2%。改用「已下载量」做一条单调爬升的曲线，
+                        // 文案里带上实时速度和体积，用户能看出它在动。
+                        double fraction = info.TotalBytes > 0
+                            ? Math.Min(1.0, (double)info.BytesReceived / info.TotalBytes)
+                            : 1.0 - Math.Exp(-info.BytesReceived / (8.0 * 1024 * 1024));
+                        Report(
+                            progress,
+                            "下载中 · " + DownloadProgressInfo.Describe(info),
+                            2 + fraction * 68);
+                    },
+                    log);
+                if (downloadError != null)
+                {
+                    result.Error = downloadError;
+                    return result;
+                }
+
+                Report(progress, "下载完成 · 正在安装", 70);
+                Report(progress, "安装中 · 正在解压", 74);
+                extractError = ExtractTarGz(archive, target);
+            }
+            finally
+            {
+                // 每个安装各用一个唯一临时包，并在成功、失败或取消时都清掉它。
+                TryDelete(archive);
             }
 
-            Report(progress, "下载完成 · 正在安装", 70);
-            Report(progress, "安装中 · 正在解压", 74);
-            string extractError = ExtractTarGz(archive, target);
-            TryDelete(archive);
             if (extractError != null)
             {
                 result.Error = extractError;
@@ -320,6 +345,145 @@ namespace DeepSeekHarnessLauncher
         }
 
         /// <summary>
+        /// 官方 dsh plugin 网络/网关失败后自动尝试的启动器归档安装。
+        /// 启动器下载并安全解压后，注册、兼容性、授权、回滚仍由官方本地入口处理。
+        /// </summary>
+        internal static InstallResult InstallFromLauncherArchive(
+            LauncherSettings settings,
+            string originalSpecifier,
+            string expectedKey,
+            string pushedAt,
+            string defaultBranch,
+            string sourceSha,
+            Action<string, double> progress,
+            Action<string> log,
+            Action<DownloadProgressInfo> detail = null,
+            bool acceptVersionRisk = false)
+        {
+            InstallResult result = null;
+            string taskSource = originalSpecifier ?? "plugin";
+            bool ok = DownloadTaskCenter.Run("插件归档 · " + taskSource, taskSource, control =>
+            {
+                result = InstallFromLauncherArchiveCore(settings, originalSpecifier, expectedKey,
+                    pushedAt, defaultBranch, sourceSha, progress, log, detail, acceptVersionRisk, control);
+                control.Checkpoint();
+                if (result != null && !result.Ok) throw new IOException(result.Error);
+                return result?.Ok == true;
+            }, out string error, allowPause: false, retryFilter: _ => false, returnAfterAutomaticRetries: true);
+            result ??= new InstallResult { Error = error };
+            result.Cancelled |= !ok && error == "下载已取消。";
+            if (result.Cancelled) { result.Ok = false; result.Error = "安装已取消。"; }
+            return result;
+        }
+
+        private static InstallResult InstallFromLauncherArchiveCore(
+            LauncherSettings settings, string originalSpecifier, string expectedKey,
+            string pushedAt, string defaultBranch, string sourceSha, Action<string, double> progress,
+            Action<string> log, Action<DownloadProgressInfo> detail, bool acceptVersionRisk,
+            DownloadTaskControl control)
+        {
+            control.Checkpoint();
+            PluginSpec spec = LauncherPluginArchive.ParseGitHubSource(originalSpecifier);
+            if (settings == null || String.IsNullOrWhiteSpace(settings.DshRoot)
+                || spec == null || !DshPluginCliService.IsAvailable(settings.DshRoot))
+            {
+                return new InstallResult
+                {
+                    Error = "启动器归档安装需要完整 GitHub 仓库来源及 DSH 官方本地插件管理器。"
+                };
+            }
+            string profile = Path.Combine(DshPluginCliService.ResolveDshHome(settings.DshRoot), "profiles",
+                DshPluginCliService.ResolveProfileName(settings.DshRoot));
+            using var operation = PluginOperationSupport.Acquire(profile, cancelled: () => control.IsCancelled);
+            settings = JsonSerializer.Deserialize<LauncherSettings>(JsonSerializer.Serialize(settings));
+            FillSourceInfoFromGitHub(settings, spec, log, ref pushedAt, ref defaultBranch, ref sourceSha);
+            string sourceRoot = Path.Combine(DshPluginCliService.ResolveDshHome(settings.DshRoot), "launcher-plugin-sources");
+            string cacheKey = LauncherPluginArchive.SourceKey(originalSpecifier, sourceSha);
+            string target = Path.Combine(sourceRoot, cacheKey);
+            try
+            {
+                Directory.CreateDirectory(sourceRoot);
+                string validation = LauncherPluginArchive.Validate(target, out string key);
+                if (validation != null)
+                {
+                    string archive = Path.Combine(sourceRoot, "archive-" + Guid.NewGuid().ToString("N") + ".tar.gz");
+                    try
+                    {
+                        // A commit supplied by the catalog remains pinned during fallback.
+                        if (String.IsNullOrWhiteSpace(spec.Revision) && !String.IsNullOrWhiteSpace(sourceSha))
+                            spec.Revision = sourceSha;
+                        Report(progress, "启动器下载源码包…", 2);
+                        string error = DownloadSource(settings, spec, defaultBranch, archive, detail, log);
+                        if (error != null) return new InstallResult { Error = error, Cancelled = error.Contains("取消") };
+                        control.Checkpoint();
+                        error = ExtractTarGz(archive, target);
+                        if (error != null) return new InstallResult { Error = error };
+                    }
+                    finally { TryDelete(archive); }
+                    validation = LauncherPluginArchive.Validate(target, out key);
+                    if (validation != null) return new InstallResult { Error = validation };
+                }
+                bool packageIdentityHint = !String.IsNullOrWhiteSpace(expectedKey)
+                    && (expectedKey.StartsWith("@", StringComparison.Ordinal)
+                        || expectedKey.IndexOf('/') >= 0);
+                if (packageIdentityHint
+                    && !String.Equals(expectedKey, key, StringComparison.OrdinalIgnoreCase))
+                    return new InstallResult { Error = "源码包清单名称与市场条目不一致，已拒绝安装。", LauncherArchiveRequired = true };
+                control.Checkpoint();
+                Report(progress, "启动器已获取源码 · 正在注册本地插件", 25);
+                if (!HasInstalledBundleMetadata(target))
+                {
+                    string prepareKey = LauncherPluginArchive.PrepareKey(target);
+                    if (prepareKey == null) return new InstallResult { Error = "源码包缺少声明的 patch 产物，且没有 prepare 构建脚本。", LauncherArchiveRequired = true };
+                    if (!LauncherPluginArchive.IsPrepareApproved(Path.Combine(profile, "pnpm-workspace.yaml"), prepareKey))
+                        return new InstallResult
+                        {
+                            Error = "源码包需要运行 prepare 构建脚本，等待本次插件精确版本授权。",
+                            BuildScriptsBlocked = true, PendingBuildScriptKeys = new List<string> { prepareKey },
+                            LauncherArchiveRequired = true, LauncherArchiveSourceSha = sourceSha ?? String.Empty,
+                            LauncherArchiveDefaultBranch = defaultBranch ?? String.Empty, LauncherArchivePushedAt = pushedAt ?? String.Empty
+                        };
+                    string pnpm = PackageManagerRunner.LocatePnpm(settings);
+                    if (String.IsNullOrWhiteSpace(pnpm)) return new InstallResult { Error = "找不到 pnpm，无法构建插件源码。", PnpmMissing = true, LauncherArchiveRequired = true };
+                    Report(progress, "启动器安装中 · 下载构建依赖", 40);
+                    var dependencies = PackageManagerRunner.Run(pnpm, target,
+                        "install --ignore-scripts --config.fetch-retries=2 --config.fetch-timeout=30000", 180000, log, settings,
+                        () => control.IsCancelled);
+                    control.Checkpoint();
+                    if (dependencies.ExitCode != 0) return new InstallResult { Error = "插件构建依赖安装失败。", Detail = DshPluginCliService.Summarize(dependencies.Output), LauncherArchiveRequired = true };
+                    Report(progress, "启动器安装中 · 执行已授权 prepare", 65);
+                    var build = PackageManagerRunner.Run(pnpm, target, "run prepare", 180000, log, settings, () => control.IsCancelled);
+                    control.Checkpoint();
+                    if (build.ExitCode != 0 || !HasInstalledBundleMetadata(target))
+                        return new InstallResult { Error = "插件 prepare 构建失败或未生成声明的 patch 产物。", Detail = DshPluginCliService.Summarize(build.Output), LauncherArchiveRequired = true };
+                }
+                // Keep this stable directory: pnpm may retain a file: dependency pointing here.
+                InstallResult result = InstallViaOfficialCliCore(settings, spec, "file:" + target.Replace('\\', '/'),
+                    key, pushedAt, defaultBranch, sourceSha, progress, log, null, acceptVersionRisk, control);
+                if (result == null) return new InstallResult { Error = "DSH 本地插件管理器不可用。" };
+                result.LauncherFallbackAvailable = false;
+                result.LauncherArchiveRequired = true;
+                result.LauncherArchiveSourceSha = sourceSha ?? String.Empty;
+                result.LauncherArchiveDefaultBranch = defaultBranch ?? String.Empty;
+                result.LauncherArchivePushedAt = pushedAt ?? String.Empty;
+                if (result.Ok)
+                {
+                    PluginInstallStore.Upsert(new PluginInstallRecord
+                    {
+                        Key = result.Key, Spec = originalSpecifier, Folder = result.Directory,
+                        Owner = spec.Owner, Repository = spec.Repository, Version = result.Version,
+                        PushedAt = pushedAt ?? String.Empty, InstalledAt = DateTime.UtcNow.ToString("o"),
+                        InstallSpecifier = originalSpecifier, InstallSource = "launcher-archive",
+                        SourceSha = sourceSha ?? String.Empty, DefaultBranch = defaultBranch ?? String.Empty
+                    });
+                    result.Detail = "启动器已下载源码包，并由 DSH 完成本地安装。" + result.Detail;
+                }
+                return result;
+            }
+            catch (Exception exception) { return new InstallResult { Error = "启动器归档安装失败：" + exception.Message }; }
+        }
+
+        /// <summary>
         /// 用一条 pnpm 安装表达式装插件 —— 插件页那个「粘贴仓库链接」输入框走这里。
         ///
         /// 整仓 / 包名 / tarball 直链 / 本地路径全部交给官方 <c>dsh plugin add</c>
@@ -473,11 +637,34 @@ namespace DeepSeekHarnessLauncher
                     return true;
                 }, out string error, allowPause: false, automaticRetries: 2,
                 retryFilter: exception => exception is OfficialInstallFailure failure && failure.Retryable,
-                stateChanged: text => Report(progress, text, -1));
+                stateChanged: text => Report(progress, text, -1), returnAfterAutomaticRetries: true);
             if (ok) return result;
             result ??= new InstallResult();
             result.Ok = false;
             result.Error = error ?? result.Error;
+            result.Cancelled = result.Cancelled
+                || String.Equals(error, "下载已取消。", StringComparison.OrdinalIgnoreCase);
+            if (result.LauncherFallbackAvailable && !result.Cancelled)
+            {
+                log?.Invoke("官方插件下载失败，自动尝试启动器源码归档安装：" + result.Error);
+                return RunLauncherFallbackIfEligible(result, () => InstallFromLauncherArchive(settings,
+                    specifier, expectedKey, result.LauncherArchivePushedAt, result.LauncherArchiveDefaultBranch,
+                    result.LauncherArchiveSourceSha, progress, log, null, acceptVersionRisk));
+            }
+            return result;
+        }
+
+        internal static InstallResult RunLauncherFallbackIfEligible(InstallResult original, Func<InstallResult> install)
+        {
+            if (original == null || original.Ok || !original.LauncherFallbackAvailable || original.Cancelled
+                || original.BuildScriptsBlocked || original.NeedsVersionExemption) return original;
+            string officialError = original.Error;
+            original.LauncherFallbackAvailable = false;
+            InstallResult result = install();
+            if (result == null) return original;
+            result.OfficialFailure = officialError;
+            result.LauncherFallbackAvailable = false;
+            if (!result.Ok) result.Error = officialError + "；启动器归档安装：" + result.Error;
             return result;
         }
 
@@ -533,7 +720,13 @@ namespace DeepSeekHarnessLauncher
                 output,
                 acceptVersionRisk,
                 () => control.IsCancelled,
-                bytes => control.Progress(new DownloadProgressInfo { BytesReceived = bytes, TotalBytes = -1 }));
+                bytes => control.Progress(new DownloadProgressInfo { BytesReceived = bytes, TotalBytes = -1 }),
+                (bytes, total, speed) => control.Progress(new DownloadProgressInfo
+                {
+                    BytesReceived = bytes,
+                    TotalBytes = total,
+                    BytesPerSecond = speed
+                }));
             if (cli.Unsupported)
             {
                 if (log != null)
@@ -547,6 +740,7 @@ namespace DeepSeekHarnessLauncher
             if (cli.Failed)
             {
                 result.Retryable = !cli.Cancelled && (cli.TimedOut || PluginOperationSupport.IsTransientFailure(cli.Output));
+                result.Cancelled = cli.Cancelled;
                 result.Error = String.IsNullOrWhiteSpace(cli.Error)
                     ? "官方插件命令失败。"
                     : cli.Error;
@@ -554,6 +748,17 @@ namespace DeepSeekHarnessLauncher
                 result.NeedsVersionExemption = cli.NeedsVersionExemption;
                 result.ExemptionPackageVersion = cli.ExemptionPackageVersion ?? String.Empty;
                 result.ExemptionDshVersion = cli.ExemptionDshVersion ?? String.Empty;
+                result.PendingBuildScriptKeys = cli.PendingBuildScriptKeys == null
+                    ? new List<string>()
+                    : new List<string>(cli.PendingBuildScriptKeys);
+                result.BuildScriptsBlocked = cli.BuildScriptsBlocked;
+                result.OfficialFailure = result.Error;
+                result.LauncherArchiveSourceSha = sourceSha ?? String.Empty;
+                result.LauncherArchiveDefaultBranch = defaultBranch ?? String.Empty;
+                result.LauncherArchivePushedAt = pushedAt ?? String.Empty;
+                result.LauncherFallbackAvailable = LauncherPluginArchive.CanFallback(specifier,
+                    cli.Failed, cli.Cancelled, cli.BuildScriptsBlocked, cli.NeedsVersionExemption,
+                    cli.Output + "\n" + cli.Error);
                 return result;
             }
 

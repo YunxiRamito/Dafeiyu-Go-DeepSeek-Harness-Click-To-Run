@@ -32,10 +32,10 @@ namespace DeepSeekHarnessLauncher.Backup
 
     internal static class DshDataExportService
     {
-        internal static OfficialExportPlan Preview(string dshHome, string profile, CancellationToken token, string legacyRoot = null)
+        internal static OfficialExportPlan Preview(string dshHome, string profile, CancellationToken token, string legacyRoot = null, Action<string, double> progress = null)
         {
             // The import plan already materializes pnpm links and validates source paths.
-            var source = DshDataImportService.Preview(dshHome, dshHome, profile, profile, token, legacyRoot, forExport: true);
+            var source = DshDataImportService.Preview(dshHome, dshHome, profile, profile, token, legacyRoot, forExport: true, progress: progress);
             var plan = new OfficialExportPlan { Source = source };
             foreach (var group in source.Groups)
             {

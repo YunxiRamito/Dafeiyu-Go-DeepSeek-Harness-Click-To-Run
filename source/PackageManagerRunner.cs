@@ -19,6 +19,7 @@ namespace DeepSeekHarnessLauncher
             public string Output { get; set; } = String.Empty;
             public bool TimedOut { get; set; }
             public bool Started { get; set; }
+            public bool Cancelled { get; set; }
         }
 
         /// <summary>
@@ -95,7 +96,8 @@ namespace DeepSeekHarnessLauncher
             string arguments,
             int timeoutMs,
             Action<string> log,
-            LauncherSettings settings = null)
+            LauncherSettings settings = null,
+            Func<bool> cancelled = null)
         {
             RunResult result = new RunResult();
             ProcessStartInfo startInfo = new ProcessStartInfo();
@@ -153,9 +155,13 @@ namespace DeepSeekHarnessLauncher
                     result.Started = true;
                     process.BeginOutputReadLine();
                     process.BeginErrorReadLine();
-                    if (!process.WaitForExit(timeoutMs))
+                    var elapsed = Stopwatch.StartNew();
+                    while (!process.WaitForExit(200) && elapsed.ElapsedMilliseconds < timeoutMs
+                        && cancelled?.Invoke() != true) { }
+                    if (!process.HasExited)
                     {
-                        result.TimedOut = true;
+                        result.Cancelled = cancelled?.Invoke() == true;
+                        result.TimedOut = !result.Cancelled;
                         try
                         {
                             process.Kill(true);

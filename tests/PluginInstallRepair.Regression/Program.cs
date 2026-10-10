@@ -49,6 +49,10 @@ try
     List<string> gitKeys = DshPluginCliService.ParseGitPrepareAllowBuilds(gitOutput);
     Check(gitKeys.Count == 1, "git prepare 示例只解析出一个键");
     Check(gitKeys[0] == expectedGitKey, "折行的 git 键拼回一行并剥掉末尾 : true");
+    List<string> gitConsentKeys = DshPluginCliService.ParseBuildScriptAuthorizationKeys(gitOutput);
+    Check(DshPluginCliService.IsBuildScriptAuthorizationFailure(gitOutput)
+        && gitConsentKeys.Count == 1 && gitConsentKeys[0] == expectedGitKey,
+        "git prepare authorization failure exposes its exact dependency key for the launcher's consent prompt");
 
     List<string> twoKeys = DshPluginCliService.ParseGitPrepareAllowBuilds(
         "        allowBuilds:\n          esbuild: true\n          koffi: false\n");
@@ -82,6 +86,22 @@ try
     Check(packages[0] == "@deepseek-ai/dsh-subprocess-local", "scoped 包名剥掉版本号");
     Check(packages[1] == "koffi", "普通包名剥掉版本号");
     Check(packages[2] == "node-pty", "带预发布版本的包名正确");
+    List<string> blockedKeys = DshPluginCliService.ParseBuildScriptAuthorizationKeys(ignoredOutput);
+    Check(blockedKeys.Count == 3, "脚本授权解析只返回 pnpm 明确拦截的依赖");
+    Check(DshPluginCliService.IsBuildScriptAuthorizationFailure(ignoredOutput), "识别 ignored builds 错误");
+    Check(DshPluginCliService.ParseBuildScriptAuthorizationKeys(
+        "help: add this package to allowBuilds\n        allowBuilds:\n          koffi: true").Count == 0,
+        "普通帮助文案里的 allowBuilds 示例不触发授权弹窗");
+    Check(!DshPluginCliService.IsBuildScriptAuthorizationFailure(
+        "help: add this package to allowBuilds\n        allowBuilds:\n          koffi: true"),
+        "allowBuilds help alone is not treated as an authorization failure");
+    string blockedScripts = "Blocked build scripts: @scope/native-addon@2.4.1, sharp@0.33.5\n"
+        + "Run pnpm approve-builds to choose which dependencies may run scripts.";
+    List<string> blockedPackages = DshPluginCliService.ParseBuildScriptAuthorizationKeys(blockedScripts);
+    Check(DshPluginCliService.IsBuildScriptAuthorizationFailure(blockedScripts)
+        && blockedPackages.Count == 2 && blockedPackages[0] == "@scope/native-addon"
+        && blockedPackages[1] == "sharp",
+        "newer blocked-build reporter text provides the exact packages for an in-launcher approval prompt");
     Check(
         DshPluginCliService.ParseIgnoredBuildPackages("added 1 package").Count == 0,
         "无 IGNORED_BUILDS 时不产生包名");
@@ -207,6 +227,29 @@ try
     Check(againChanged.Count == 0, "已是布尔值不再报告改动");
     Check(again == expectedUpdated, "已是布尔值时文本不变（最小改动）");
 
+    string explicitlyDenied = "allowBuilds:\n  koffi: false\n  esbuild: true\n";
+    Check(
+        DshPluginCliService.TryMergeAllowBuilds(
+            explicitlyDenied,
+            new[] { "koffi" },
+            out updated,
+            out changed,
+            out error)
+            && changed.Count == 0
+            && updated == explicitlyDenied,
+        "没有本次用户授权时保留已有 false");
+    Check(
+        DshPluginCliService.TryMergeAllowBuilds(
+            explicitlyDenied,
+            new[] { "koffi" },
+            true,
+            out updated,
+            out changed,
+            out error)
+            && changed.Count == 1
+            && updated.Contains("koffi: true"),
+        "用户在启动器明确放行后只覆盖其批准的 false 键");
+
     string inlineYaml = "allowBuilds: {}\nnodeLinker: hoisted\n";
     Check(
         DshPluginCliService.TryMergeAllowBuilds(
@@ -261,6 +304,7 @@ try
     Check(written.Contains("esbuild: true"), "占位值写成了 true");
     Check(written.Contains("koffi: true"), "缺失键写进去了");
     Check(written.Contains("packages:"), "其它键保留");
+
 
     Check(
         DshPluginCliService.ApplyAllowBuilds(
@@ -391,12 +435,15 @@ namespace DeepSeekHarnessLauncher
 
     internal static class BackendDownloadSource
     {
+        internal const string BaseUrl = "https://202.189.21.218:8787";
         internal static bool IsSelected(LauncherSettings settings) => false;
     }
 
     internal sealed class LauncherSettings
     {
         public string DshRoot { get; set; }
+        public string UpdateSource { get; set; }
+        public string MirrorSource { get; set; }
     }
 
     // 只编译了 DshPluginCliService；这些替身保证它不会意外发起真实操作。

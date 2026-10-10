@@ -18,5 +18,7 @@
     <Compile Include="../../source/InstallerVersionPolicy.cs" Link="InstallerVersionPolicy.cs" />
     <Compile Include="../../source/DshUpdateService.cs" Link="DshUpdateService.cs" />
     <Compile Include="../../source/InstallerUpdateService.cs" Link="InstallerUpdateService.cs" />
+    <Compile Include="../../source/SkillArchiveTempFiles.cs" Link="SkillArchiveTempFiles.cs" />
+    <Compile Include="../../source/ComponentService.cs" Link="ComponentService.cs" />
   </ItemGroup>
 </Project>

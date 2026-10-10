@@ -463,6 +463,19 @@ namespace DeepSeekHarnessLauncher
             out string error,
             LauncherSettings settings = null)
         {
+            return PrepareAndApplyDetailed(package, dshRoot,
+                progress == null ? null : new Action<DownloadProgressInfo>(info => progress(info.BytesReceived, info.TotalBytes)),
+                null, out error, settings);
+        }
+
+        internal static bool PrepareAndApplyDetailed(
+            InstallerUpdatePackage package,
+            string dshRoot,
+            Action<DownloadProgressInfo> progress,
+            Action<string> stateChanged,
+            out string error,
+            LauncherSettings settings = null)
+        {
             error = null;
             if (package == null || !IsValidSha256(package.Sha256))
             {
@@ -495,16 +508,12 @@ namespace DeepSeekHarnessLauncher
                     setupPath,
                     settings,
                     DownloadSupport.DefaultThreads,
-                    delegate(DownloadProgressInfo info)
-                    {
-                        if (progress != null)
-                        {
-                            progress(info.BytesReceived, info.TotalBytes);
-                        }
-                    },
+                    progress,
                     null,
                     out usedUrl,
-                    out error))
+                    out error,
+                    automaticRetries: Int32.MaxValue,
+                    stateChanged: stateChanged))
                 {
                     return false;
                 }

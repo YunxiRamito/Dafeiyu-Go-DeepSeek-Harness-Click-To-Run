@@ -65,6 +65,7 @@ namespace DeepSeekHarnessLauncher
             {
                 paused = true; interruption++;
                 foreach (var request in requests) { try { request.Abort(); } catch { } }
+                Monitor.PulseAll(gate);
             }
         }
         internal void Resume() { lock (gate) { paused = false; Monitor.PulseAll(gate); } }
@@ -78,13 +79,29 @@ namespace DeepSeekHarnessLauncher
                 Monitor.PulseAll(gate);
             }
         }
-        internal void WaitForRetry()
+        internal bool WaitForRetry(int timeoutMilliseconds = Timeout.Infinite)
         {
             lock (gate)
             {
-                while (!retry && !cancelled) Monitor.Wait(gate);
+                DateTime deadline = timeoutMilliseconds == Timeout.Infinite
+                    ? DateTime.MaxValue
+                    : DateTime.UtcNow.AddMilliseconds(Math.Max(0, timeoutMilliseconds));
+                while (!retry && !cancelled)
+                {
+                    while (paused && !cancelled) Monitor.Wait(gate);
+                    if (cancelled) break;
+                    if (timeoutMilliseconds == Timeout.Infinite)
+                    {
+                        Monitor.Wait(gate);
+                        continue;
+                    }
+                    int remaining = (int)Math.Ceiling((deadline - DateTime.UtcNow).TotalMilliseconds);
+                    if (remaining <= 0) return false;
+                    Monitor.Wait(gate, remaining);
+                }
                 if (cancelled) throw new OperationCanceledException("下载已取消。");
                 retry = false;
+                return true;
             }
         }
         private sealed class Registration : IDisposable
@@ -172,7 +189,7 @@ namespace DeepSeekHarnessLauncher
         }
         public static bool Run(string name, string targetPath, Func<DownloadTaskControl, bool> transfer, out string error,
             bool allowPause = true, int automaticRetries = 0, Func<Exception, bool> retryFilter = null,
-            Action<string> stateChanged = null)
+            Action<string> stateChanged = null, bool returnAfterAutomaticRetries = false)
         {
             error = null;
             if (transfer == null) throw new ArgumentNullException(nameof(transfer));
@@ -225,13 +242,19 @@ namespace DeepSeekHarnessLauncher
                         if (retryFilter != null && !retryFilter(exception)) return false;
                         if (attempts <= automaticRetries)
                         {
-                            stateChanged?.Invoke("下载超时或中断，正在重试 · " + (attempts + 1) + "/" + (automaticRetries + 1));
-                            for (int delay = 0; delay < attempts * 10; delay++)
-                            { control.Checkpoint(); Thread.Sleep(100); }
+                            int delaySeconds = Math.Min(attempts, 5);
+                            for (int remaining = delaySeconds; remaining > 0; remaining--)
+                            {
+                                NotifyState(stateChanged, "下载失败，等待 " + remaining + " 秒后重试 · " + SafeText(exception.Message));
+                                if (control.WaitForRetry(1000)) break;
+                            }
+                            NotifyState(stateChanged, "正在重试下载。");
                             continue;
                         }
-                        stateChanged?.Invoke("下载失败 · 可在下载任务中重试或取消");
+                        if (returnAfterAutomaticRetries) return false;
+                        NotifyState(stateChanged, "下载失败 · 可在下载任务中重试或取消 · " + SafeText(exception.Message));
                         control.WaitForRetry();
+                        NotifyState(stateChanged, "正在重试下载。");
                         attempts = 0;
                     }
                 }
@@ -291,6 +314,11 @@ namespace DeepSeekHarnessLauncher
             // Exception messages may contain credentials, signed URLs, or proxy endpoints.
             text = System.Text.RegularExpressions.Regex.Replace(text, @"(?i)\b(?:https?|ftp)://[^\s]+", "[URL]");
             return text.Length > 1024 ? text.Substring(0, 1024) : text;
+        }
+        private static void NotifyState(Action<string> callback, string state)
+        {
+            if (callback == null) return;
+            try { callback(state); } catch { }
         }
         private static void Trim()
         {

@@ -4,5 +4,6 @@
     <Compile Include="..\..\source\ClientNoticeModels.cs" Link="ClientNoticeModels.cs" />
     <Compile Include="..\..\source\ClientNoticeStore.cs" Link="ClientNoticeStore.cs" />
     <Compile Include="..\..\source\ClientNoticeClient.cs" Link="ClientNoticeClient.cs" />
+    <Compile Include="..\..\source\FullscreenWindowDetector.cs" Link="FullscreenWindowDetector.cs" />
   </ItemGroup>
 </Project>

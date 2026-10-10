@@ -144,6 +144,7 @@ namespace DeepSeekHarnessLauncher
             for (int index = 0; index < GitHubAccelerator.Sources.Length; index++)
             {
                 AcceleratorSource source = GitHubAccelerator.Sources[index];
+                if (!GitHubAccelerator.ShouldProbeSource(source, settings)) continue;
                 string url = GitHubAccelerator.ProbeUrlFor(source);
                 int milliseconds = MeasureOne(url, settings);
                 report.LatencyMs[source.Id] = milliseconds;

@@ -117,7 +117,8 @@ namespace DeepSeekHarnessLauncher
                 bool? available = null;
                 try
                 {
-                    ClientNoticeFeed feed = await GetAsync<ClientNoticeFeed>(new Uri(root, "api/messages"), token, value => available = value).ConfigureAwait(false);
+                    ClientNoticeFeed feed = await GetAsync<ClientNoticeFeed>(new Uri(root, "api/messages?installationId="
+                        + Guid.Parse(_store.GetInstallationId()).ToString("D")), token, value => available = value).ConfigureAwait(false);
                     if (feed.Messages == null || feed.Messages.Count > 256) throw new InvalidDataException("Invalid feed message count.");
                     var validMessages = feed.Messages.Where(message => message != null && message.Validate(out _)
                         && (!message.ExpiresAt.HasValue || message.ExpiresAt > DateTimeOffset.UtcNow)).ToList();
@@ -127,11 +128,11 @@ namespace DeepSeekHarnessLauncher
                     foreach (ClientNoticeMessage message in validMessages)
                     {
                         if (message.Kind == "notification" && message != newestNotification) continue;
-                        if (_store.IsMessageRead(message)) continue;
+                        if (_store.IsMessageHandled(message)) continue;
                         _onMessage?.Invoke(message);
                     }
                     checkDetail = newestNotification == null ? "暂无通知"
-                        : _store.IsMessageRead(newestNotification) ? "无新通知" : "1 条新通知";
+                        : _store.IsMessageHandled(newestNotification) ? "无新通知" : "1 条新通知";
                 }
                 finally
                 {
@@ -150,6 +151,16 @@ namespace DeepSeekHarnessLauncher
                 if (initial) ObserveInitialFeedCheck(checkState, checkDetail, clock.ElapsedMilliseconds);
                 _pollGate.Release();
             }
+        }
+        internal async Task<ClientNoticeMessage> GetCurrentNotificationPreviewAsync(CancellationToken token)
+        {
+            Uri root = ResolveBase(_settings());
+            if (root == null) return null;
+            var response = await GetAsync<ClientNoticeCurrentResponse>(new Uri(root, "api/notifications/current"), token, null).ConfigureAwait(false);
+            var message = response.Message;
+            if (message != null && (!message.Validate(out _) || message.Kind != "notification"
+                || message.ExpiresAt <= DateTimeOffset.UtcNow)) throw new InvalidDataException("Invalid current notification preview.");
+            return message;
         }
         private void ObserveInitialFeedCheck(string state, string detail, long milliseconds)
         {
@@ -186,23 +197,28 @@ namespace DeepSeekHarnessLauncher
             Uri root = ResolveBase(settings);
             if (root == null || !settings.TelemetryEnabled) return;
             await PostAsync(new Uri(root, "api/installations/heartbeat"),
-                new ClientNoticeHeartbeat { InstallationId = Guid.Parse(_store.GetInstallationId()).ToString("D") }, token).ConfigureAwait(false);
+                new ClientNoticeHeartbeat
+                {
+                    InstallationId = Guid.Parse(_store.GetInstallationId()).ToString("D"),
+                    LauncherVersion = Constants.Version
+                }, token).ConfigureAwait(false);
         }
         internal async Task ReportAsync(ClientNoticeMessage message, string eventName, int? buttonIndex, CancellationToken token)
         {
             if (message == null || !message.Validate(out _)) throw new ArgumentException("Invalid message.");
-            if (eventName != "received" && eventName != "displayed" && eventName != "read" && eventName != "click")
+            if (eventName != "received" && eventName != "displayed" && eventName != "deferred" && eventName != "read" && eventName != "click")
                 throw new ArgumentException("Invalid receipt event.");
             if ((eventName == "click" && (!buttonIndex.HasValue || buttonIndex < 0 || buttonIndex >= message.Buttons.Count))
                 || (eventName != "click" && buttonIndex.HasValue)) throw new ArgumentException("Invalid button index.");
             // Read acknowledgement is local state, independent of telemetry settings or receipt delivery.
             if (eventName == "read" || eventName == "click") AcknowledgeAction(message, buttonIndex);
+            if (eventName == "displayed") _store.MarkNotificationDisplayed(message);
             var settings = _settings();
             Uri root = ResolveBase(settings);
             if (root == null || !settings.TelemetryEnabled) return;
             await PostAsync(new Uri(root, "api/messages/" + Uri.EscapeDataString(message.Id) + "/metrics"),
                 new ClientNoticeReceipt { InstallationId = Guid.Parse(_store.GetInstallationId()).ToString("D"), Event = eventName switch
-                    { "received" => "Delivered", "displayed" => "Displayed", "read" => "Read", _ => "Click" }, ButtonIndex = buttonIndex }, token).ConfigureAwait(false);
+                    { "received" => "Delivered", "displayed" => "Displayed", "deferred" => "Deferred", "read" => "Read", _ => "Click" }, ButtonIndex = buttonIndex }, token).ConfigureAwait(false);
         }
         internal bool AcknowledgeAction(ClientNoticeMessage message, int? buttonIndex)
         {
@@ -304,7 +320,7 @@ namespace DeepSeekHarnessLauncher
             {
                 using var response = await _http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
-                observeBackend(true);
+                observeBackend?.Invoke(true);
                 using var stream = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
                 byte[] chunk = new byte[8192];
                 int count;
@@ -317,7 +333,7 @@ namespace DeepSeekHarnessLauncher
             catch (Exception error) when (error is HttpRequestException || (error is IOException && error is not InvalidDataException)
                 || (error is OperationCanceledException && !token.IsCancellationRequested))
             {
-                observeBackend(false);
+                observeBackend?.Invoke(false);
                 throw;
             }
             return JsonSerializer.Deserialize<T>(buffer.ToArray(), JsonOptions) ?? throw new InvalidDataException("Empty notice response.");

@@ -223,6 +223,43 @@ PluginStoreService.InstallResult exemptionResult = new PluginStoreService.Instal
     ExemptionPackageVersion = "koffi@3.1.1",
     ExemptionDshVersion = "0.2.1-alpha.1"
 };
+int fallbackRuns = 0;
+Environment.SetEnvironmentVariable("DAFEIYU_DOWNLOAD_HISTORY_DIRECTORY", Path.Combine(Path.GetTempPath(), "automatic-plugin-fallback-tests"));
+int officialAttempts = 0;
+var realTaskTimer = System.Diagnostics.Stopwatch.StartNew();
+bool officialTaskOk = DownloadTaskCenter.Run("fixture official plugin", "fixture source", _ =>
+{
+    officialAttempts++;
+    throw new IOException("requested URL returned error: 500");
+}, out string taskFailure, automaticRetries: 2, retryFilter: exception => PluginOperationSupport.IsTransientFailure(exception.Message),
+    returnAfterAutomaticRetries: true);
+Check(!officialTaskOk && officialAttempts == 3 && realTaskTimer.ElapsedMilliseconds < 10000,
+    "production download task returns after three transient failures instead of waiting indefinitely for manual retry");
+var networkFailure = new PluginStoreService.InstallResult { Error = "HTTP 500", LauncherFallbackAvailable = true };
+var recoveredArchive = PluginStoreService.RunLauncherFallbackIfEligible(networkFailure, () =>
+{
+    fallbackRuns++;
+    return new PluginStoreService.InstallResult { Ok = true, LauncherArchiveRequired = true };
+});
+Check(recoveredArchive.Ok && fallbackRuns == 1 && recoveredArchive.OfficialFailure == "HTTP 500",
+    "official network failure automatically invokes archive method and preserves original cause");
+PluginStoreService.RunLauncherFallbackIfEligible(recoveredArchive, () => { fallbackRuns++; return null; });
+Check(fallbackRuns == 1, "archive fallback never loops after successful registration");
+var blockedArchive = PluginStoreService.RunLauncherFallbackIfEligible(
+    new PluginStoreService.InstallResult { Error = "network", LauncherFallbackAvailable = true },
+    () => new PluginStoreService.InstallResult { Error = "prepare authorization", BuildScriptsBlocked = true,
+        PendingBuildScriptKeys = new List<string> { "fixture@1.0.0" }, LauncherArchiveRequired = true });
+Check(blockedArchive.BuildScriptsBlocked && blockedArchive.LauncherArchiveRequired
+    && blockedArchive.PendingBuildScriptKeys.Single() == "fixture@1.0.0",
+    "archive prepare approval continues through existing explicit authorization flow");
+foreach (var excluded in new[]
+{
+    new PluginStoreService.InstallResult { Cancelled = true, LauncherFallbackAvailable = true },
+    new PluginStoreService.InstallResult { BuildScriptsBlocked = true, LauncherFallbackAvailable = true },
+    new PluginStoreService.InstallResult { NeedsVersionExemption = true, LauncherFallbackAvailable = true }
+})
+    Check(ReferenceEquals(excluded, PluginStoreService.RunLauncherFallbackIfEligible(excluded,
+        () => throw new Exception("Forbidden automatic fallback"))), "cancel, script policy and compatibility retain original result");
 var officialOutputEvents = new List<string>();
 Action<string, double> officialProgress = (text, _) => officialOutputEvents.Add(text);
 PluginStoreService.ForwardOfficialOutput(

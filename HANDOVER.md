@@ -1,5 +1,28 @@
 # 交接：大肥鱼Go / Dafeiyu-Go Launcher
 
+## 2026-10-10 主页通知按钮补修（优先于下方）
+
+上一轮将主页通知按钮禁用为预览，用户要求实际可用，已启用并接 `SettingsWindowHost.ExecuteNotificationAction`，真实主进程共用右下角通知的链接/设置/PowerShell 动作。主页仅浏览不确认，动作成功后记录 click/read，PowerShell 拒绝或失败不确认。真实 UIA 四类按钮派发 10 项通过，测试仅拦截执行边界。补修包 `../Temp_SetupandLauncher/IntegrationAcceptance-20261010/Dafeiyu-Go-Launcher-1.7.3-home-buttons-20261010.zip`；入口 `../Temp_SetupandLauncher/BootAnimation-20261010/Launcher-HomeButtons-20261010/DeepSeek Harness.exe`；23,969,701 字节，SHA-256 `BA9440FE10EE480C7D1861D35F2E8195ABB6CA2617D53D68F98A1D8814E7ED1C`。构建/verify/197 输入/121 ZIP 文件校验通过。此包替代上一轮 accepted 包。
+
+## 2026-10-10 下载、通知、模型修复已验收并构建（本节优先）
+
+- 最新本地测试入口：`../Temp_SetupandLauncher/BootAnimation-20261010/Launcher-1.7.3-Accepted-20261010/DeepSeek Harness.exe`；ZIP：`../Temp_SetupandLauncher/IntegrationAcceptance-20261010/Dafeiyu-Go-Launcher-1.7.3-accepted-20261010.zip`，23,969,409 字节，SHA-256 `757CC11936D0F3BB6219E1C5FCEAED22FD6C1A9FB57CB5B3A5594817EA1CFE9F`。未正式发布。
+- 已完成 CDN/后端线路隔离及引擎立即生效、过期原生 PID 锁恢复、官方插件网络失败自动归档安装；归档构建沿用精确版本授权，取消贯穿依赖构建/注册，授权重试保留原提交及路径。官方两次自动重试耗尽会返回，避免无限等手动操作使兜底失效。
+- 通知编辑使用原 ID，已展示/已读/点击用户不重送；等待队列更新内容并保留延后状态；主页 Markdown 公告/当前通知按钮预览无回执；管理页每窗口各自动获取一次。取消编辑保持原内容，仅修改正文保持原到期时间/按钮/发布时间。
+- 模型刷新后恢复行按钮，保持 DSH 原顺序与用户排序；真实编辑留空 API Key 不清除原凭据。主页版本及服务状态已移到 Token 用量下方，快捷入口删除。
+- 冒烟后最终 Release 构建与 `verify.ps1` 通过；197 个源码输入匹配，121 个 ZIP 文件逐项哈希匹配，无 PDB/日志/私密设置。仍有既有过时网络 API 等编译警告。
+- 定向回归：通知客户端 183、通知管理 86、服务端真实 HTTP 239、Git 预算 59、官方插件 103、修复 63、插件更新 71、归档 24、原生锁互操作 66、模型 RPC 40；真实 WinUI 模型 41、通知编辑/主页 18；下载任务、引擎切换、拓展页签、最终包主页及下载任务 GUI 通过。证据见 `../Temp_SetupandLauncher/IntegrationAcceptance-20261010/REPORT.md`。
+- 用户本轮明确授权通知服务端 SSH 自动更新，已于 2026-10-10 05:27:58 +08 上线，包含 Git 预算修复及 Deferred CHECK 兼容迁移；API/数据库 healthy，HTTPS 与已有生产回执只读校验通过，未修改真实通知。部署报告与回滚见 `../Temp_SetupandLauncher/NoticeEdit-20261010/PRODUCTION-DEPLOYMENT.md`。
+- 未改写真实 DSH profile、替换已安装启动器或发布 GitHub/npm。完整真实插件网络安装及 UAC/自更新流程仍未对用户环境执行；不能把隔离测试描述为真实用户插件已安装。
+
+## 2026-10-09 23:45 v1.7.3 本地手测包已构建（未发布，本节优先）
+
+- 手测入口：`G:\DeepSeek DSH\DSH Works\Project\Dafeiyu-Go\Temp_SetupandLauncher\Dist\Dafeiyu-Go-Launcher-1.7.3-local-test.zip`，23,828,206 字节，SHA-256 `6d78fd216b13f09bbfbacf5970b2f522d16c7006658290abd49542b76e0740a5`。这是本地测试包，不是正式 Release。
+- Release/x64 构建 0 错误、42 条警告；启动器、引导程序、信息窗均报告 1.7.3.0。自检及 ZIP 解压后的 `verify.ps1` 通过（2 条环境提醒：未提供 DSH 目标目录，源码命中仅在注释中的本机路径示例）。包内 120 项，没有 PDB、日志或私密配置。
+- 当前回归复跑通过：通知客户端 166、下载任务、插件安装修复 60、设置搜索 214、更新元数据 57、启动更新门控 14；安装器下载修复 53、安装失败收尾 25。日志位于父目录 `Temp_SetupandLauncher\Build\Regression-*-rerun.log`。
+- 待做：由用户手测包并完成人工 GUI 截图验收；模型/供应商/鸣谢真实写入、信息窗、更新源切换、完整安装/卸载/UAC/取消路径仍未做真实环境验收。跨卷回归因 Windows 错误 5 无法创建盘符别名，不能算通过。
+- 安装器项目版本仍为 1.7.2.0，本轮没有生成或声称生成安装器 1.7.3 包。工作区保留未提交改动；未提交、推送、打 tag 或发布。临时产物继续只写入 `Temp_SetupandLauncher`。
+
 ## 2026-10-09 14:45 v1.7.2 已发布（本节优先）
 
 - Release：`https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/tag/v1.7.2`（id `407608502`，tag v1.7.2 → `649f685`）。
@@ -1301,3 +1324,15 @@ CurrentUserOnly，每行一个 JSON
 `ButtonIndex:null` 表示确认已读；`0` 或 `1` 表示点击按钮。主启动器必须校验当前消息和按钮定义，再执行已读、URL、设置页或关闭动作，并发送 Read/Click 指标。helper 只回传索引，不执行 URL 或远程命令。
 
 发布/预览目录必须包含 `DafeiyuGo.Info.exe`、`DafeiyuGo.Info.dll`、运行时依赖和 `DafeiyuGo.Info.pri`。
+
+## 2026-10-10 1.7.3 续做补充（追加）
+
+详细变更、内存采样、回归结果和未完成事项见父目录 `HANDOVER-1.7.3-2026-10-09.md` 的“2026-10-10 续做记录”。模型页只管理启动器启动的 DSH 提供商/模型目录，不含默认模型或网页会话同步。全屏通知延后指标迁移 `202610100001_DeferredNotificationMetric` 尚未部署。新的本地测试 ZIP 为 `Temp_SetupandLauncher\Dist\Dafeiyu-Go-Launcher-1.7.3-local-test-20261010.zip`，不代表正式发布。
+
+外网代理：`http://127.0.0.1:7890`。后端 SSH：`ssh -p 23129 -i "$env:USERPROFILE\.ssh\dafeiyu_ed25519" dafeiyu@202.189.21.218`。用户要求后续有可并行工作时尽可能使用多个子 Agent 分工。交互网页/预览留到功能完成后的发版阶段再处理。
+
+2026-10-10 暂停点与最新问题状态已追加到父目录 `HANDOVER-1.7.3-2026-10-09.md` 的“2026-10-10 最新问题记录（暂停点）”。本轮仅文档更新后暂停；文中明确区分已改但未完成启动器构建/烟测的代码、已通过的隔离回归，以及仍需处理的模型页、切页内存、导出与导入等事项。
+
+## 2026-10-10 下载源隔离与即时切换验收
+
+本轮恢复工作并使用三个子 Agent 分工，当前最新本地构建为父目录 `Temp_SetupandLauncher/FinalAcceptance-20261010/Launcher-SourceIsolation-Final`，启动入口 `DeepSeek Harness.exe`。构建与 `verify.ps1` 均通过，未发布或替换真实安装。具体修复和验证见父目录交接文档末尾的同名章节；旧暂停状态保留供历史对照。

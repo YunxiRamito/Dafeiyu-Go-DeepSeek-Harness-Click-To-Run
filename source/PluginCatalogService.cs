@@ -244,9 +244,13 @@ namespace DeepSeekHarnessLauncher
             string url, string token, out string json, out HttpStatusCode status, out string error,
             int timeoutMs = 20000, LauncherSettings settings = null)
         {
-            if (BackendDownloadSource.IsSelected(settings) && String.IsNullOrWhiteSpace(token)
-                && TryFetchOnce(BackendDownloadSource.WrapMetadata(url), null, out json, out status, out error, timeoutMs))
-                return true;
+            if (BackendDownloadSource.IsSelected(settings) && String.IsNullOrWhiteSpace(token))
+            {
+                // The backend engine is an explicit mode; do not fall through to
+                // direct GitHub or a CDN when its metadata endpoint is unavailable.
+                return TryFetchOnce(BackendDownloadSource.WrapMetadata(url), null,
+                    out json, out status, out error, timeoutMs);
+            }
             return TryFetchOnce(url, token, out json, out status, out error, timeoutMs);
         }
 

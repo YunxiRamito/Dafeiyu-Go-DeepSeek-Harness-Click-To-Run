@@ -43,7 +43,7 @@ namespace DeepSeekHarnessLauncher
     {
         public const string Title = "Dafeiyu-Go";
         public const string EnglishTitle = "Dafeiyu-Go";
-        public const string Version = "1.7.2";
+        public const string Version = "1.7.3";
         public const string Repository = "YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run";
         public const string LegacyRepository = "YunxiRamito/DSH-Launcher";
         public const string UserAgent = "Dafeiyu-Go/" + Version;
@@ -376,7 +376,7 @@ namespace DeepSeekHarnessLauncher
                             window.CompleteInfo(
                                 InfoOutcome.Warning,
                                 "DSH 服务异常退出",
-                                "进程已退出 · 退出码 3221225477");
+                                "DSH 服务进程已退出 · 详细原因请查看启动器日志");
                             break;
                     }
                 }
@@ -1278,6 +1278,10 @@ namespace DeepSeekHarnessLauncher
         private DeepSeekBalanceAlertTracker _balanceAlertTracker;
 
         private Process _service;
+        private readonly object _serviceStartupOutputLock = new object();
+        private readonly Queue<string> _serviceStartupOutput = new Queue<string>();
+        private Thread _serviceOutputThread;
+        private Thread _serviceErrorThread;
         private DispatcherQueueTimer _apiPromptTimer;
         private string _apiKey;
         private string _lastBalanceText;
@@ -1316,6 +1320,7 @@ namespace DeepSeekHarnessLauncher
         /// </summary>
         private InfoWindowClient _infoWindow;
         private volatile bool _startupUpdateFlow;
+        private DateTime _startupServiceReadyUtc = DateTime.MinValue;
         private volatile bool _serviceWindowActive;
         private bool _serviceWindowRestarting;
         private SettingsWindow _settingsWindow;
@@ -1653,7 +1658,8 @@ namespace DeepSeekHarnessLauncher
             _ = StartupBackgroundUpdates.RunWhenReadyAsync(
                 () => !_startupUpdateFlow && !_startupInProgress && _serviceRunning
                     && !_updateInProgress && !_dshUpdateInProgress && _pluginUpdateInProgress == 0 && _installerUpdateInProgress == 0
-                    && (_infoWindow == null || _infoWindow.IsClosed),
+                    && (_startupServiceReadyUtc == DateTime.MinValue
+                        || (DateTime.UtcNow - _startupServiceReadyUtc).TotalSeconds >= 3),
                 () => _exiting || _launcherUpdateRestartPending,
                 () =>
             {
@@ -2601,7 +2607,15 @@ namespace DeepSeekHarnessLauncher
                 {
                     if (service.HasExited)
                     {
-                        return "进程已退出 · 退出码 " + service.ExitCode;
+                        int exitCode = service.ExitCode;
+                        List<string> output = SnapshotServiceStartupOutput();
+                        string cause = DescribeDshStartupCause(output, null);
+                        if (String.Equals(cause, "DSH 启动未完成，服务尚未就绪。请查看启动器日志了解详细原因。", StringComparison.Ordinal))
+                            cause = "DSH 服务进程已退出，请查看启动器日志了解详细原因。";
+                        WriteLog("Unexpected DSH process exit code " + exitCode.ToString()
+                            + "; user-facing cause: " + cause
+                            + "; diagnostic output: " + FindRelevantServiceDiagnostic(output));
+                        return cause;
                     }
 
                     return "进程还在 但端口探测不到响应";
@@ -3024,11 +3038,21 @@ namespace DeepSeekHarnessLauncher
                 if (!InstallerUpdateService.IsValidSha256(package.Sha256))
                     throw new InvalidOperationException("安装器 " + package.Version + " 缺少 SHA-256 校验值，无法安装。");
                 UpdateInstallerUi(UpdateUiActivity.Installing, package.Version, "正在下载安装器", -1, true, "");
-                if (!InstallerUpdateService.PrepareAndApply(package, _root, (received, total) =>
+                if (!InstallerUpdateService.PrepareAndApplyDetailed(package, _root, info =>
                 {
-                    double percent = total <= 0 ? -1 : received * 100.0 / total;
-                    UpdateInstallerUi(UpdateUiActivity.Installing, package.Version, "正在下载安装器", percent, total <= 0,
-                        FormatBytes(received) + (total > 0 ? "/" + FormatBytes(total) : ""));
+                    double percent = info.Percent;
+                    string detail = info.Describe();
+                    UpdateInstallerUi(UpdateUiActivity.Installing, package.Version, "正在下载安装器", percent, percent < 0, detail);
+                    UpdateWindow("更新安装器", detail, percent);
+                }, state =>
+                {
+                    string display = state.StartsWith("下载失败，等待 ", StringComparison.Ordinal)
+                        ? "安装器" + state
+                        : state.StartsWith("正在重试下载", StringComparison.Ordinal)
+                            ? "正在重新下载安装器。"
+                            : state;
+                    UpdateInstallerUi(UpdateUiActivity.Installing, package.Version, display, -1, true, state);
+                    if (!IsServiceWindowBusy()) UpdateWindow("更新安装器", display, -1);
                 }, out string error, _settings)) throw new InvalidOperationException(error ?? "安装器替换失败。");
                 InstallerRegistration.SynchronizeInstallerVersion(package.Version);
                 UpdateInstallerUi(UpdateUiActivity.Completed, package.Version, "安装器已更新", 100, false, "安装器和卸载器已替换");
@@ -3077,8 +3101,11 @@ namespace DeepSeekHarnessLauncher
                 {
                     Settings = _settings,
                     GetNoticePresence = () => _noticePresence,
+                    GetServiceUrl = () => _serviceUrl,
+                    GetDeepSeekBalance = () => _lastBalanceText,
                     SetPresencePollingEnabled = enabled => _noticeClient?.SetPresencePollingEnabled(enabled),
                     NoticeSettingsChanged = NoticeSettingsChanged,
+                    ExecuteNotificationAction = ExecuteHomeNotificationAction,
                     DeveloperIdentityActivated = () => { _developerIdentityActive = true; RefreshDeveloperFeedbackNotifications(); },
                     DeveloperCredentialsChanged = RefreshDeveloperFeedbackNotifications,
                     PatchProgress = delegate(string title, string detail, double percent)
@@ -3108,6 +3135,21 @@ namespace DeepSeekHarnessLauncher
                     InstallInstallerUpdate = () => StartInstallerUpdateThread(true, false),
                     CheckDshUpdate = CheckDshUpdateForSettings,
                     InstallDshUpdate = InstallDshUpdateForSettings,
+                    LoadDshVersions = LoadDshVersionsForSettings,
+                    InstallDshVersion = InstallDshVersionForSettings,
+                    RollbackDshToStable = RollbackDshToStableForSettings,
+                    SetDshChannel = delegate(string channel)
+                    {
+                        InvokeOnUi(() => _settingsWindow?.SetDshChannelFromHost(channel));
+                    },
+                    SetDshUpdateMode = delegate(string mode)
+                    {
+                        InvokeOnUi(() => _settingsWindow?.SetDshUpdateModeFromHost(mode));
+                    },
+                    DshVersionOperationRejected = delegate(string message)
+                    {
+                        InvokeOnUi(() => _settingsWindow?.RejectDshVersionOperation(message));
+                    },
                     CheckPluginUpdates = CheckPluginUpdatesForSettings,
                     InstallPluginUpdates = InstallAllPluginUpdatesForSettings,
                     InstallPluginUpdate = InstallPluginUpdateForSettings,
@@ -3134,6 +3176,11 @@ namespace DeepSeekHarnessLauncher
                 {
                     _settingsWindow = null;
                     _settingsHost = null;
+                    _ = Task.Run(async () =>
+                    {
+                        await Task.Delay(750).ConfigureAwait(false);
+                        LauncherMemoryCleanup.Trim(WriteLog);
+                    });
                 };
             }
 
@@ -3144,6 +3191,7 @@ namespace DeepSeekHarnessLauncher
         {
             _apiKey = apiKey ?? String.Empty;
             _lastBalanceText = null;
+            _settingsHost?.RaiseBalanceChanged();
             _lastBalanceUpdatedUtc = DateTime.MinValue;
             _balanceAlertTracker.Reset();
             if (String.IsNullOrEmpty(_apiKey))
@@ -3157,7 +3205,15 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        private void RunDshUpdate(bool manual, bool forceInstall = false)
+        private void RunDshUpdate(
+            bool manual,
+            bool forceInstall = false,
+            DshUpdatePackage selectedPackage = null,
+            string channelOverride = null,
+            bool changingVersion = false,
+            bool disableAutomaticUpdates = false,
+            string channelAfterInstall = null,
+            bool operationLockAlreadyAcquired = false)
         {
             if (!manual
                 && String.Equals(
@@ -3168,35 +3224,85 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
-            lock (_dshDataOperationLock)
+            bool blockedByDataTransfer = false;
+            if (!operationLockAlreadyAcquired)
             {
-                if (_dshUpdateInProgress || _dshDataTransferInProgress) return;
-                _dshUpdateInProgress = true;
+                lock (_dshDataOperationLock)
+                {
+                    if (_dshUpdateInProgress) return;
+                    blockedByDataTransfer = _dshDataTransferInProgress;
+                    if (!blockedByDataTransfer) _dshUpdateInProgress = true;
+                }
             }
+            if (blockedByDataTransfer)
+            {
+                if (changingVersion)
+                {
+                    UpdateDshUi(
+                        UpdateUiActivity.Failed,
+                        selectedPackage == null ? null : selectedPackage.Version,
+                        "版本更换未开始",
+                        0,
+                        false,
+                        "DSH 数据传输正在进行，请完成后再应用版本。自动更新设置未更改。");
+                }
+                return;
+            }
+
+            string packagePath = null;
+            string latest = selectedPackage == null ? null : selectedPackage.Version;
             try
             {
+                // Confirmation turns off automatic updates even if a later install fails.
+                if (disableAutomaticUpdates)
+                {
+                    _settings.DshUpdateMode = "Off";
+                    LauncherSettingsStore.Save(_settings);
+                    _settingsHost?.SetDshUpdateMode("Off");
+                    WriteLog("DSH automatic updates disabled for manual version selection.");
+                }
+
                 UpdateDshUi(
                     UpdateUiActivity.Checking,
-                    null,
-                    "检测更新中",
+                    latest,
+                    changingVersion ? "正在更换 DSH 版本" : "检测更新中",
                     -1,
                     true,
                     String.Empty);
+                if (changingVersion)
+                {
+                    ShowUpdateWindow("正在更换 DSH 版本", "正在读取目标版本信息…");
+                    UpdateWindow("正在更换 DSH 版本", "正在读取目标版本信息…", -1);
+                }
                 string error;
-                DshUpdatePackage package = DshUpdateService.FetchLatestPackage(
-                    _settings,
-                    out error);
+                DshUpdatePackage package = selectedPackage;
+                if (package == null)
+                {
+                    package = String.IsNullOrWhiteSpace(channelOverride)
+                        ? DshUpdateService.FetchLatestPackage(_settings, out error)
+                        : DshUpdateService.FetchLatestPackageForChannel(
+                            _settings,
+                            channelOverride,
+                            out error,
+                            requireExactChannel: changingVersion);
+                }
+                else
+                {
+                    error = null;
+                }
                 if (package == null
                     || String.IsNullOrWhiteSpace(package.Version))
                 {
                     UpdateDshUi(
                         UpdateUiActivity.Failed,
                         null,
-                        "检查失败",
+                        changingVersion ? "读取目标版本失败" : "检查失败",
                         0,
                         false,
                         error);
-                    WriteLog("DSH 更新检查失败: " + error);
+                    if (changingVersion)
+                        UpdateWindow("更换 DSH 版本失败", error ?? "未找到目标版本。", 0);
+                    WriteLog("DSH 版本检查失败: " + error);
                     if (manual && _settings.UpdateReminder)
                     {
                         ShowNotification(error, true);
@@ -3205,7 +3311,7 @@ namespace DeepSeekHarnessLauncher
                     return;
                 }
 
-                string latest = package.Version;
+                latest = package.Version;
                 string installed = DshUpdateService.GetInstalledVersion(
                     _settings.DshRoot);
                 DateTimeOffset? installedPublishedAt =
@@ -3221,7 +3327,7 @@ namespace DeepSeekHarnessLauncher
                         : installed)
                     + " / "
                     + FormatPublishedAt(installedPublishedAt));
-                if (!DshUpdateService.IsNewer(package, installed))
+                if (!changingVersion && !DshUpdateService.IsNewer(package, installed))
                 {
                     UpdateDshUi(
                         UpdateUiActivity.UpToDate,
@@ -3244,7 +3350,7 @@ namespace DeepSeekHarnessLauncher
                     return;
                 }
 
-                bool install = forceInstall || String.Equals(
+                bool install = changingVersion || forceInstall || String.Equals(
                     _settings.DshUpdateMode,
                     "Install",
                     StringComparison.OrdinalIgnoreCase);
@@ -3274,7 +3380,7 @@ namespace DeepSeekHarnessLauncher
                 }
 
                 WriteLog(
-                    "开始安装 DSH 更新 "
+                    (changingVersion ? "开始更换 DSH 版本 " : "开始安装 DSH 更新 ")
                     + installed
                     + " -> "
                     + latest);
@@ -3285,13 +3391,14 @@ namespace DeepSeekHarnessLauncher
                     -1,
                     true,
                     String.Empty);
-                ShowUpdateWindow();
+                ShowUpdateWindow(
+                    changingVersion ? "正在更换 DSH 版本" : "正在更新 DSH v" + latest,
+                    changingVersion ? "准备下载 v" + latest + "…" : "准备下载…");
                 UpdateWindow(
-                    "正在更新 DSH v" + latest,
-                    "准备下载…",
+                    changingVersion ? "正在更换 DSH 版本" : "正在更新 DSH v" + latest,
+                    changingVersion ? "准备下载 v" + latest + "…" : "准备下载…",
                     -1);
 
-                string packagePath;
                 string downloadError;
                 bool downloaded = DshUpdateService.DownloadPackage(
                     package,
@@ -3332,13 +3439,13 @@ namespace DeepSeekHarnessLauncher
                         0,
                         false,
                         downloadError);
-                    UpdateWindow("更新失败", downloadError, 0);
-                    WriteLog("DSH 更新包下载失败: " + downloadError);
+                    UpdateWindow(changingVersion ? "更换 DSH 版本失败" : "更新失败", downloadError, 0);
+                    WriteLog("DSH 安装包下载失败: " + downloadError);
 
                     // 失败必弹,不看「更新提醒」开关 ——
                     // 关掉提醒的人更需要知道这次更新没成(以前这里被开关一起静默了)。
                     ShowNotification(
-                        "DSH 更新失败: " + downloadError,
+                        (changingVersion ? "更换 DSH 版本失败: " : "DSH 更新失败: ") + downloadError,
                         true);
 
                     return;
@@ -3352,8 +3459,8 @@ namespace DeepSeekHarnessLauncher
                     false,
                     String.Empty);
                 UpdateWindow(
-                    "正在更新 DSH v" + latest,
-                    "安装中 · 正在准备",
+                    changingVersion ? "正在更换 DSH 版本" : "正在更新 DSH v" + latest,
+                    changingVersion ? "正在安装 v" + latest + " · 正在准备" : "安装中 · 正在准备",
                     0);
                 StopService();
                 string installError;
@@ -3378,14 +3485,11 @@ namespace DeepSeekHarnessLauncher
                     out installError);
                 if (!installedOk)
                 {
-                    UpdateDshUi(
-                        UpdateUiActivity.Failed,
-                        latest,
-                        "安装失败",
-                        0,
-                        false,
-                        installError);
-                    WriteLog("DSH 更新失败: " + installError);
+                    WriteLog((changingVersion ? "更换 DSH 版本失败: " : "DSH 更新失败: ") + installError);
+                    UpdateWindow(
+                        changingVersion ? "正在更换 DSH 版本" : "正在更新 DSH v" + latest,
+                        "安装失败，正在恢复原版本…",
+                        0);
                     if (!String.IsNullOrWhiteSpace(installed))
                     {
                         string rollbackError;
@@ -3403,7 +3507,7 @@ namespace DeepSeekHarnessLauncher
                     }
 
                     // 失败必弹,不看「更新提醒」开关(同上:关掉提醒的人更需要知道出了事)
-                    ShowNotification("DSH 更新失败: " + installError, true);
+                    ShowNotification((changingVersion ? "更换 DSH 版本失败: " : "DSH 更新失败: ") + installError, true);
                 }
                 else
                 {
@@ -3414,33 +3518,82 @@ namespace DeepSeekHarnessLauncher
                         100,
                         false,
                         String.Empty);
-                    WriteLog("DSH 更新完成: " + latest);
-                    _pendingUpdateNotification =
-                        "DSH 已更新到 v" + latest + "，服务已恢复。";
+                    WriteLog((changingVersion ? "DSH 版本更换完成: " : "DSH 更新完成: ") + latest);
+                    if (!String.IsNullOrWhiteSpace(channelAfterInstall))
+                    {
+                        _settings.DshChannel = channelAfterInstall;
+                        LauncherSettingsStore.Save(_settings);
+                        _settingsHost?.SetDshChannel(channelAfterInstall);
+                    }
+                    _pendingUpdateNotification = changingVersion
+                        ? "DSH 版本已更换为 v" + latest + "，服务已恢复。"
+                        : "DSH 已更新到 v" + latest + "，服务已恢复。";
                 }
 
                 if (!_startupUpdateFlow)
                 {
-                    UpdateWindow("正在重启 DSH", "等待服务重新就绪", -1);
-                    RestartThreadProc();
+                    UpdateWindow(
+                        changingVersion ? "正在更换 DSH 版本" : "正在重启 DSH",
+                        changingVersion ? "安装完成，等待服务重新就绪" : "等待服务重新就绪",
+                        -1);
+                    RestartThreadProc(preserveVersionChangeProgress: changingVersion);
                 }
                 if (installedOk)
                 {
+                    bool serviceRestored = _serviceRunning || _startupUpdateFlow;
+                    if (serviceRestored)
+                    {
+                        UpdateDshUi(
+                            UpdateUiActivity.UpToDate,
+                            latest,
+                            changingVersion ? "版本更换完成" : "已是新版本",
+                            0,
+                            false,
+                            changingVersion ? "已更换到 v" + latest : String.Empty);
+                    }
+                    else
+                    {
+                        string restartError = "DSH 版本已安装，但服务没有重新就绪。请检查启动器日志后重试启动服务。";
+                        UpdateDshUi(
+                            UpdateUiActivity.Failed,
+                            latest,
+                            "版本已安装，服务未就绪",
+                            0,
+                            false,
+                            restartError);
+                        UpdateWindow("更换 DSH 版本失败", restartError, 0);
+                    }
+                }
+                else
+                {
                     UpdateDshUi(
-                        UpdateUiActivity.UpToDate,
+                        UpdateUiActivity.Failed,
                         latest,
-                        "已是新版本",
+                        "安装失败",
                         0,
                         false,
-                        String.Empty);
+                        installError);
+                    if (changingVersion)
+                        UpdateWindow("更换 DSH 版本失败", "安装失败，已尝试恢复原版本。" + installError, 0);
                 }
             }
             catch (Exception exception)
             {
+                if (changingVersion)
+                {
+                    UpdateDshUi(
+                        UpdateUiActivity.Failed,
+                        latest,
+                        "版本更换失败",
+                        0,
+                        false,
+                        DescribeException(exception));
+                }
                 WriteLog("DSH 更新出错: " + DescribeException(exception));
             }
             finally
             {
+                DshUpdateService.CleanupPackage(packagePath, WriteLog);
                 lock (_dshDataOperationLock) _dshUpdateInProgress = false;
                 FinishUpdateWindow();
             }
@@ -3561,14 +3714,9 @@ namespace DeepSeekHarnessLauncher
 
         private void CheckDshUpdateForSettings()
         {
-            if (_dshUpdateInProgress)
-            {
-                return;
-            }
-
             lock (_dshDataOperationLock)
             {
-                if (_dshDataTransferInProgress) return;
+                if (_dshUpdateInProgress || _dshDataTransferInProgress) return;
                 _dshUpdateInProgress = true;
             }
             UpdateDshUi(
@@ -3625,7 +3773,7 @@ namespace DeepSeekHarnessLauncher
                 }
                 finally
                 {
-                    _dshUpdateInProgress = false;
+                    lock (_dshDataOperationLock) _dshUpdateInProgress = false;
                 }
             }));
             thread.IsBackground = true;
@@ -3641,6 +3789,87 @@ namespace DeepSeekHarnessLauncher
             }));
             thread.IsBackground = true;
             thread.Name = "DeepSeekHarnessDshUpdateInstall";
+            thread.Start();
+        }
+
+        private void LoadDshVersionsForSettings(
+            Action<List<DshUpdatePackage>, string> completed)
+        {
+            Thread thread = new Thread(new ThreadStart(delegate
+            {
+                string error;
+                List<DshUpdatePackage> packages = DshUpdateService.FetchAllVersions(
+                    _settings,
+                    out error);
+                InvokeOnUi(() => completed?.Invoke(packages, error));
+            }));
+            thread.IsBackground = true;
+            thread.Name = "DeepSeekHarnessDshVersionCatalog";
+            thread.Start();
+        }
+
+        private bool TryAcquireDshVersionOperation(out string rejection)
+        {
+            lock (_dshDataOperationLock)
+            {
+                if (_dshUpdateInProgress)
+                {
+                    rejection = "DSH 正在进行另一项更新操作，请完成后再试。";
+                    return false;
+                }
+                if (_dshDataTransferInProgress)
+                {
+                    rejection = "DSH 数据传输正在进行，请完成后再应用版本。";
+                    return false;
+                }
+                _dshUpdateInProgress = true;
+            }
+            rejection = null;
+            return true;
+        }
+
+        private void InstallDshVersionForSettings(DshUpdatePackage package)
+        {
+            if (package == null) return;
+            if (!TryAcquireDshVersionOperation(out string rejection))
+            {
+                _settingsHost?.DshVersionOperationRejected(rejection);
+                return;
+            }
+            Thread thread = new Thread(new ThreadStart(delegate
+            {
+                RunDshUpdate(
+                    true,
+                    true,
+                    selectedPackage: package,
+                    changingVersion: true,
+                    disableAutomaticUpdates: true,
+                    operationLockAlreadyAcquired: true);
+            }));
+            thread.IsBackground = true;
+            thread.Name = "DeepSeekHarnessDshVersionInstall";
+            thread.Start();
+        }
+
+        private void RollbackDshToStableForSettings()
+        {
+            if (!TryAcquireDshVersionOperation(out string rejection))
+            {
+                _settingsHost?.DshVersionOperationRejected(rejection);
+                return;
+            }
+            Thread thread = new Thread(new ThreadStart(delegate
+            {
+                RunDshUpdate(
+                    true,
+                    true,
+                    channelOverride: "latest",
+                    changingVersion: true,
+                    channelAfterInstall: "latest",
+                    operationLockAlreadyAcquired: true);
+            }));
+            thread.IsBackground = true;
+            thread.Name = "DeepSeekHarnessDshStableRollback";
             thread.Start();
         }
 
@@ -4003,7 +4232,7 @@ namespace DeepSeekHarnessLauncher
                 Constants.Title
                 + (wasRunning ? " 正在重启..." : " 正在启动..."));
 
-            Thread restartThread = new Thread(RestartThreadProc);
+            Thread restartThread = new Thread(new ThreadStart(delegate { RestartThreadProc(); }));
             restartThread.IsBackground = true;
             restartThread.Name = "DeepSeekHarnessRestart";
             restartThread.Start();
@@ -4293,6 +4522,28 @@ namespace DeepSeekHarnessLauncher
         private void TryShowNextNotice()
         {
             if (_exiting) return;
+            if (FullscreenWindowDetector.IsFullscreenApplicationRunning(Environment.ProcessId))
+            {
+                _noticeQueue.MarkWaitingFullscreenDeferred();
+                if (_activeNotice != null)
+                {
+                    if (_noticeWindow?.HasDisplayedNotice == true)
+                    {
+                        // It was already shown before fullscreen began. Remove the overlay,
+                        // but do not send a duplicate delivery or defer receipt.
+                        _noticeQueue.Complete(_activeNotice);
+                        _noticeWindow.Close();
+                        _noticeWindow = null;
+                        _activeNotice = null;
+                    }
+                    else
+                    {
+                        _noticeQueue.MarkFullscreenDeferred(_activeNotice);
+                        DeferActiveNotice();
+                    }
+                }
+                return;
+            }
             if (_noticePresence != null && (DateTimeOffset.UtcNow - _noticePresence.ObservedAt).TotalSeconds > 300)
                 SetNoticePresence(null);
             if (_startupInProgress || _startupUpdateFlow || _updateInProgress || _dshUpdateInProgress
@@ -4346,14 +4597,23 @@ namespace DeepSeekHarnessLauncher
             _activeNotice = message;
             try
             {
-                if (!message.IsLocal && _noticeStore.IsMessageRead(message))
+                if (message.WasFullscreenDeferred && !message.FullscreenDeferredMetricSent
+                    && !message.IsLocal && !message.IsFeedbackReply)
+                {
+                    message.FullscreenDeferredMetricSent = true;
+                    ReportNotice(message, "deferred", null);
+                }
+                if (!message.IsLocal && _noticeStore.IsMessageHandled(message))
                 { _noticeQueue.Complete(message); _activeNotice = null; return; }
                 _noticeWindow = new InfoWindowClient(_dispatcherQueue, WriteLog);
                 _noticeWindow.NoticeAction += HandleNoticeAction;
                 _noticeWindow.NoticeDisplayed += id =>
                 {
                     if (_activeNotice?.Id == id && !_activeNotice.IsFeedbackReply && !_activeNotice.IsLocal)
+                    {
+                        _noticeStore.MarkNotificationDisplayed(_activeNotice);
                         ReportNotice(_activeNotice, "displayed", null);
+                    }
                 };
                 _noticeWindow.Show();
                 if (message.IsFeedbackReply)
@@ -4420,33 +4680,59 @@ namespace DeepSeekHarnessLauncher
                     if (buttonIndex.HasValue) ReportNotice(message, "click", buttonIndex);
                     ReportNotice(message, "read", null);
                 }
-                if (buttonIndex.HasValue)
-                {
-                    ClientNoticeButton button = message.Buttons[buttonIndex.Value];
-                    if (message.IsLocal && button.LocalAction != null) button.LocalAction();
-                    else if (button.Action == "url" && !UrlLauncher.TryOpen(button.ActionTarget, out string error))
-                        throw new InvalidOperationException(error);
-                    else if (button.Action == "settings") ShowSettings(message.IsFeedbackReply ? "Feedback" : button.ActionTarget switch
-                        { "Extensions" => "Plugins", "Core" => "Service", _ => button.ActionTarget });
-                    else if (button.Action == "powershell")
-                    {
-                        if (ClientNoticeClient.ResolveBase(_noticeStore.LoadSettings())?.Scheme != "https")
-                            throw new InvalidOperationException("PowerShell 按钮只接受 HTTPS 消息来源。");
-                        if (WinFormsMessageBox.Show("通知：" + message.Title + "\r\n\r\n即将运行以下 PowerShell 命令：\r\n\r\n"
-                            + button.ActionTarget + "\r\n\r\n命令将以当前启动器权限运行。是否执行？", "确认运行 PowerShell",
-                            WinFormsMessageBoxButtons.OKCancel, System.Windows.Forms.MessageBoxIcon.Warning,
-                            System.Windows.Forms.MessageBoxDefaultButton.Button2) != WinFormsDialogResult.OK) return;
-                        Process.Start(new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
-                            @"WindowsPowerShell\v1.0\powershell.exe"), "-NoProfile -NoExit -EncodedCommand "
-                            + Convert.ToBase64String(Encoding.Unicode.GetBytes(button.ActionTarget))) { UseShellExecute = true });
-                    }
-                }
+                if (buttonIndex.HasValue && !ExecuteNoticeButton(message, buttonIndex.Value)) return;
                 _noticeQueue.Complete(message);
                 _activeNotice = null;
                 _noticeWindow?.Close();
                 _noticeWindow = null;
             }
             catch (Exception exception) { WriteLog("公告操作失败：" + DescribeException(exception)); }
+        }
+
+        private bool ExecuteHomeNotificationAction(ClientNoticeMessage message, int buttonIndex)
+        {
+            if (_noticeStore == null || message == null || !message.Validate(out _)
+                || buttonIndex < 0 || buttonIndex >= message.Buttons.Count)
+                throw new InvalidOperationException("通知按钮内容无效，请刷新后重试。");
+            if (!ExecuteNoticeButton(message, buttonIndex)) return false;
+            if (!message.IsLocal)
+            {
+                if (_noticeClient != null) _noticeClient.AcknowledgeAction(message, buttonIndex);
+                else _noticeStore.MarkMessageRead(message);
+                ReportNotice(message, "click", buttonIndex);
+                ReportNotice(message, "read", null);
+            }
+            _noticeQueue.Complete(message);
+            if (_activeNotice?.Id == message.Id)
+            {
+                _activeNotice = null;
+                _noticeWindow?.Close();
+                _noticeWindow = null;
+            }
+            return true;
+        }
+
+        private bool ExecuteNoticeButton(ClientNoticeMessage message, int buttonIndex)
+        {
+            ClientNoticeButton button = message.Buttons[buttonIndex];
+            if (message.IsLocal && button.LocalAction != null) button.LocalAction();
+            else if (button.Action == "url" && !UrlLauncher.TryOpen(button.ActionTarget, out string error))
+                throw new InvalidOperationException(error);
+            else if (button.Action == "settings") ShowSettings(message.IsFeedbackReply ? "Feedback" : button.ActionTarget switch
+                { "Extensions" => "Plugins", "Core" => "Service", _ => button.ActionTarget });
+            else if (button.Action == "powershell")
+            {
+                if (ClientNoticeClient.ResolveBase(_noticeStore.LoadSettings())?.Scheme != "https")
+                    throw new InvalidOperationException("PowerShell 按钮只接受 HTTPS 消息来源。");
+                if (WinFormsMessageBox.Show("通知：" + message.Title + "\r\n\r\n即将运行以下 PowerShell 命令：\r\n\r\n"
+                    + button.ActionTarget + "\r\n\r\n命令将以当前启动器权限运行。是否执行？", "确认运行 PowerShell",
+                    WinFormsMessageBoxButtons.OKCancel, System.Windows.Forms.MessageBoxIcon.Warning,
+                    System.Windows.Forms.MessageBoxDefaultButton.Button2) != WinFormsDialogResult.OK) return false;
+                Process.Start(new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
+                    @"WindowsPowerShell\v1.0\powershell.exe"), "-NoProfile -NoExit -EncodedCommand "
+                    + Convert.ToBase64String(Encoding.Unicode.GetBytes(button.ActionTarget))) { UseShellExecute = true });
+            }
+            return true;
         }
         private void ExitItemClick()
         {
@@ -4631,6 +4917,7 @@ namespace DeepSeekHarnessLauncher
             {
                 _lastBalanceDisplay = result.Display;
                 _lastBalanceText = "余额：" + result.Display;
+                _settingsHost?.RaiseBalanceChanged();
                 _lastBalanceUpdatedUtc = result.UpdatedAtUtc;
                 _balanceToolTip = "点击修改 API 设置。更新时间："
                     + result.UpdatedAtUtc.ToLocalTime().ToString("HH:mm:ss");
@@ -4659,6 +4946,7 @@ namespace DeepSeekHarnessLauncher
             }
 
             _lastBalanceText = "余额：查询失败（点击设置 API）";
+            _settingsHost?.RaiseBalanceChanged();
             _balanceToolTip = result.Error;
             _trayMenu.SetBalance(_lastBalanceText, _balanceToolTip);
         }
@@ -4673,6 +4961,7 @@ namespace DeepSeekHarnessLauncher
             if (String.IsNullOrEmpty(_lastBalanceText))
             {
                 _lastBalanceText = "余额：正在查询...";
+                _settingsHost?.RaiseBalanceChanged();
             }
 
             _balanceToolTip = "正在从 DeepSeek 查询余额，点击可修改 API 设置。";
@@ -4682,6 +4971,7 @@ namespace DeepSeekHarnessLauncher
         private void SetBalanceUnconfigured()
         {
             _lastBalanceText = "余额：未配置（点击设置 API）";
+            _settingsHost?.RaiseBalanceChanged();
             _balanceToolTip = "点击后填写 DeepSeek API Key，保存后自动刷新余额。";
             _trayMenu.SetBalance(_lastBalanceText, _balanceToolTip);
             _lastBalanceDisplay = String.Empty;
@@ -4770,7 +5060,8 @@ namespace DeepSeekHarnessLauncher
             {
                 _suppressExitNotification = true;
                 StopService();
-                FailStartup("DSH 服务启动失败：" + exception.Message + "；" + Environment.NewLine + "日志：" + _logPath);
+                WriteLog("DSH startup exception: " + RedactServiceDiagnosticSecrets(DescribeException(exception)));
+                FailStartup(DescribeDshStartupCause(exception));
             }
         }
 
@@ -4791,7 +5082,14 @@ namespace DeepSeekHarnessLauncher
                     {
                         if (_service.HasExited)
                         {
-                            failureMessage = "DSH 服务启动失败，进程已退出。" + Environment.NewLine + "退出代码：" + _service.ExitCode;
+                            int exitCode = _service.ExitCode;
+                            WaitForServiceOutputDrain();
+                            List<string> output = SnapshotServiceStartupOutput();
+                            string cause = DescribeDshStartupCause(output, null);
+                            WriteLog("DSH startup process exited with code " + exitCode.ToString()
+                                + "; user-facing cause: " + cause
+                                + "; diagnostic output: " + FindRelevantServiceDiagnostic(output));
+                            failureMessage = cause;
                             return false;
                         }
                     }
@@ -4809,12 +5107,23 @@ namespace DeepSeekHarnessLauncher
                 Thread.Sleep(500);
             }
 
-            failureMessage = "DSH 服务启动超时。" + Environment.NewLine + "请查看日志：" + _logPath;
+            WaitForServiceOutputDrain();
+            List<string> timeoutOutput = SnapshotServiceStartupOutput();
+            string timeoutCause = timeoutOutput.Count == 0
+                ? "DSH 启动超时，服务尚未就绪。请稍后重试。"
+                : DescribeDshStartupCause(timeoutOutput, null);
+            WriteLog("DSH startup timed out; user-facing cause: " + timeoutCause
+                + "; diagnostic output: " + FindRelevantServiceDiagnostic(timeoutOutput));
+            failureMessage = timeoutCause;
             return false;
         }
 
         private bool StartService()
         {
+            lock (_serviceStartupOutputLock) _serviceStartupOutput.Clear();
+            _serviceOutputThread = null;
+            _serviceErrorThread = null;
+
             string proxyError = ProxySupport.DshConfigurationError(_settings);
             if (proxyError != null) throw new InvalidOperationException(proxyError);
             if (!File.Exists(_nodePath))
@@ -4858,13 +5167,13 @@ namespace DeepSeekHarnessLauncher
             _service = process;
             WriteLog("Started elevated node process " + process.Id.ToString() + ".");
 
-            Thread outputThread = new Thread(delegate() { ReadProcessStream(process.StandardOutput, "OUT"); });
-            outputThread.IsBackground = true;
-            outputThread.Start();
+            _serviceOutputThread = new Thread(delegate() { ReadProcessStream(process.StandardOutput, "OUT"); });
+            _serviceOutputThread.IsBackground = true;
+            _serviceOutputThread.Start();
 
-            Thread errorThread = new Thread(delegate() { ReadProcessStream(process.StandardError, "ERR"); });
-            errorThread.IsBackground = true;
-            errorThread.Start();
+            _serviceErrorThread = new Thread(delegate() { ReadProcessStream(process.StandardError, "ERR"); });
+            _serviceErrorThread.IsBackground = true;
+            _serviceErrorThread.Start();
 
             return true;
         }
@@ -4876,12 +5185,19 @@ namespace DeepSeekHarnessLauncher
                 string line;
                 while ((line = reader.ReadLine()) != null)
                 {
-                    WriteLog(prefix + " " + RedactSensitiveUrl(line));
                     CaptureServiceUrl(line);
+                    string safeLine = RedactServiceDiagnosticSecrets(line);
+                    lock (_serviceStartupOutputLock)
+                    {
+                        if (_serviceStartupOutput.Count >= 200) _serviceStartupOutput.Dequeue();
+                        _serviceStartupOutput.Enqueue(safeLine.Length > 2000 ? safeLine.Substring(0, 2000) : safeLine);
+                    }
+                    WriteLog(prefix + " " + safeLine);
                 }
             }
-            catch
+            catch (Exception exception)
             {
+                WriteLog(prefix + " stream read failed: " + exception.GetType().Name);
             }
         }
 
@@ -4935,6 +5251,119 @@ namespace DeepSeekHarnessLauncher
                 "$1<redacted>");
         }
 
+        private List<string> SnapshotServiceStartupOutput()
+        {
+            lock (_serviceStartupOutputLock) return _serviceStartupOutput.ToList();
+        }
+
+        private void WaitForServiceOutputDrain()
+        {
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(900);
+            Thread[] readers = { _serviceOutputThread, _serviceErrorThread };
+            foreach (Thread reader in readers)
+            {
+                if (reader == null || reader == Thread.CurrentThread) continue;
+                int remaining = (int)Math.Max(0, (deadline - DateTime.UtcNow).TotalMilliseconds);
+                if (remaining == 0) break;
+                try { reader.Join(remaining); }
+                catch { }
+            }
+        }
+
+        private string DescribeDshStartupCause(Exception exception)
+        {
+            return DescribeDshStartupCause(SnapshotServiceStartupOutput(), exception);
+        }
+
+        private string DescribeDshStartupCause(List<string> output, Exception exception)
+        {
+            string text = String.Join("\n", output ?? new List<string>());
+            if (exception != null) text += "\n" + exception.GetType().Name + ": " + exception.Message;
+            string lower = text.ToLowerInvariant();
+
+            bool portConflict = lower.Contains("eaddrinuse") || lower.Contains("address already in use")
+                || Regex.IsMatch(text, @"(?i)(?:port|端口)\s*[:#]?\s*\d{2,5}[^\r\n]{0,60}(?:in use|already in use|占用)");
+            if (portConflict)
+            {
+                Match portMatch = Regex.Match(text, @"(?i)(?:EADDRINUSE|address already in use)[^\r\n]{0,180}?(?::(?<port>\d{2,5}))(?:\D|$)");
+                if (!portMatch.Success)
+                    portMatch = Regex.Match(text, @"(?i)(?:port|端口)\s*[:#]?\s*(?<port>\d{2,5})");
+                string port = portMatch.Success ? portMatch.Groups["port"].Value : _port.ToString();
+                return "本机端口 " + port + " 已被其他程序占用，请更换服务端口或关闭占用程序。";
+            }
+            if (lower.Contains("err_module_not_found") || lower.Contains("module_not_found")
+                || lower.Contains("cannot find package") || lower.Contains("cannot find module")
+                || lower.Contains("err_package_path_not_exported"))
+                return "DSH 运行依赖不完整，请修复或重新安装 DSH 后重试。";
+            if (lower.Contains("unsupported engine") || lower.Contains("unsupported node")
+                || lower.Contains("incompatible with this module")
+                || lower.Contains("requires node") || lower.Contains("node.js version")
+                || lower.Contains("node version is not supported"))
+                return "当前 Node.js 版本不符合 DSH 要求，请更新 Node.js 后重试。";
+            if (lower.Contains("eacces") || lower.Contains("eperm") || lower.Contains("permission denied")
+                || lower.Contains("access is denied"))
+                return "DSH 无权访问所需文件或网络端口，请检查目录权限或安全软件拦截。";
+            if (lower.Contains("eaddrnotavail") || lower.Contains("address not available"))
+                return "DSH 配置的监听地址不可用，请检查服务地址设置。";
+            if (lower.Contains("enospc") || lower.Contains("no space left on device"))
+                return "磁盘空间不足，DSH 无法完成启动。请释放空间后重试。";
+            if (lower.Contains("heap out of memory") || lower.Contains("javascript heap")
+                || lower.Contains("err_memory_allocation"))
+                return "Node.js 可用内存不足，DSH 无法完成启动。请关闭其他程序后重试。";
+            if (lower.Contains("invalid config") || lower.Contains("configuration is invalid")
+                || lower.Contains("config validation") || lower.Contains("zoderror")
+                || lower.Contains("json.parse") || (lower.Contains("syntaxerror") && lower.Contains("config")))
+                return "DSH 配置文件格式或内容无效，请检查配置后重试。";
+            if (lower.Contains("syntaxerror"))
+                return "DSH 启动文件格式有误，请修复或重新安装 DSH。";
+            if (lower.Contains("err_ossl") || lower.Contains("certificate") || lower.Contains("tls handshake"))
+                return "DSH 网络安全连接失败，请检查网络代理或证书设置。";
+            if (lower.Contains("econnrefused") || lower.Contains("fetch failed") || lower.Contains("enotfound"))
+                return "DSH 启动时无法连接所需网络服务，请检查网络或代理设置。";
+
+            if (exception is FileNotFoundException)
+            {
+                FileNotFoundException missing = (FileNotFoundException)exception;
+                if (String.Equals(missing.FileName, _nodePath, StringComparison.OrdinalIgnoreCase)
+                    || (lower.Contains("node") && !lower.Contains("node_modules")))
+                    return "找不到 Node.js 运行时，请修复 Node.js 路径或重新安装。";
+                return "找不到 DSH 启动文件或运行依赖，请修复或重新安装 DSH。";
+            }
+            if (lower.Contains("proxy") || lower.Contains("代理"))
+                return "DSH 网络代理配置无效，请检查启动器中的服务代理设置。";
+            if (String.IsNullOrWhiteSpace(text)) return "DSH 未能完成启动，请查看启动器日志了解详细原因。";
+            return "DSH 启动未完成，服务尚未就绪。请查看启动器日志了解详细原因。";
+        }
+
+        private static string FindRelevantServiceDiagnostic(List<string> output)
+        {
+            if (output == null || output.Count == 0) return "(no DSH output captured)";
+            for (int index = output.Count - 1; index >= 0; index--)
+            {
+                string line = output[index];
+                if (Regex.IsMatch(line, @"(?i)error|exception|fatal|E[A-Z_]{3,}|not found|invalid|failed|unsupported"))
+                    return line.Length > 600 ? line.Substring(0, 600) : line;
+            }
+            string last = output.LastOrDefault(line => !String.IsNullOrWhiteSpace(line));
+            if (String.IsNullOrWhiteSpace(last)) return "(no DSH output captured)";
+            return last.Length > 600 ? last.Substring(0, 600) : last;
+        }
+
+        private static string RedactServiceDiagnosticSecrets(string line)
+        {
+            if (String.IsNullOrEmpty(line)) return line;
+            string safe = RedactSensitiveUrl(line);
+            safe = Regex.Replace(safe, @"(?i)(\bBearer\s+)[A-Za-z0-9._~+/-]{8,}=*", "$1<redacted>");
+            safe = Regex.Replace(safe,
+                @"(?i)([?&](?:[A-Z0-9_-]*_)?(?:access[_-]?token|api[_-]?key|apikey|secret|password|authorization|_authToken|key)=)[^\s&""'<>]+",
+                "$1<redacted>");
+            safe = Regex.Replace(safe,
+                @"(?i)(\b(?:[A-Z0-9_-]+_)?(?:access[_-]?token|token|api[_-]?key|apikey|secret|password|authorization|_authToken|key)\b[""']?\s*[:=]\s*)(?:""[^""]*""|'[^']*'|[^\s,}]+)",
+                "$1\"<redacted>\"");
+            safe = Regex.Replace(safe, @"(?i)\b(?:sk|ds|ghp|github_pat)-[A-Za-z0-9_-]{12,}\b", "<redacted>");
+            return safe;
+        }
+
         private void ServiceExited(object sender, EventArgs eventArgs)
         {
             if (_suppressExitNotification)
@@ -4964,6 +5393,7 @@ namespace DeepSeekHarnessLauncher
         {
             _startupInProgress = false;
             _serviceRunning = true;
+            _startupServiceReadyUtc = DateTime.UtcNow;
             WriteLog("Service is ready.");
 
             // 服务 HTTP 已经通了就算成功，信息窗口收绿勾；带 token 的地址慢慢等不影响结论。
@@ -5041,7 +5471,7 @@ namespace DeepSeekHarnessLauncher
             _startupInProgress = false;
             _pendingUpdateNotification = String.Empty;
             WriteLog("Startup failed: " + message);
-            // 保留用户指定的换行及日志路径，信息窗口按正文高度自适应。
+            // 窗口只显示简短原因，完整输出和退出详情留在 launcher.log。
             FinishServiceWindow(false, message);
             InvokeOnUi(delegate()
             {
@@ -5141,7 +5571,7 @@ namespace DeepSeekHarnessLauncher
             Program.OpenPage(url);
         }
 
-        private void RestartThreadProc()
+        private void RestartThreadProc(bool preserveVersionChangeProgress = false)
         {
             lock (_dshDataOperationLock)
             {
@@ -5155,9 +5585,13 @@ namespace DeepSeekHarnessLauncher
 
             // 重启路径（托盘菜单 / 设置页插件区 / 插件自更新 / DSH 更新后）统一在这里
             // 拉起右下角信息窗口：重启中 -> 已重启 / 重启失败。
-            ShowServiceWindow(
-                restarting,
-                restarting ? "正在停止旧的 DSH 服务" : "正在解析 DSH 目录与端口");
+            string initialDetail = restarting
+                ? "正在停止旧的 DSH 服务"
+                : "正在解析 DSH 目录与端口";
+            if (preserveVersionChangeProgress)
+                UpdateWindow("正在更换 DSH 版本", initialDetail, -1);
+            else
+                ShowServiceWindow(restarting, initialDetail);
             try
             {
                 StopService();
@@ -5175,17 +5609,24 @@ namespace DeepSeekHarnessLauncher
                 _suppressExitNotification = false;
                 _startupInProgress = true;
 
-                UpdateServiceWindow(
-                    restarting
-                        ? "已停止旧进程，正在重新拉起"
-                        : "正在拉起 DSH 服务进程");
+                string startDetail = restarting
+                    ? "已停止旧进程，正在重新拉起"
+                    : "正在拉起 DSH 服务进程";
+                if (preserveVersionChangeProgress)
+                    UpdateWindow("正在更换 DSH 版本", startDetail, -1);
+                else
+                    UpdateServiceWindow(startDetail);
                 if (!StartService())
                 {
                     FailRestart("无法重新创建 DSH 服务进程。");
                     return;
                 }
 
-                UpdateServiceWindow("等待服务就绪（" + Program.BuildServiceUrl(_port) + "）");
+                string readyDetail = "等待服务就绪（" + Program.BuildServiceUrl(_port) + "）";
+                if (preserveVersionChangeProgress)
+                    UpdateWindow("正在更换 DSH 版本", readyDetail, -1);
+                else
+                    UpdateServiceWindow(readyDetail);
                 string failureMessage;
                 if (!WaitForServiceReady(out failureMessage))
                 {
@@ -5201,7 +5642,8 @@ namespace DeepSeekHarnessLauncher
             {
                 _suppressExitNotification = true;
                 StopService();
-                FailRestart("DSH 服务重启失败：" + exception.Message);
+                WriteLog("DSH restart exception: " + RedactServiceDiagnosticSecrets(DescribeException(exception)));
+                FailRestart(DescribeDshStartupCause(exception));
             }
         }
 

@@ -25,6 +25,29 @@ namespace DeepSeekHarnessLauncher
 
     internal static class DownloadSupport
     {
+        internal static bool TryDeleteOwnedDirectory(string path, string parent, string prefix, Action<string> log = null)
+        {
+            try
+            {
+                if (String.IsNullOrWhiteSpace(path)) return false;
+                string resolved = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string expectedParent = Path.GetFullPath(parent).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string name = Path.GetFileName(resolved);
+                if (!String.Equals(Path.GetDirectoryName(resolved), expectedParent, StringComparison.OrdinalIgnoreCase)
+                    || !name.StartsWith(prefix, StringComparison.Ordinal)
+                    || !Guid.TryParseExact(name.Substring(prefix.Length), "N", out _)) return false;
+                for (string ancestor = resolved; ancestor != null; ancestor = Path.GetDirectoryName(ancestor))
+                    if (Directory.Exists(ancestor) && (File.GetAttributes(ancestor) & FileAttributes.ReparsePoint) != 0) return false;
+                if (Directory.Exists(resolved)) Directory.Delete(resolved, true);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                try { log?.Invoke("Temporary download cleanup failed: " + exception.Message); } catch { }
+                return false;
+            }
+        }
+
         internal const int DefaultThreads = 4;
         private const long MinSegmentBytes = 512 * 1024;
         private const int BufferSize = 81920;
@@ -38,7 +61,8 @@ namespace DeepSeekHarnessLauncher
             return Download(new List<string> { url }, targetPath, settings, threads, progress, log, out used, out error);
         }
         internal static bool Download(List<string> urls, string targetPath, LauncherSettings settings, int threads,
-            Action<DownloadProgressInfo> progress, Action<string> log, out string usedUrl, out string error)
+            Action<DownloadProgressInfo> progress, Action<string> log, out string usedUrl, out string error,
+            int automaticRetries = 0, Action<string> stateChanged = null)
         {
             string selected = null;
             string taskId = Guid.NewGuid().ToString("N");
@@ -49,14 +73,15 @@ namespace DeepSeekHarnessLauncher
             {
                 result = DownloadTaskCenter.Run(Path.GetFileName(targetPath), targetPath, delegate(DownloadTaskControl control)
                 {
-                    if (urls == null || urls.Count == 0) throw new IOException("没有可用的下载地址。");
+                    // Resolve when a queued transfer or retry actually starts,
+                    // so it cannot retain an engine selected by an earlier attempt.
+                    var resolvedCandidates = GitHubAccelerator.DownloadCandidates(urls, settings);
                     var candidates = new List<string>();
-                    foreach (var original in urls)
-                    {
-                        var url = BackendDownloadSource.IsSelected(settings) ? BackendDownloadSource.Wrap(original) : original;
-                        if (KnownRangeSource(url) && !candidates.Contains(url)) candidates.Add(url);
-                    }
-                    foreach (var url in urls) if (!candidates.Contains(url)) candidates.Add(url);
+                    foreach (var url in resolvedCandidates)
+                        if (KnownRangeSource(url)) candidates.Add(url);
+                    foreach (var url in resolvedCandidates)
+                        if (!KnownRangeSource(url)) candidates.Add(url);
+                    if (candidates.Count == 0) throw new IOException("没有可用的下载地址。");
                     foreach (var url in candidates)
                     {
                         control.Checkpoint();
@@ -85,7 +110,7 @@ namespace DeepSeekHarnessLauncher
                         }
                     }
                     throw new IOException(candidateError ?? "所有下载候选都没通。");
-                }, out error);
+                }, out error, automaticRetries: automaticRetries, stateChanged: stateChanged);
             }
             finally
             {

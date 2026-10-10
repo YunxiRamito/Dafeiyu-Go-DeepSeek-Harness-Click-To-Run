@@ -3,7 +3,11 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Input;
@@ -39,25 +43,38 @@ namespace DeepSeekHarnessLauncher
         private readonly IntPtr _windowHandle;
         private readonly SettingsWindowHost _host;
         private readonly LauncherSettings _settings;
-        private readonly ClientNoticeStore _clientNoticeStore = ClientNoticeStore.ForLauncher();
-        private ClientNoticeSettings _clientNoticeSettings;
         private bool _authorAvatarLoading;
         private bool _initializing = true;
+        // Rebuilding the dependent source ComboBox changes its selection
+        // programmatically. Ignore that nested event until the engine choice
+        // has been normalized and persisted as one transaction.
+        private bool _suppressSettingSelectionChanged;
         private bool _settingsClosed;
         private bool _suppressNavigation;
+        private bool _suppressUpdateChannelChange;
+        private bool _dshVersionsLoading;
+        private bool _dshVersionOperationActive;
+        private bool _dshVersionManagementRequested;
         private readonly DispatcherQueueTimer _serverMetricsTimer;
         private readonly DispatcherQueueTimer _presenceRefreshTimer;
         private readonly DispatcherQueueTimer _presenceHistoryTimer;
         private readonly ServerMetricsClient _serverMetricsClient = new ServerMetricsClient();
+        private readonly ClientNoticeStore _clientNoticeStore = ClientNoticeStore.ForLauncher();
+        private ClientNoticeSettings _clientNoticeSettings;
         private System.Threading.CancellationTokenSource _serverMetricsCancellation;
         private bool _serverMetricsBusy;
         private ServerMetricsResponse _serverMetricsResponse;
         private ClientNoticePresence _serverPresenceHistory;
         private bool _presenceHistoryBusy;
+        private int _serverPresenceHoverIndex = -1;
+        private int _serverUploadHoverIndex = -1;
+        private int _serverVersionHoverIndex = -1;
+        private List<ServerVersionSlice> _serverVersionSlices = new List<ServerVersionSlice>();
+        private bool _serverChartsCompact;
         private int _versionTapCount;
         private DateTime _lastVersionTapUtc = DateTime.MinValue;
 
-        // DYM backup/import state; the UI lives in About > Backup and Import.
+        // DYM backup/import state; the UI lives in Updates > Logs and Backup.
         private readonly List<BackupGroup> _backupExportGroups =
             new List<BackupGroup>();
 
@@ -95,6 +112,7 @@ namespace DeepSeekHarnessLauncher
             SettingsWindowHost host)
         {
             InitializeComponent();
+            ApplyOfficialColorNavigationIcons();
             _serverMetricsTimer = DispatcherQueue.CreateTimer();
             _serverMetricsTimer.Interval = TimeSpan.FromSeconds(2);
             _serverMetricsTimer.IsRepeating = true;
@@ -108,6 +126,18 @@ namespace DeepSeekHarnessLauncher
             _presenceHistoryTimer.IsRepeating = true;
             _presenceHistoryTimer.Tick += async delegate { await RefreshPresenceHistoryAsync(); };
             _host = host ?? CreatePreviewHost();
+            try
+            {
+                _clientNoticeSettings = _clientNoticeStore.LoadSettings();
+            }
+            catch (Exception exception)
+            {
+                _host.Log("反馈服务设置读取失败，将在需要时重试：" + exception.Message);
+            }
+            _host.BalanceChanged += delegate
+            {
+                DispatcherQueue.TryEnqueue(RefreshModelBalance);
+            };
             _settings = _host.Settings ?? new LauncherSettings();
             _host.SetPresencePollingEnabled(true);
             _presenceRefreshTimer.Start();
@@ -136,7 +166,6 @@ namespace DeepSeekHarnessLauncher
             LoadSettingsIntoControls();
             ApplyWindowStyle();
             ApplyTheme();
-            ApplyAdaptiveIcons();
             ApplyAccent();
             LauncherAppearance.SetMaterial(
                 ResolveMaterial(_settings.Material));
@@ -162,9 +191,43 @@ namespace DeepSeekHarnessLauncher
             _initializing = false;
             SettingsNavigationView.SelectedItem = HomeNavItem;
             SelectPage("Home");
+            UpdateDshRollbackButtonVisibility();
             ApplyResponsiveLayout(SettingsRoot.ActualWidth > 0 ? SettingsRoot.ActualWidth : DefaultWindowWidth);
             DispatcherQueue.TryEnqueue(UpdateTitleBarSearchRegion);
             _ = RefreshApiBalanceAsync();
+        }
+
+        /// <summary>
+        /// Windows 11 uses the original Microsoft Fluent UI System Icons color SVGs.
+        /// Windows 10 keeps its native symbol-font glyphs so the icon language follows the host OS.
+        /// These assets come from Microsoft's Fluent icon library; they are not extracted Windows Settings assets.
+        /// </summary>
+        private void ApplyOfficialColorNavigationIcons()
+        {
+            if (!CornerRadiusHelper.IsWindows11)
+                return;
+
+            HomeNavItem.Icon = CreateOfficialColorNavigationIcon("home");
+            ModelsNavItem.Icon = CreateOfficialColorNavigationIcon("models");
+            BasicNavItem.Icon = CreateOfficialColorNavigationIcon("general");
+            FeaturesNavItem.Icon = CreateOfficialColorNavigationIcon("plugins");
+            SystemNavItem.Icon = CreateOfficialColorNavigationIcon("components");
+            UpdatesNavItem.Icon = CreateOfficialColorNavigationIcon("updates");
+            PatchesNavItem.Icon = CreateOfficialColorNavigationIcon("patches");
+            AboutNavItem.Icon = CreateOfficialColorNavigationIcon("about");
+            DownloadsNavItem.Icon = CreateOfficialColorNavigationIcon("downloads");
+            DeveloperNavItem.Icon = CreateOfficialColorNavigationIcon("developer");
+        }
+
+        private static ImageIcon CreateOfficialColorNavigationIcon(string assetName)
+        {
+            return new ImageIcon
+            {
+                Source = new SvgImageSource
+                {
+                    UriSource = new Uri("ms-appx:///assets/SettingsNavIconsWin11/" + assetName + ".svg")
+                }
+            };
         }
 
         private void ConfigureTaskbarWindow()
@@ -255,11 +318,11 @@ namespace DeepSeekHarnessLauncher
             AddGroupTab(SystemTabs, "Components", "组件", ComponentsPage);
             AddGroupTab(UpdatesTabs, "Updates", "更新", UpdatesPage);
             AddGroupTab(UpdatesTabs, "Patches", "补丁", PatchesPage);
+            AddGroupTab(UpdatesTabs, "BackupImport", "日志与备份", BackupImportPage);
             AddGroupTab(AboutTabs, "About", "关于", AboutPage);
+            AddGroupTab(AboutTabs, "Feedback", "反馈与建议", FeedbackPage);
             GeneralPage.Children.Remove(DymBackupSection);
             BackupImportPage.Children.Insert(2, DymBackupSection);
-            AddGroupTab(AboutTabs, "BackupImport", "备份与导入", BackupImportPage);
-            AddGroupTab(AboutTabs, "Feedback", "反馈与建议", FeedbackPage);
             MovePatchManagementToSubpage();
             SetDeveloperTabVisible(false);
             _lastGroupTab["UpdatesGroup"] = "Updates";
@@ -333,9 +396,9 @@ namespace DeepSeekHarnessLauncher
                     return "System";
                 case "Updates":
                 case "Patches":
+                case "BackupImport":
                     return "UpdatesGroup";
                 case "About":
-                case "BackupImport":
                 case "Feedback":
                     return "AboutGroup";
                 default:
@@ -369,6 +432,7 @@ namespace DeepSeekHarnessLauncher
             _settingsSearchIndex = new List<SettingsSearchEntry>();
 
             CollectSearchEntries(HomePage, "Home", "主页", null);
+            CollectSearchEntries(ModelPage, "Model", "模型", null);
             CollectSearchEntries(GeneralPage, "General", "常规", "通用");
             CollectSearchEntries(ThemePage, "Theme", "外观", "通用");
             CollectSearchEntries(ApiPage, "Api", "API", "通用");
@@ -383,10 +447,10 @@ namespace DeepSeekHarnessLauncher
             CollectSearchEntries(PatchesPage, "Patches", "补丁", "更新");
             CollectSearchEntries(DownloadsPage, "Downloads", "下载任务", null);
             CollectSearchEntries(AboutPage, "About", "关于", null);
-            CollectSearchEntry("BackupImport:Dym", "DYM 文件", "导入导出配置、技能和插件的 .dym 备份文件。", "BackupImport", "备份与导入", "数据备份 恢复 dym 导入 导出", DymBackupSection);
-            CollectSearchEntry("BackupImport:Dsh", "DSH 会话、插件与 Skill", "导入已有 DeepSeek Harness 数据文件夹，导出可覆盖官方数据目录的 ZIP 文件。", "BackupImport", "备份与导入", "对话 会话 插件 技能 skill 官方 dsh zip 迁移", DshDataSection);
-            CollectSearchEntry("BackupImport:Discover", "自动查找", "查找其他 DYM 备份和 DSH 数据目录。", "BackupImport", "备份与导入", "扫描 其他磁盘 自动查找 dym dsh", DshDataFindSection);
-            CollectSearchEntries(FeedbackPage, "Feedback", "反馈与建议", "关于");
+            CollectSearchEntry("BackupImport:Dym", "DYM 文件", "导入导出配置、技能和插件的 .dym 备份文件。", "BackupImport", "日志与备份", "数据备份 恢复 dym 导入 导出", DymBackupSection);
+            CollectSearchEntry("BackupImport:Dsh", "DSH 会话、插件与 Skill", "导入已有 DeepSeek Harness 数据文件夹，导出可覆盖官方数据目录的 ZIP 文件。", "BackupImport", "日志与备份", "对话 会话 插件 技能 skill 官方 dsh zip 迁移", DshDataSection);
+            CollectSearchEntry("BackupImport:Discover", "自动导入备份", "查找已有数据", "BackupImport", "日志与备份", "扫描 其他磁盘 自动导入备份 dym dsh", DshDataFindSection);
+            CollectSearchEntries(FeedbackPage, "Feedback", "反馈与建议", "反馈与建议");
             CollectSearchEntry("Feedback:Mine", "我的提交", "按本机匿名机器标识筛选自己提交的反馈。", "Feedback", "反馈与建议", "反馈 建议 需求 漏洞 补充 我的提交", FeedbackScopePivot);
             CollectPatchSearchEntries();
 
@@ -399,8 +463,6 @@ namespace DeepSeekHarnessLauncher
             CollectSearchEntry("ServerMetrics:Network", "网络", "服务器上传带宽占用，30 Mbps 上限与近 5 分钟上传趋势。", "ServerMetrics", "服务器", "网络上传带宽 上传速率 百分比 network", ServerNetworkText);
             CollectSearchEntry("ServerMetrics:Hardware", "硬件信息", "服务器处理器、内存和磁盘总量。", "ServerMetrics", "服务器", "hardware", ServerHardwareText);
             CollectSearchEntry("Api:AdminTokenBox", "管理员 Token", "开发者中心发布与管理消息使用，以 DPAPI 加密保存。", "Api", "API", "管理员密钥 token DPAPI", AdminTokenBox);
-            CollectSearchEntry("General:NoticePollIntervalBox", "公告轮询间隔", "公告拉取频率，单位为秒。", "General", "常规", "刷新间隔", NoticePollIntervalBox);
-            CollectSearchEntry("General:NoticeTelemetryToggle", "在线统计与交互回执", "匿名在线心跳及公告展示、已读与点击统计。", "General", "常规", "在线人数 遥测 心跳", NoticeTelemetryToggle);
             CollectSearchEntry("General:BackendSource", "后端服务器加速", "安装器、启动器、组件、插件与技能的在线引擎选项。", "General", "常规", "反代 官方源 下载源 clash backend 八线程 缓存", UpdateSourceComboBox);
             if (DeveloperNavItem.Visibility == Visibility.Visible)
             {
@@ -423,7 +485,7 @@ namespace DeepSeekHarnessLauncher
                     PageTag = "Patches",
                     PageTitle = "补丁",
                     Alias = "补丁策略 已安装补丁 可用补丁 patch",
-                    Initials = SettingsSearchInitials.Build("补丁策略已安装补丁可用补丁更新"),
+                    Initials = SettingsSearchPinyin.BuildInitials("补丁策略已安装补丁可用补丁更新"),
                     Anchor = PatchUpdateModeComboBox,
                     Enabled = true
                 });
@@ -440,7 +502,7 @@ namespace DeepSeekHarnessLauncher
                 PageTag = "Downloads",
                 PageTitle = "下载",
                 Alias = AliasForPage("Downloads"),
-                Initials = SettingsSearchInitials.Build("下载任务" + "下载"),
+                Initials = SettingsSearchPinyin.BuildInitials("下载任务" + "下载"),
                 Anchor = DownloadsPage,
                 Enabled = true
             });
@@ -457,7 +519,7 @@ namespace DeepSeekHarnessLauncher
                 OptionId = optionId, Title = title, Description = description,
                 PageTag = pageTag, PageTitle = pageTitle,
                 Group = GroupOf(pageTag) == "Basic" ? "通用" : pageTitle,
-                Alias = alias, Initials = SettingsSearchInitials.Build(title + pageTitle + alias),
+                Alias = alias, Initials = SettingsSearchPinyin.BuildInitials(title + pageTitle + alias),
                 Anchor = anchor, Enabled = true
             });
         }
@@ -500,6 +562,102 @@ namespace DeepSeekHarnessLauncher
                 descriptionStyle,
                 AliasForPage(pageTag),
                 ref index);
+
+            // SettingsRowGridStyle 是首选设置布局。Service、Updates 等页面也会有独立卡片，
+            // 它们没有标准行；从卡片标题和说明直接建索引，后续新增同类卡片无需手动登记。
+            if (pageTag == "Model" || pageTag == "Service" || pageTag == "Updates" || pageTag == "Patches"
+                || pageTag == "General" || pageTag == "Theme" || pageTag == "Api"
+                || pageTag == "Alerts" || pageTag == "About" || pageTag == "Components")
+            {
+                Style cardStyle = SettingsRoot.Resources["SettingsCardStyle"] as Style;
+                int cardIndex = 0;
+                WalkCustomSettingsCards(page, pageTag, pageTitle, group,
+                    rowStyle, titleStyle, descriptionStyle, cardStyle,
+                    AliasForPage(pageTag), ref cardIndex);
+            }
+        }
+
+        private void WalkCustomSettingsCards(
+            DependencyObject node,
+            string pageTag,
+            string pageTitle,
+            string group,
+            Style rowStyle,
+            Style titleStyle,
+            Style descriptionStyle,
+            Style cardStyle,
+            string alias,
+            ref int cardIndex)
+        {
+            Border card = node as Border;
+            if (card != null && cardStyle != null && ReferenceEquals(card.Style, cardStyle))
+            {
+                cardIndex++;
+                if (!ContainsStyledGrid(card, rowStyle))
+                {
+                    TextBlock title = FindCustomCardTitle(card, titleStyle);
+                    if (title != null && !String.IsNullOrWhiteSpace(title.Text))
+                    {
+                        TextBlock description = FindStyledText(card, descriptionStyle);
+                        string optionName = StableOptionName(card, cardIndex);
+                        _settingsSearchIndex.Add(new SettingsSearchEntry
+                        {
+                            OptionId = pageTag + ":" + optionName,
+                            Title = Collapse(title.Text),
+                            Description = Collapse(description == null
+                                ? String.Empty
+                                : description.Text),
+                            Group = String.IsNullOrWhiteSpace(group) ? pageTitle : group,
+                            PageTag = pageTag,
+                            PageTitle = pageTitle,
+                            Alias = alias,
+                            Anchor = card,
+                            Enabled = card.Visibility == Visibility.Visible
+                                && IsRowInteractive(card)
+                        });
+                    }
+                }
+            }
+
+            foreach (DependencyObject child in SearchChildren(node))
+            {
+                WalkCustomSettingsCards(child, pageTag, pageTitle, group,
+                    rowStyle, titleStyle, descriptionStyle, cardStyle, alias,
+                    ref cardIndex);
+            }
+        }
+
+        private static bool ContainsStyledGrid(DependencyObject node, Style style)
+        {
+            Grid grid = node as Grid;
+            if (grid != null && ReferenceEquals(grid.Style, style)) return true;
+            foreach (DependencyObject child in SearchChildren(node))
+            {
+                if (ContainsStyledGrid(child, style)) return true;
+            }
+
+            return false;
+        }
+
+        private static TextBlock FindCustomCardTitle(DependencyObject node, Style titleStyle)
+        {
+            TextBlock block = node as TextBlock;
+            if (block != null && !String.IsNullOrWhiteSpace(block.Text))
+            {
+                if (ReferenceEquals(block.Style, titleStyle)
+                    || (block.FontSize >= 14 && block.FontWeight.Weight >= 600))
+                {
+                    return block;
+                }
+            }
+
+            foreach (DependencyObject child in SearchChildren(node))
+            {
+                TextBlock title = FindCustomCardTitle(child, titleStyle);
+                if (title != null) return title;
+            }
+
+            return null;
         }
 
         private void WalkSettingsSearch(
@@ -534,7 +692,7 @@ namespace DeepSeekHarnessLauncher
                         PageTitle = pageTitle,
                         Alias = alias,
                         // 拼音首字母：标题 + 所在页名，比如「启动端口」在「常规」页 → qddkcg
-                        Initials = SettingsSearchInitials.Build(
+                        Initials = SettingsSearchPinyin.BuildInitials(
                             title.Text + pageTitle + alias),
                         Anchor = row,
                         // 行本身没有 IsEnabled（Grid 不是 Control），
@@ -1029,43 +1187,10 @@ namespace DeepSeekHarnessLauncher
             timer.Start();
         }
 
-        private void ApplyAdaptiveIcons()
-        {
-            string folder = CornerRadiusHelper.UsesWindows11Style
-                ? "SettingsNavIcons"
-                : (SettingsRoot.ActualTheme == ElementTheme.Dark
-                    ? "SettingsNavIconsWin10Dark"
-                    : "SettingsNavIconsWin10");
-            SetSvgIcon(HomeNavItem, folder, "home.svg");
-            SetSvgIcon(BasicNavItem, folder, "general.svg");
-            SetSvgIcon(FeaturesNavItem, folder, "plugins.svg");
-            SetSvgIcon(SystemNavItem, folder, "components.svg");
-            SetSvgIcon(UpdatesNavItem, folder, "updates.svg");
-            SetSvgIcon(AboutNavItem, folder, "about.svg");
-        }
-
-        private static void SetSvgIcon(
-            NavigationViewItem item,
-            string folder,
-            string fileName)
-        {
-            item.Icon = new ImageIcon
-            {
-                Source = new Microsoft.UI.Xaml.Media.Imaging.SvgImageSource(
-                    new Uri(
-                        "ms-appx:///assets/"
-                        + folder
-                        + "/"
-                        + fileName))
-            };
-        }
-
         private void SettingsRoot_ActualThemeChanged(
             FrameworkElement sender,
             object args)
         {
-            ApplyAdaptiveIcons();
-
             // 图用的是主题资源画笔，切主题要重画一遍（不然会停在上一套配色）
             DrawHomeUsageChart();
             RenderServerUploadChart();
@@ -1161,73 +1286,6 @@ namespace DeepSeekHarnessLauncher
             RefreshServiceState();
             UpdateCustomThresholdStates();
             SyncAcceleratorControls();
-            LoadClientNoticeSettings();
-        }
-
-        private void LoadClientNoticeSettings()
-        {
-            try
-            {
-                _clientNoticeSettings = _clientNoticeStore.LoadSettings();
-                NoticePollIntervalBox.Value = Math.Clamp(_clientNoticeSettings.PollIntervalSeconds, 60, 86400);
-                NoticeTelemetryToggle.IsOn = _clientNoticeSettings.TelemetryEnabled;
-            }
-            catch (Exception exception)
-            {
-                NoticePollIntervalBox.IsEnabled = false;
-                NoticeTelemetryToggle.IsEnabled = false;
-                NoticeEndpointWarning.Severity = InfoBarSeverity.Error;
-                NoticeEndpointWarning.Message = "通知设置读取失败，未覆盖已有配置：" + exception.Message;
-                NoticeEndpointWarning.IsOpen = true;
-            }
-        }
-
-        private void SaveClientNoticeSettings()
-        {
-            if (_initializing || _clientNoticeSettings == null) return;
-            double seconds = NoticePollIntervalBox.Value;
-            if (Double.IsNaN(seconds) || Double.IsInfinity(seconds) || seconds < 60 || seconds > 86400 || seconds != Math.Truncate(seconds)) return;
-            try
-            {
-                // Preserve fields not exposed by this UI (e.g. heartbeat interval).
-                ClientNoticeSettings settings = _clientNoticeStore.LoadSettings();
-                settings.BaseUrl = "https://202.189.21.218:8787";
-                settings.PollIntervalSeconds = (int)seconds;
-                settings.TelemetryEnabled = NoticeTelemetryToggle.IsOn;
-                settings.AllowInsecureHttp = false;
-                _clientNoticeStore.SaveSettings(settings);
-                _clientNoticeSettings = settings;
-                _host.NoticeSettingsChanged();
-            }
-            catch (Exception exception)
-            {
-                NoticeEndpointWarning.Severity = InfoBarSeverity.Error;
-                NoticeEndpointWarning.Message = "通知设置保存失败：" + exception.Message;
-                NoticeEndpointWarning.IsOpen = true;
-            }
-        }
-
-        private void SaveClientNoticePrivacySettings()
-        {
-            if (_initializing || _clientNoticeSettings == null) return;
-            try
-            {
-                // Privacy opt-out must still save while the URL edit is incomplete.
-                ClientNoticeSettings settings = _clientNoticeStore.LoadSettings();
-                settings.TelemetryEnabled = NoticeTelemetryToggle.IsOn;
-                settings.AllowInsecureHttp = false;
-                _clientNoticeStore.SaveSettings(settings);
-                _clientNoticeSettings = settings;
-                _host.NoticeSettingsChanged();
-                NoticeEndpointWarning.Severity = InfoBarSeverity.Informational;
-                NoticeEndpointWarning.Message = "使用内置安全连接；服务端地址不在公告或通知编辑界面显示，也不会随消息推送。";
-            }
-            catch (Exception exception)
-            {
-                NoticeEndpointWarning.Severity = InfoBarSeverity.Error;
-                NoticeEndpointWarning.Message = "隐私设置保存失败：" + exception.Message;
-                NoticeEndpointWarning.IsOpen = true;
-            }
         }
 
         private void WireSettingsEvents()
@@ -1243,8 +1301,6 @@ namespace DeepSeekHarnessLauncher
             PluginSourceComboBox.SelectionChanged += SettingComboBox_SelectionChanged;
             UpdateIntervalComboBox.SelectionChanged += SettingComboBox_SelectionChanged;
             FixedPortBox.ValueChanged += FixedPortBox_ValueChanged;
-            NoticePollIntervalBox.ValueChanged += delegate { SaveClientNoticeSettings(); };
-            NoticeTelemetryToggle.Toggled += delegate { SaveClientNoticePrivacySettings(); };
             // 不能在 XAML 里绑定。RadioButtons 在初始化选择时会先触发一次
             // SelectionChanged，此时 SelectedItem 可能还是 null，会把已保存的
             // 代理模式覆盖成 None。等 LoadSettingsIntoControls 完成后再接事件。
@@ -1433,9 +1489,10 @@ namespace DeepSeekHarnessLauncher
             {
                 MarkAnnouncementsRead();
             };
-            HomePluginsButton.Click += delegate { SelectPage("Plugins"); };            HomeSkillsButton.Click += delegate { SelectPage("Skills"); };
-            HomeComponentsButton.Click += delegate { SelectPage("Components"); };
-            HomeUpdatesButton.Click += delegate { SelectPage("Updates"); };
+            HomePage.Children.Remove(HomeBrandPanel);
+            HomePage.Children.Remove(HomeStatusGrid);
+            HomeStatusSection.Children.Add(HomeBrandPanel);
+            HomeStatusSection.Children.Add(HomeStatusGrid);
             ChangelogRefreshButton.Click += delegate
             {
                 LoadChangelog(true);
@@ -1591,6 +1648,7 @@ namespace DeepSeekHarnessLauncher
                 if (cancellation != _serverMetricsCancellation) return;
                 _serverPresenceHistory = presence;
                 RenderServerPresenceChart();
+                RenderServerVersionChart();
             }
             catch (OperationCanceledException) when (cancellation != _serverMetricsCancellation) { }
             catch (Exception error)
@@ -1606,6 +1664,28 @@ namespace DeepSeekHarnessLauncher
             RenderServerPresenceChart();
         }
 
+        private void ServerChartsGrid_SizeChanged(object sender, SizeChangedEventArgs args)
+        {
+            if (ServerChartsGrid == null || ServerChartsGrid.ColumnDefinitions.Count < 2 || ServerChartsGrid.RowDefinitions.Count < 2) return;
+            // Measure in effective WinUI DIPs. 920 forced a 1400px-wide scaled
+            // window into a vertical stack; keep these two overview charts paired
+            // until the content area is genuinely narrow.
+            bool compact = ServerChartsGrid.ActualWidth < 680;
+            if (compact == _serverChartsCompact) return;
+            _serverChartsCompact = compact;
+            ServerChartsGrid.ColumnDefinitions[0].Width = new GridLength(compact ? 1 : 2, GridUnitType.Star);
+            ServerChartsGrid.ColumnDefinitions[1].Width = compact ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+            Grid.SetColumn(ServerVersionChartCard, compact ? 0 : 1);
+            Grid.SetRow(ServerVersionChartCard, compact ? 1 : 0);
+            Grid.SetColumnSpan(ServerUploadChartCard, compact ? 1 : 2);
+            Grid.SetRow(ServerUploadChartCard, compact ? 2 : 1);
+            while (ServerChartsGrid.RowDefinitions.Count < 3) ServerChartsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            ServerChartsGrid.RowDefinitions[2].Height = compact ? GridLength.Auto : new GridLength(0);
+            RenderServerPresenceChart();
+            RenderServerVersionChart();
+            RenderServerUploadChart();
+        }
+
         private void RenderServerPresenceChart()
         {
             if (ServerPresenceChart == null || _host == null) return;
@@ -1617,12 +1697,15 @@ namespace DeepSeekHarnessLauncher
             var samples = (presence?.History ?? new List<ClientNoticePresenceSample>())
                 .Where(sample => sample != null && sample.OnlineCount >= 0 && sample.ObservedAt >= now.AddHours(-24) && sample.ObservedAt <= now)
                 .OrderBy(sample => sample.ObservedAt).ToList();
+            if (presence != null && presence.ObservedAt != default
+                && (samples.Count == 0 || (presence.ObservedAt - samples[samples.Count - 1].ObservedAt).TotalSeconds > 30))
+                samples.Add(new ClientNoticePresenceSample { ObservedAt = presence.ObservedAt, OnlineCount = presence.OnlineCount });
             ServerPresenceSummaryText.Text = presence == null ? "在线人数暂时无法读取。"
                 : presence.OnlineCount.ToString("N0") + " 人在线 · " + (samples.Count == 0 ? "暂无历史记录。" : "历史记录每分钟采样。");
             int peak = Math.Max(presence?.OnlineCount ?? 0, samples.Count == 0 ? 0 : samples.Max(sample => sample.OnlineCount));
             double step = Math.Max(1, Math.Ceiling(peak / 4.0));
             double maximum = step * 4;
-            double left = 58, right = width - 12, top = 32, bottom = 174;
+            double left = 58, right = width - 12, top = 32, bottom = 204;
             Brush foreground = ResolveChartBrush("TextFillColorSecondaryBrush", "ControlStrokeColorDefaultBrush");
             for (int tick = 0; tick <= 4; tick++)
             {
@@ -1637,7 +1720,7 @@ namespace DeepSeekHarnessLauncher
             var unit = new TextBlock { Text = "人数", FontSize = 11, Foreground = foreground };
             ServerPresenceChart.Children.Add(unit);
             var timeUnit = new TextBlock { Text = "时间", FontSize = 11, Foreground = foreground };
-            Canvas.SetLeft(timeUnit, right - 24); Canvas.SetTop(timeUnit, 196); ServerPresenceChart.Children.Add(timeUnit);
+            Canvas.SetLeft(timeUnit, right - 24); Canvas.SetTop(timeUnit, 224); ServerPresenceChart.Children.Add(timeUnit);
             ServerPresenceChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Line { X1 = left, X2 = left, Y1 = top, Y2 = bottom, Stroke = foreground, StrokeThickness = 1 });
             ServerPresenceChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Line { X1 = left, X2 = right, Y1 = bottom, Y2 = bottom, Stroke = foreground, StrokeThickness = 1 });
             if (samples.Count == 0) return;
@@ -1651,17 +1734,26 @@ namespace DeepSeekHarnessLauncher
                 // Leave sampling outages empty instead of joining across unobserved time.
                 if (previous != null && (sample.ObservedAt - previous.ObservedAt).TotalMinutes > 2)
                 {
-                    ServerPresenceChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Polyline { Points = points, Stroke = accent, StrokeThickness = 2 });
+                    AddSmoothServerChartPath(ServerPresenceChart, points, accent, 2.4);
                     points = new PointCollection();
                 }
-                if (points.Count > 0) points.Add(new Point(x, points[points.Count - 1].Y));
                 points.Add(new Point(x, y));
                 previous = sample;
             }
-            ServerPresenceChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Polyline { Points = points, Stroke = accent, StrokeThickness = 2 });
+            AddSmoothServerChartPath(ServerPresenceChart, points, accent, 2.4);
             Point last = points[points.Count - 1];
             var dot = new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 6, Height = 6, Fill = accent };
             Canvas.SetLeft(dot, last.X - 3); Canvas.SetTop(dot, last.Y - 3); ServerPresenceChart.Children.Add(dot);
+            if (_serverPresenceHoverIndex >= 0 && _serverPresenceHoverIndex < samples.Count)
+            {
+                ClientNoticePresenceSample selected = samples[_serverPresenceHoverIndex];
+                double x = right - (right - left) * (now - selected.ObservedAt).TotalHours / 24;
+                double y = bottom - (bottom - top) * selected.OnlineCount / maximum;
+                ServerPresenceChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Line
+                { X1 = x, X2 = x, Y1 = top, Y2 = bottom, Stroke = accent, Opacity = 0.7, StrokeThickness = 1 });
+                AddServerChartTooltip(ServerPresenceChart,
+                    new[] { selected.ObservedAt.ToLocalTime().ToString("MM-dd HH:mm"), selected.OnlineCount.ToString("N0") + " 人在线" }, x, y);
+            }
         }
 
         private void ServerUploadChart_SizeChanged(object sender, SizeChangedEventArgs args)
@@ -1675,12 +1767,10 @@ namespace DeepSeekHarnessLauncher
             double width = ServerUploadChart.ActualWidth;
             if (width <= 60) return;
             ServerUploadChart.Children.Clear();
-            double left = 68, right = width - 10, top = 8, bottom = 180;
+            double left = 68, right = width - 10, top = 8, bottom = 204;
             DateTimeOffset now = _serverMetricsResponse?.Current.ObservedAt ?? DateTimeOffset.UtcNow;
             if (now == default) now = DateTimeOffset.UtcNow;
-            var history = (_serverMetricsResponse?.History ?? new List<ServerMetricsSnapshot>())
-                .Where(sample => sample?.Network != null && sample.ObservedAt >= now.AddMinutes(-5) && sample.ObservedAt <= now)
-                .OrderBy(sample => sample.ObservedAt).ToList();
+            var history = GetServerUploadSamples(now);
             if (_serverMetricsResponse?.Current != null && history.Count == 0) history.Add(_serverMetricsResponse.Current);
             double maximum = ServerNetwork.ChartMaximum(history.Count == 0 ? 0 : history.Max(sample => sample.Network.UploadMbps));
             Brush foreground = ResolveChartBrush("TextFillColorSecondaryBrush", "ControlStrokeColorDefaultBrush");
@@ -1709,10 +1799,338 @@ namespace DeepSeekHarnessLauncher
             }
             if (points.Count == 0) return;
             Brush accent = ResolveAccentBrush();
-            ServerUploadChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Polyline { Points = points, Stroke = accent, StrokeThickness = 2 });
+            AddSmoothServerChartPath(ServerUploadChart, points, accent, 2.4);
             Windows.Foundation.Point last = points[points.Count - 1];
             var dot = new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 6, Height = 6, Fill = accent };
             Canvas.SetLeft(dot, last.X - 3); Canvas.SetTop(dot, last.Y - 3); ServerUploadChart.Children.Add(dot);
+            if (_serverUploadHoverIndex >= 0 && _serverUploadHoverIndex < history.Count)
+            {
+                ServerMetricsSnapshot selected = history[_serverUploadHoverIndex];
+                double age = Math.Clamp((now - selected.ObservedAt).TotalSeconds, 0, 300);
+                double x = right - (right - left) * age / 300;
+                double y = bottom - (bottom - top) * selected.Network.UploadMbps / maximum;
+                ServerUploadChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Line
+                { X1 = x, X2 = x, Y1 = top, Y2 = bottom, Stroke = accent, Opacity = 0.7, StrokeThickness = 1 });
+                AddServerChartTooltip(ServerUploadChart,
+                    new[] { selected.ObservedAt.ToLocalTime().ToString("HH:mm:ss"), selected.Network.UploadMbps.ToString("0.00") + " Mbps · " + selected.Network.UploadPercent.ToString("0.0") + "%" }, x, y);
+            }
+        }
+
+        private List<ServerMetricsSnapshot> GetServerUploadSamples(DateTimeOffset now)
+            => (_serverMetricsResponse?.History ?? new List<ServerMetricsSnapshot>())
+                .Where(sample => sample?.Network != null && sample.ObservedAt >= now.AddMinutes(-5) && sample.ObservedAt <= now)
+                .OrderBy(sample => sample.ObservedAt).ToList();
+
+        private void ServerUploadChart_PointerMoved(object sender, PointerRoutedEventArgs args)
+        {
+            DateTimeOffset now = _serverMetricsResponse?.Current.ObservedAt ?? DateTimeOffset.UtcNow;
+            if (now == default) now = DateTimeOffset.UtcNow;
+            var samples = GetServerUploadSamples(now);
+            if (_serverMetricsResponse?.Current != null && samples.Count == 0) samples.Add(_serverMetricsResponse.Current);
+            double width = ServerUploadChart.ActualWidth;
+            int index = FindClosestChartSample(samples.Count, i => width - 10 - (width - 78) * Math.Clamp((now - samples[i].ObservedAt).TotalSeconds, 0, 300) / 300,
+                args.GetCurrentPoint(ServerUploadChart).Position.X);
+            if (index == _serverUploadHoverIndex) return;
+            _serverUploadHoverIndex = index;
+            RenderServerUploadChart();
+        }
+
+        private void ServerUploadChart_PointerExited(object sender, PointerRoutedEventArgs args)
+        {
+            if (_serverUploadHoverIndex < 0) return;
+            _serverUploadHoverIndex = -1;
+            RenderServerUploadChart();
+        }
+
+        private void ServerVersionChart_SizeChanged(object sender, SizeChangedEventArgs args) => RenderServerVersionChart();
+
+        private void RenderServerVersionChart()
+        {
+            if (ServerVersionChart == null) return;
+            double width = ServerVersionChart.ActualWidth;
+            if (width <= 120) return;
+            ServerVersionChart.Children.Clear();
+            ClientNoticePresence presence = _serverPresenceHistory;
+            var versions = (presence?.LauncherVersions ?? new List<ClientNoticeVersionCount>())
+                .Where(item => item != null && !String.IsNullOrWhiteSpace(item.Version) && item.Count > 0)
+                .OrderByDescending(item => item.Count).ThenBy(item => item.Version, StringComparer.OrdinalIgnoreCase).ToList();
+            int total = versions.Sum(item => item.Count);
+            var slices = versions.Take(6).Select(item => new ServerVersionSlice { Version = item.Version, Count = item.Count }).ToList();
+            int other = Math.Max(0, total - slices.Sum(item => item.Count));
+            if (other > 0) slices.Add(new ServerVersionSlice { Version = "其他", Count = other });
+            _serverVersionSlices = slices;
+            ServerVersionSummaryText.Text = presence == null ? "启动器版本分布暂时无法读取。"
+                : total.ToString("N0") + " 个在线安装 · " + versions.Count.ToString("N0") + " 个版本";
+
+            double centerX = width / 2, centerY = 82, outerRadius = 66, innerRadius = 40;
+            double legendTop = 164;
+            double legendColumnWidth = (width - 16) / 2;
+            Brush foreground = ResolveChartBrush("TextFillColorSecondaryBrush", "ControlStrokeColorDefaultBrush");
+            Brush emptyBrush = ResolveChartBrush("ControlStrokeColorDefaultBrush", "TextFillColorTertiaryBrush");
+            Windows.UI.Color[] colors =
+            {
+                Windows.UI.Color.FromArgb(255, 0, 153, 188),
+                Windows.UI.Color.FromArgb(255, 222, 118, 55),
+                Windows.UI.Color.FromArgb(255, 120, 100, 210),
+                Windows.UI.Color.FromArgb(255, 44, 160, 92),
+                Windows.UI.Color.FromArgb(255, 207, 70, 104),
+                Windows.UI.Color.FromArgb(255, 142, 120, 63),
+                Windows.UI.Color.FromArgb(255, 87, 137, 193)
+            };
+            if (total == 0)
+            {
+                var empty = new Microsoft.UI.Xaml.Shapes.Ellipse
+                { Width = outerRadius * 2, Height = outerRadius * 2, Stroke = emptyBrush, StrokeThickness = outerRadius - innerRadius, Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) };
+                Canvas.SetLeft(empty, centerX - outerRadius); Canvas.SetTop(empty, centerY - outerRadius); ServerVersionChart.Children.Add(empty);
+                var none = new TextBlock { Text = presence == null ? "暂不可用" : "暂无在线版本", FontSize = 12, Foreground = foreground };
+                none.Measure(new Size(Double.PositiveInfinity, Double.PositiveInfinity));
+                Canvas.SetLeft(none, centerX - none.DesiredSize.Width / 2); Canvas.SetTop(none, legendTop); ServerVersionChart.Children.Add(none);
+            }
+            else
+            {
+                double angle = -90;
+                for (int index = 0; index < slices.Count; index++)
+                {
+                    double sweep = 360.0 * slices[index].Count / total;
+                    Brush fill = new SolidColorBrush(colors[index % colors.Length]);
+                    if (slices.Count == 1)
+                    {
+                        var full = new Microsoft.UI.Xaml.Shapes.Ellipse
+                        {
+                            Width = outerRadius * 2, Height = outerRadius * 2,
+                            Stroke = fill, StrokeThickness = outerRadius - innerRadius,
+                            Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0))
+                        };
+                        Canvas.SetLeft(full, centerX - outerRadius); Canvas.SetTop(full, centerY - outerRadius); ServerVersionChart.Children.Add(full);
+                    }
+                    else
+                    {
+                        var figure = new Microsoft.UI.Xaml.Media.PathFigure
+                        { StartPoint = DonutPoint(centerX, centerY, outerRadius, angle), IsClosed = true };
+                        figure.Segments.Add(new Microsoft.UI.Xaml.Media.ArcSegment
+                        {
+                            Point = DonutPoint(centerX, centerY, outerRadius, angle + sweep),
+                            Size = new Size(outerRadius, outerRadius), IsLargeArc = sweep > 180,
+                            SweepDirection = Microsoft.UI.Xaml.Media.SweepDirection.Clockwise
+                        });
+                        figure.Segments.Add(new Microsoft.UI.Xaml.Media.LineSegment { Point = DonutPoint(centerX, centerY, innerRadius, angle + sweep) });
+                        figure.Segments.Add(new Microsoft.UI.Xaml.Media.ArcSegment
+                        {
+                            Point = DonutPoint(centerX, centerY, innerRadius, angle),
+                            Size = new Size(innerRadius, innerRadius), IsLargeArc = sweep > 180,
+                            SweepDirection = Microsoft.UI.Xaml.Media.SweepDirection.Counterclockwise
+                        });
+                        var geometry = new Microsoft.UI.Xaml.Media.PathGeometry();
+                        geometry.Figures.Add(figure);
+                        ServerVersionChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Path
+                        {
+                            Data = geometry, Fill = fill,
+                            Opacity = _serverVersionHoverIndex < 0 || _serverVersionHoverIndex == index ? 1 : 0.42,
+                            IsHitTestVisible = false
+                        });
+                    }
+                    int legendRow = index / 2;
+                    int legendColumn = index % 2;
+                    double itemLeft = 8 + legendColumn * legendColumnWidth;
+                    var marker = new Microsoft.UI.Xaml.Shapes.Rectangle { Width = 9, Height = 9, Fill = fill, IsHitTestVisible = false };
+                    Canvas.SetLeft(marker, itemLeft); Canvas.SetTop(marker, legendTop + 6 + legendRow * 23); ServerVersionChart.Children.Add(marker);
+                    var label = new TextBlock
+                    {
+                        Text = slices[index].Version + " · " + slices[index].Count.ToString("N0"),
+                        FontSize = 11, Foreground = foreground, Width = Math.Max(40, legendColumnWidth - 18),
+                        TextTrimming = TextTrimming.CharacterEllipsis, IsHitTestVisible = false
+                    };
+                    Canvas.SetLeft(label, itemLeft + 14); Canvas.SetTop(label, legendTop + 1 + legendRow * 23); ServerVersionChart.Children.Add(label);
+                    angle += sweep;
+                }
+            }
+            var centerCount = new TextBlock { Text = (presence?.OnlineCount ?? 0).ToString("N0"), FontSize = 22, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = foreground };
+            centerCount.Measure(new Size(Double.PositiveInfinity, Double.PositiveInfinity));
+            Canvas.SetLeft(centerCount, centerX - centerCount.DesiredSize.Width / 2); Canvas.SetTop(centerCount, centerY - 20); ServerVersionChart.Children.Add(centerCount);
+            var centerCaption = new TextBlock { Text = "在线", FontSize = 11, Foreground = foreground };
+            centerCaption.Measure(new Size(Double.PositiveInfinity, Double.PositiveInfinity));
+            Canvas.SetLeft(centerCaption, centerX - centerCaption.DesiredSize.Width / 2); Canvas.SetTop(centerCaption, centerY + 8); ServerVersionChart.Children.Add(centerCaption);
+            if (_serverVersionHoverIndex >= 0 && _serverVersionHoverIndex < slices.Count)
+            {
+                ServerVersionSlice selected = slices[_serverVersionHoverIndex];
+                double percent = total == 0 ? 0 : selected.Count * 100.0 / total;
+                AddServerChartTooltip(ServerVersionChart,
+                    new[] { selected.Version, selected.Count.ToString("N0") + " 人 · " + percent.ToString("0.0") + "%" },
+                    centerX + outerRadius * 0.4, centerY - outerRadius * 0.3);
+            }
+        }
+
+        private void ServerVersionChart_PointerMoved(object sender, PointerRoutedEventArgs args)
+        {
+            Windows.Foundation.Point point = args.GetCurrentPoint(ServerVersionChart).Position;
+            double width = ServerVersionChart.ActualWidth;
+            double centerX = width / 2, centerY = 82;
+            double dx = point.X - centerX, dy = point.Y - centerY;
+            double radius = Math.Sqrt(dx * dx + dy * dy);
+            int index = -1;
+            if (radius >= 40 && radius <= 73 && _serverVersionSlices.Count > 0)
+            {
+                double degrees = Math.Atan2(dy, dx) * 180 / Math.PI + 90;
+                if (degrees < 0) degrees += 360;
+                double cursor = 0;
+                int total = _serverVersionSlices.Sum(slice => slice.Count);
+                for (int i = 0; i < _serverVersionSlices.Count; i++)
+                {
+                    cursor += 360.0 * _serverVersionSlices[i].Count / Math.Max(1, total);
+                    if (degrees <= cursor) { index = i; break; }
+                }
+            }
+            double legendTop = 164;
+            if (index < 0 && point.Y >= legendTop && point.X >= 8 && point.X <= width - 8)
+            {
+                int row = (int)((point.Y - legendTop) / 23);
+                int column = point.X < width / 2 ? 0 : 1;
+                int candidate = row * 2 + column;
+                if (candidate >= 0 && candidate < _serverVersionSlices.Count) index = candidate;
+            }
+            if (index == _serverVersionHoverIndex) return;
+            _serverVersionHoverIndex = index;
+            RenderServerVersionChart();
+        }
+
+        private void ServerVersionChart_PointerExited(object sender, PointerRoutedEventArgs args)
+        {
+            if (_serverVersionHoverIndex < 0) return;
+            _serverVersionHoverIndex = -1;
+            RenderServerVersionChart();
+        }
+
+        private static Windows.Foundation.Point DonutPoint(double centerX, double centerY, double radius, double angle)
+        {
+            double radians = angle * Math.PI / 180;
+            return new Windows.Foundation.Point(centerX + radius * Math.Cos(radians), centerY + radius * Math.Sin(radians));
+        }
+
+        /// <summary>
+        /// Draw a restrained Catmull–Rom style cubic curve for the server trend charts.
+        /// The chart intentionally uses a Path instead of a Polyline so sparse samples do
+        /// not look like a jagged staircase. Control points are clamped to the neighboring
+        /// segment, which prevents overshoot when an online count or upload rate changes fast.
+        /// </summary>
+        private static void AddSmoothServerChartPath(Canvas canvas, PointCollection points, Brush stroke, double thickness)
+        {
+            if (canvas == null || points == null || points.Count == 0) return;
+            if (points.Count == 1)
+            {
+                var dot = new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 5, Height = 5, Fill = stroke, Opacity = 0.86 };
+                Canvas.SetLeft(dot, points[0].X - 2.5);
+                Canvas.SetTop(dot, points[0].Y - 2.5);
+                canvas.Children.Add(dot);
+                return;
+            }
+
+            var figure = new PathFigure { StartPoint = points[0], IsClosed = false, IsFilled = false };
+            const double tension = 0.18;
+            for (int i = 0; i < points.Count - 1; i++)
+            {
+                Point previous = points[Math.Max(0, i - 1)];
+                Point current = points[i];
+                Point next = points[i + 1];
+                Point after = points[Math.Min(points.Count - 1, i + 2)];
+                Point control1 = new Point(
+                    current.X + (next.X - previous.X) * tension,
+                    current.Y + (next.Y - previous.Y) * tension);
+                Point control2 = new Point(
+                    next.X - (after.X - current.X) * tension,
+                    next.Y - (after.Y - current.Y) * tension);
+                // Do not let a curve overshoot beyond either adjacent sample.
+                control1 = ClampCurveControl(control1, current, next);
+                control2 = ClampCurveControl(control2, current, next);
+                figure.Segments.Add(new BezierSegment
+                {
+                    Point1 = control1,
+                    Point2 = control2,
+                    Point3 = next
+                });
+            }
+
+            var geometry = new PathGeometry();
+            geometry.Figures.Add(figure);
+            canvas.Children.Add(new Microsoft.UI.Xaml.Shapes.Path
+            {
+                Data = geometry,
+                Stroke = stroke,
+                StrokeThickness = thickness,
+                Opacity = 0.86,
+                IsHitTestVisible = false
+            });
+        }
+
+        private static Point ClampCurveControl(Point control, Point start, Point end)
+        {
+            double minX = Math.Min(start.X, end.X);
+            double maxX = Math.Max(start.X, end.X);
+            double minY = Math.Min(start.Y, end.Y);
+            double maxY = Math.Max(start.Y, end.Y);
+            return new Point(Math.Clamp(control.X, minX, maxX), Math.Clamp(control.Y, minY, maxY));
+        }
+
+        private static int FindClosestChartSample(int count, Func<int, double> xAt, double pointerX)
+        {
+            if (count == 0) return -1;
+            int closest = 0;
+            double distance = Math.Abs(xAt(0) - pointerX);
+            for (int i = 1; i < count; i++)
+            {
+                double candidate = Math.Abs(xAt(i) - pointerX);
+                if (candidate < distance) { closest = i; distance = candidate; }
+            }
+            return closest;
+        }
+
+        private void ServerPresenceChart_PointerMoved(object sender, PointerRoutedEventArgs args)
+        {
+            ClientNoticePresence presence = _serverPresenceHistory;
+            DateTimeOffset now = presence?.ObservedAt ?? DateTimeOffset.UtcNow;
+            var samples = (presence?.History ?? new List<ClientNoticePresenceSample>())
+                .Where(sample => sample != null && sample.OnlineCount >= 0 && sample.ObservedAt >= now.AddHours(-24) && sample.ObservedAt <= now)
+                .OrderBy(sample => sample.ObservedAt).ToList();
+            if (presence != null && presence.ObservedAt != default
+                && (samples.Count == 0 || (presence.ObservedAt - samples[samples.Count - 1].ObservedAt).TotalSeconds > 30))
+                samples.Add(new ClientNoticePresenceSample { ObservedAt = presence.ObservedAt, OnlineCount = presence.OnlineCount });
+            double width = ServerPresenceChart.ActualWidth;
+            int index = FindClosestChartSample(samples.Count,
+                i => width - 12 - (width - 70) * (now - samples[i].ObservedAt).TotalHours / 24,
+                args.GetCurrentPoint(ServerPresenceChart).Position.X);
+            if (index == _serverPresenceHoverIndex) return;
+            _serverPresenceHoverIndex = index;
+            RenderServerPresenceChart();
+        }
+
+        private void ServerPresenceChart_PointerExited(object sender, PointerRoutedEventArgs args)
+        {
+            if (_serverPresenceHoverIndex < 0) return;
+            _serverPresenceHoverIndex = -1;
+            RenderServerPresenceChart();
+        }
+
+        private static void AddServerChartTooltip(Canvas canvas, IEnumerable<string> lines, double x, double y)
+        {
+            var stack = new StackPanel { Spacing = 3 };
+            foreach (string line in lines)
+                stack.Children.Add(new TextBlock { Text = line, FontSize = 11, TextWrapping = TextWrapping.NoWrap });
+            var tooltip = new Border
+            {
+                Background = ResolveChartBrush("SolidBackgroundFillColorSecondaryBrush", "SolidBackgroundFillColorBaseBrush"),
+                BorderBrush = ResolveChartBrush("CardStrokeColorDefaultBrush", "ControlStrokeColorDefaultBrush"),
+                BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4), Padding = new Thickness(8, 6, 8, 6),
+                Child = stack, IsHitTestVisible = false
+            };
+            tooltip.Measure(new Size(Double.PositiveInfinity, Double.PositiveInfinity));
+            double left = Math.Clamp(x + 10, 4, Math.Max(4, canvas.ActualWidth - tooltip.DesiredSize.Width - 4));
+            double top = Math.Clamp(y + 10, 4, Math.Max(4, canvas.Height - tooltip.DesiredSize.Height - 4));
+            Canvas.SetLeft(tooltip, left); Canvas.SetTop(tooltip, top); canvas.Children.Add(tooltip);
+        }
+
+        private sealed class ServerVersionSlice
+        {
+            internal string Version { get; set; } = String.Empty;
+            internal int Count { get; set; }
         }
 
         private static string FormatBytes(double bytes)
@@ -1746,6 +2164,7 @@ namespace DeepSeekHarnessLauncher
         private void Host_UpdateStateChanged()
         {
             RefreshUpdateStates();
+            RefreshDshVersionManagementState();
 
             // 主页那三格状态跟着更新走，只读快照，不发请求。
             RefreshHomeSummary();
@@ -2181,7 +2600,8 @@ namespace DeepSeekHarnessLauncher
             object sender,
             SelectionChangedEventArgs args)
         {
-            if (_initializing)
+            if (_initializing || _suppressSettingSelectionChanged
+                || (ReferenceEquals(sender, UpdateSourceComboBox) && !_acceleratorUiReady))
             {
                 return;
             }
@@ -2213,10 +2633,26 @@ namespace DeepSeekHarnessLauncher
                     // 选回「大陆 CDN 加速」就等于回到自动挑源。
                     _settings.MirrorSource = GitHubAccelerator.AutoSource;
                 }
+                else if (String.Equals(GetSelectedTag(UpdateSourceComboBox, ""), "Custom", StringComparison.OrdinalIgnoreCase)
+                    && String.Equals(_settings.MirrorSource, BackendDownloadSource.SourceId, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Leaving the dedicated backend engine must not leave its
+                    // marker behind, otherwise SyncAcceleratorControls maps
+                    // the newly selected Custom item straight back to backend.
+                    _settings.MirrorSource = GitHubAccelerator.AutoSource;
+                }
 
                 // 换档位会改变插件来源的可选项（GitHub 大陆节点 / GitHub 官方）
-                RebuildPluginSourceOptions();
-                SyncAcceleratorControls();
+                _suppressSettingSelectionChanged = true;
+                try
+                {
+                    RebuildPluginSourceOptions();
+                    SyncAcceleratorControls();
+                }
+                finally
+                {
+                    _suppressSettingSelectionChanged = false;
+                }
                 if (String.Equals(updateSource, "Accelerated", StringComparison.OrdinalIgnoreCase))
                 {
                     // 切回加速档又没测速数据时，补一轮。
@@ -2617,6 +3053,7 @@ namespace DeepSeekHarnessLauncher
         private void LoadFeaturedPlugins(bool forceRefresh)
         {
             FeaturedSummaryText.Text = "正在同步推荐列表…";
+            int loadGeneration = _pluginPageLoadGeneration;
             _ = System.Threading.Tasks.Task.Run(delegate
             {
                 FeaturedPluginResult result = FeaturedPluginService.Load(
@@ -2625,7 +3062,7 @@ namespace DeepSeekHarnessLauncher
                     _host.Log);
                 DispatcherQueue.TryEnqueue(delegate
                 {
-                    if (_settingsClosed) return;
+                    if (_settingsClosed || loadGeneration != _pluginPageLoadGeneration) return;
                     _featuredItems = result == null
                         ? new List<PluginCatalogItem>()
                         : result.Items;
@@ -2845,12 +3282,14 @@ namespace DeepSeekHarnessLauncher
                 : "正在加载在线插件列表…";
             PluginCatalogInfoBar.IsOpen = true;
 
+            int loadGeneration = _pluginPageLoadGeneration;
             _ = System.Threading.Tasks.Task.Run(delegate
             {
                 PluginCatalogService.CatalogResult result =
                     PluginCatalogService.Load(_settings, forceRefresh, _host.Log);
                 DispatcherQueue.TryEnqueue(delegate
                 {
+                    if (_settingsClosed || loadGeneration != _pluginPageLoadGeneration) return;
                     ApplyCatalog(result);
                 });
             });
@@ -3565,6 +4004,144 @@ namespace DeepSeekHarnessLauncher
             return confirmed;
         }
 
+        /// <summary>
+        /// pnpm 拦截依赖脚本时，在启动器内询问是否只放行本次报告的依赖。
+        /// 用户同意后写入当前 profile 并重试；拒绝时保持原设置并报告已取消。
+        /// </summary>
+        private PluginStoreService.InstallResult ConfirmBuildScriptAuthorizationAndRetry(
+            PluginStoreService.InstallResult result,
+            string pluginLabel,
+            Func<PluginStoreService.InstallResult, PluginStoreService.InstallResult> retryInstall)
+        {
+            const int maximumApprovalRounds = 3;
+            bool alreadyApproved = false;
+            for (int round = 0;
+                result != null && result.BuildScriptsBlocked && round < maximumApprovalRounds;
+                round++)
+            {
+                List<string> keys = result.PendingBuildScriptKeys ?? new List<string>();
+                if (keys.Count == 0)
+                {
+                    result.Error = "DSH 已拦截依赖构建脚本，但启动器未能安全识别具体依赖名。"
+                        + "请在 DSH 插件管理器中检查授权列表后再重试。";
+                    return result;
+                }
+
+                if (!ConfirmBuildScriptAuthorization(pluginLabel, keys))
+                {
+                    result.Cancelled = true;
+                    result.Error = alreadyApproved
+                        ? "安装已取消。此前确认的依赖脚本授权仍保留在当前 DSH profile。"
+                        : "安装已取消。你选择不放行依赖脚本，原授权配置没有改动。";
+                    return result;
+                }
+
+                string profileDirectory = DshProfileService.ResolveProfileDirectory(_settings.DshRoot);
+                if (String.IsNullOrWhiteSpace(profileDirectory))
+                {
+                    result.Error = "找不到当前 DSH profile，无法保存脚本授权。";
+                    return result;
+                }
+
+                try
+                {
+                    // 保持插件操作串行，避免启动器的另一个插件事务同时改 profile。
+                    using (PluginOperationSupport.Acquire(profileDirectory))
+                    {
+                        if (!DshPluginCliService.ApplyApprovedBuildsToWorkspace(
+                            _settings,
+                            keys,
+                            out List<string> applied,
+                            out string authorizationError))
+                        {
+                            result.Error = "没能保存依赖脚本授权：" + authorizationError;
+                            return result;
+                        }
+
+                        _host.Log("用户确认放行插件构建脚本："
+                            + String.Join("、", keys.Select(DshPluginCliService.StripPackageVersion).ToArray()));
+                        alreadyApproved = true;
+                        result = retryInstall(result);
+                    }
+                }
+                catch (Exception exception)
+                {
+                    result.Error = "保存脚本授权或重试安装失败：" + exception.Message;
+                    return result;
+                }
+            }
+
+            if (result != null && result.BuildScriptsBlocked)
+            {
+                result.Error = "安装仍被新的依赖构建脚本拦截。为避免连续自动授权，启动器已停止重试。";
+            }
+
+            return result;
+        }
+
+        private bool ConfirmBuildScriptAuthorization(string pluginLabel, IList<string> keys)
+        {
+            List<string> packages = keys
+                .Select(DshPluginCliService.StripPackageVersion)
+                .Where(name => !String.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            string packageList = packages.Count == 0
+                ? "（未能识别依赖名）"
+                : "• " + String.Join("\n• ", packages.ToArray());
+
+            DispatcherQueue.TryEnqueue(delegate
+            {
+                PluginActionInfoBar.Severity = InfoBarSeverity.Warning;
+                PluginActionInfoBar.Title = "依赖构建脚本需要授权";
+                PluginActionInfoBar.Message = "安装 " + pluginLabel + " 时，pnpm 拦截了依赖脚本；请在弹窗中选择是否放行。";
+                PluginActionInfoBar.IsOpen = true;
+            });
+
+            var completion = new System.Threading.Tasks.TaskCompletionSource<bool>(
+                System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+            bool queued = DispatcherQueue.TryEnqueue(async delegate
+            {
+                try
+                {
+                    ContentDialog dialog = new ContentDialog
+                    {
+                        XamlRoot = Content.XamlRoot,
+                        Title = "是否放行依赖构建脚本？",
+                        Content = "安装“" + pluginLabel + "”需要运行以下依赖的构建脚本：\n\n"
+                            + packageList
+                            + "\n\n放行后，这些依赖脚本会以当前 Windows 用户权限运行，"
+                            + "授权会保存在当前 DSH profile，并在你确认后重试安装。"
+                            + "只放行你信任来源的插件。",
+                        PrimaryButtonText = "放行并重试",
+                        CloseButtonText = "取消安装",
+                        DefaultButton = ContentDialogButton.Close
+                    };
+                    ContentDialogResult choice = await dialog.ShowAsync();
+                    completion.TrySetResult(choice == ContentDialogResult.Primary);
+                }
+                catch (Exception exception)
+                {
+                    _host.Log("依赖脚本授权确认框失败：" + exception.Message);
+                    completion.TrySetResult(false);
+                }
+            });
+
+            if (!queued)
+            {
+                _host.Log("依赖脚本授权确认框无法排入界面队列，按取消安装处理。");
+                return false;
+            }
+
+            if (!completion.Task.Wait(TimeSpan.FromMinutes(2)))
+            {
+                _host.Log("依赖脚本授权确认超时，按取消安装处理。");
+                return false;
+            }
+
+            return completion.Task.Result;
+        }
+
         private void StartPluginInstall(PluginCardItem card)
         {
             if (card.IsOnline && !PackageManagerRunner.IsAvailable(_settings))
@@ -3624,12 +4201,43 @@ namespace DeepSeekHarnessLauncher
 
                 _pluginDownloadSession.Remove(card.Name);
 
+                result = ConfirmBuildScriptAuthorizationAndRetry(result, name, current =>
+                    current.LauncherArchiveRequired
+                    ? PluginStoreService.InstallFromLauncherArchive(_settings, card.Spec, card.ExpectedKey,
+                        current.LauncherArchivePushedAt, current.LauncherArchiveDefaultBranch,
+                        current.LauncherArchiveSourceSha,
+                        (text, fraction) => DispatcherQueue.TryEnqueue(() => ShowInstallProgress(true, name, text)),
+                        _host.Log)
+                    : PluginStoreService.Install(
+                        _settings,
+                        spec,
+                        card.ExpectedKey,
+                        card.PushedAt,
+                        card.DefaultBranch,
+                        card.SourceSha,
+                        delegate(string text, double fraction)
+                        {
+                            DispatcherQueue.TryEnqueue(delegate
+                            {
+                                card.PrimaryAction = PluginProgressAction(text);
+                                card.ProgressValue = Math.Max(0, Math.Min(100, fraction));
+                                ShowInstallProgress(true, card.Name, text);
+                            });
+                        },
+                        _host.Log));
+
                 // 1.6.1：peer 不兼容的插件 DSH 会拒绝加载，用户确认后再走一次带豁免的安装。
-                if (result.NeedsVersionExemption && ConfirmVersionExemption(result))
+                if (!result.Cancelled && result.NeedsVersionExemption && ConfirmVersionExemption(result))
                 {
                     _host.Log("插件 " + name + " 与当前 DSH 版本不兼容，"
                         + "已按用户确认记一次精确版本豁免后重装。");
-                    result = PluginStoreService.Install(
+                    result = result.LauncherArchiveRequired
+                        ? PluginStoreService.InstallFromLauncherArchive(_settings, card.Spec, card.ExpectedKey,
+                            result.LauncherArchivePushedAt, result.LauncherArchiveDefaultBranch,
+                            result.LauncherArchiveSourceSha,
+                            (text, fraction) => DispatcherQueue.TryEnqueue(() => ShowInstallProgress(true, name, text)),
+                            _host.Log, null, true)
+                        : PluginStoreService.Install(
                         _settings,
                         spec,
                         card.ExpectedKey,
@@ -3646,7 +4254,7 @@ namespace DeepSeekHarnessLauncher
                 {
                     // 安装失败以前只在界面上报，日志里什么都没有，出问题查不到原因。
                     _host.Log(
-                        (result.Ok ? "插件安装完成：" : "插件安装失败：")
+                        (result.Ok ? "插件安装完成：" : result.Cancelled ? "插件安装已取消：" : "插件安装失败：")
                         + name
                         + (result.Ok
                             ? (result.PnpmFailed ? "（pnpm install 没成功）" : String.Empty)
@@ -3674,8 +4282,12 @@ namespace DeepSeekHarnessLauncher
                     }
                     else
                     {
-                        PluginActionInfoBar.Severity = InfoBarSeverity.Error;
-                        PluginActionInfoBar.Title = name + " 安装失败";
+                        PluginActionInfoBar.Severity = result.Cancelled
+                            ? InfoBarSeverity.Warning
+                            : (result.BuildScriptsBlocked ? InfoBarSeverity.Warning : InfoBarSeverity.Error);
+                        PluginActionInfoBar.Title = result.Cancelled
+                            ? "安装已取消"
+                            : (result.BuildScriptsBlocked ? "依赖构建脚本仍未授权" : name + " 安装失败");
                         PluginActionInfoBar.Message = result.Error ?? "未知错误。";
                     }
 
@@ -3765,12 +4377,39 @@ namespace DeepSeekHarnessLauncher
                         });
                     }));
 
+                result = ConfirmBuildScriptAuthorizationAndRetry(result, specifier, current =>
+                    current.LauncherArchiveRequired
+                    ? PluginStoreService.InstallFromLauncherArchive(_settings, specifier, null,
+                        current.LauncherArchivePushedAt, current.LauncherArchiveDefaultBranch,
+                        current.LauncherArchiveSourceSha,
+                        (text, fraction) => DispatcherQueue.TryEnqueue(() => ShowInstallProgress(true, specifier, text)),
+                        _host.Log)
+                    : PluginStoreService.InstallFromSpecifier(
+                        _settings,
+                        specifier,
+                        delegate(string text, double fraction)
+                        {
+                            if (String.IsNullOrWhiteSpace(text)) return;
+                            DispatcherQueue.TryEnqueue(delegate
+                            {
+                                PluginActionInfoBar.Message = "安装中 · " + text;
+                                ShowInstallProgress(true, specifier, text);
+                            });
+                        },
+                        _host.Log));
+
                 // 1.6.1：peer 不兼容的插件 DSH 会拒绝加载，用户确认后再走一次带豁免的安装。
-                if (result.NeedsVersionExemption && ConfirmVersionExemption(result))
+                if (!result.Cancelled && result.NeedsVersionExemption && ConfirmVersionExemption(result))
                 {
                     _host.Log("插件 " + specifier + " 与当前 DSH 版本不兼容，"
                         + "已按用户确认记一次精确版本豁免后重装。");
-                    result = PluginStoreService.InstallFromSpecifier(
+                    result = result.LauncherArchiveRequired
+                        ? PluginStoreService.InstallFromLauncherArchive(_settings, specifier, null,
+                            result.LauncherArchivePushedAt, result.LauncherArchiveDefaultBranch,
+                            result.LauncherArchiveSourceSha,
+                            (text, fraction) => DispatcherQueue.TryEnqueue(() => ShowInstallProgress(true, specifier, text)),
+                            _host.Log, null, true)
+                        : PluginStoreService.InstallFromSpecifier(
                         _settings,
                         specifier,
                         delegate(string text, double fraction) { },
@@ -3784,7 +4423,7 @@ namespace DeepSeekHarnessLauncher
                     InstallPluginFromLinkButton.IsEnabled = true;
                     FinishInstallProgress(true, specifier);
                     _host.Log(
-                        (result.Ok ? "插件链接安装完成：" : "插件链接安装失败：")
+                        (result.Ok ? "插件链接安装完成：" : result.Cancelled ? "插件链接安装已取消：" : "插件链接安装失败：")
                         + specifier
                         + (result.Ok
                             ? String.Empty
@@ -3809,8 +4448,12 @@ namespace DeepSeekHarnessLauncher
                     }
                     else
                     {
-                        PluginActionInfoBar.Severity = InfoBarSeverity.Error;
-                        PluginActionInfoBar.Title = "安装失败";
+                        PluginActionInfoBar.Severity = result.Cancelled
+                            ? InfoBarSeverity.Warning
+                            : (result.BuildScriptsBlocked ? InfoBarSeverity.Warning : InfoBarSeverity.Error);
+                        PluginActionInfoBar.Title = result.Cancelled
+                            ? "安装已取消"
+                            : (result.BuildScriptsBlocked ? "依赖构建脚本仍未授权" : "安装失败");
                         PluginActionInfoBar.Message = result.Error ?? "未知错误。";
                     }
 
@@ -4662,7 +5305,7 @@ namespace DeepSeekHarnessLauncher
             });
         }
 
-        /// <summary>关于页的版本号连点五下解锁开发者入口。</summary>
+        /// <summary>关于页的版本号连点五下只显示开发者入口，不切换页面。</summary>
         private void VersionText_Tapped(
             object sender,
             TappedRoutedEventArgs args)
@@ -4685,12 +5328,11 @@ namespace DeepSeekHarnessLauncher
         }
 
         /// <summary>
-        /// 连点五次版本号解锁开发者入口。不再起本地服务，直接切到开发者页。
+        /// 连点五次版本号只解锁左下角的开发者入口，由用户手动打开。
         /// </summary>
         private void UnlockDeveloperCenter()
         {
             SetDeveloperTabVisible(true);
-            SelectPage("Developer");
         }
 
         public void ShowWindow(string pageTag)
@@ -4736,7 +5378,7 @@ namespace DeepSeekHarnessLauncher
             bool dynamicPatchPage = target.StartsWith("Patch_", StringComparison.Ordinal);
             string group = GroupOf(target);
             string navTag = group ?? target;
-            bool known = navTag == "Home" || navTag == "Basic" || navTag == "Features"
+            bool known = navTag == "Home" || navTag == "Model" || navTag == "Basic" || navTag == "Features"
                 || navTag == "System" || navTag == "UpdatesGroup"
                 || navTag == "AboutGroup" || navTag == "Downloads" || navTag == "Developer" || navTag == "ServerMetrics";
             if (!known) { target = "General"; group = "Basic"; navTag = "Basic"; }
@@ -4756,7 +5398,13 @@ namespace DeepSeekHarnessLauncher
                 navTag = group ?? target;
             }
 
+            // Pages with generated lists and charts release those transient objects as
+            // soon as navigation leaves them; re-entering already goes through the
+            // regular page loaders below and rebuilds the visible content.
+            ChangeMemoryPage(target, pluginTab, skillTab);
+
             HomePage.Visibility = navTag == "Home" ? Visibility.Visible : Visibility.Collapsed;
+            ModelPage.Visibility = navTag == "Model" ? Visibility.Visible : Visibility.Collapsed;
             BasicPage.Visibility = navTag == "Basic" ? Visibility.Visible : Visibility.Collapsed;
             FeaturesPage.Visibility = navTag == "Features" ? Visibility.Visible : Visibility.Collapsed;
             SystemPage.Visibility = navTag == "System" ? Visibility.Visible : Visibility.Collapsed;
@@ -4797,14 +5445,14 @@ namespace DeepSeekHarnessLauncher
 
             FrameworkElement page = navTag switch
             {
-                "Home" => HomePage, "Features" => FeaturesPage, "System" => SystemPage,
+                "Home" => HomePage, "Model" => ModelPage, "Features" => FeaturesPage, "System" => SystemPage,
                 "UpdatesGroup" => UpdatesGroupPage, "AboutGroup" => AboutGroupPage,
                 "Downloads" => DownloadsPage,
                 "Developer" => DeveloperPage, "ServerMetrics" => ServerMetricsPage, _ => BasicPage
             };
             NavigationViewItem item = navTag switch
             {
-                "Home" => HomeNavItem, "Basic" => BasicNavItem,
+                "Home" => HomeNavItem, "Model" => ModelsNavItem, "Basic" => BasicNavItem,
                 "Features" => FeaturesNavItem, "System" => SystemNavItem,
                 "UpdatesGroup" => UpdatesNavItem, "AboutGroup" => AboutNavItem,
                 "Developer" => DeveloperNavItem, "ServerMetrics" => ServerMetricsFooterEntry, _ => DownloadsNavItem
@@ -4833,10 +5481,15 @@ namespace DeepSeekHarnessLauncher
             }
 
             AnimatePage(page);
-            if (target == "Downloads") RefreshDownloadCenter();
+            if (target == "Downloads") ReactivateDownloadCenter();
             if (target == "Home")
             {
                 LoadHomePage();
+            }
+
+            if (target == "Model")
+            {
+                InitializeModelPage();
             }
 
             if (target == "Plugins")
@@ -4883,6 +5536,7 @@ namespace DeepSeekHarnessLauncher
                 _ = LoadAuthorAvatarAsync();
                 LoadChangelog(false);
                 RefreshInstallerVersion();
+                _ = LoadPublicAcknowledgementsAsync();
             }
 
             if (target == "Components")
@@ -5405,7 +6059,6 @@ namespace DeepSeekHarnessLauncher
         private void ApplyWindowStyle()
         {
             CornerRadiusHelper.SetWindowStyle(_settings.WindowStyle);
-            ApplyAdaptiveIcons();
         }
 
         private void AccentSourceComboBox_SelectionChanged(
@@ -5694,7 +6347,7 @@ namespace DeepSeekHarnessLauncher
             object sender,
             SelectionChangedEventArgs args)
         {
-            if (_initializing)
+            if (_initializing || _suppressUpdateChannelChange)
             {
                 return;
             }
@@ -5705,8 +6358,301 @@ namespace DeepSeekHarnessLauncher
             _settings.DshChannel = GetSelectedTag(DshChannelComboBox, "Auto");
             SaveSettings();
             RefreshUpdateSummaries();
+            UpdateDshRollbackButtonVisibility();
             _host.CheckLauncherUpdate();
             _host.CheckDshUpdate();
+        }
+
+        private void DshVersionComboBox_DropDownOpened(object sender, object args)
+        {
+            if (_dshVersionsLoading || DshVersionComboBox.Items.Count > 0)
+                return;
+
+            if (_host.IsPreview)
+            {
+                ShowDshVersionManagementInfo(InfoBarSeverity.Informational,
+                    "预览模式", "预览界面不会读取或更换本机 DSH 版本。");
+                return;
+            }
+
+            _dshVersionsLoading = true;
+            DshVersionComboBox.IsEnabled = false;
+            ShowDshVersionManagementInfo(InfoBarSeverity.Informational,
+                "正在读取版本", "正在读取 npm 上所有带完整性校验的 DSH 发布版本…");
+            try
+            {
+                _host.LoadDshVersions(delegate(List<DshUpdatePackage> versions, string error)
+                {
+                    DispatcherQueue.TryEnqueue(delegate
+                    {
+                        _dshVersionsLoading = false;
+                        DshVersionComboBox.IsEnabled = true;
+                        DshVersionComboBox.Items.Clear();
+                        if (versions == null || versions.Count == 0)
+                        {
+                            ShowDshVersionManagementInfo(InfoBarSeverity.Error,
+                                "读取失败", error ?? "更新源没有可安装的 DSH 版本。可以稍后重新打开列表再试。");
+                            RefreshDshVersionManagementState();
+                            return;
+                        }
+
+                        string installed = DshUpdateService.GetInstalledVersion(_settings.DshRoot);
+                        int installedIndex = -1;
+                        for (int index = 0; index < versions.Count; index++)
+                        {
+                            DshUpdatePackage version = versions[index];
+                            if (version == null || String.IsNullOrWhiteSpace(version.Version)) continue;
+                            string channels = DescribeDshVersionChannels(version.Channels);
+                            string published = version.PublishedAt.HasValue
+                                ? " · " + version.PublishedAt.Value.ToLocalTime().ToString("yyyy-MM-dd")
+                                : String.Empty;
+                            var item = new ComboBoxItem
+                            {
+                                Content = "v" + version.Version
+                                    + (String.IsNullOrWhiteSpace(channels) ? String.Empty : " · " + channels)
+                                    + published,
+                                Tag = version
+                            };
+                            DshVersionComboBox.Items.Add(item);
+                            if (String.Equals(version.Version, installed, StringComparison.OrdinalIgnoreCase))
+                                installedIndex = DshVersionComboBox.Items.Count - 1;
+                        }
+
+                        if (installedIndex >= 0)
+                            DshVersionComboBox.SelectedIndex = installedIndex;
+                        ShowDshVersionManagementInfo(InfoBarSeverity.Success,
+                            "版本已载入", "共找到 " + DshVersionComboBox.Items.Count
+                                + " 个可安装版本。列表按版本从新到旧排列，可滚动选择。");
+                        RefreshDshVersionManagementState();
+                        if (DshVersionComboBox.IsEnabled)
+                            DshVersionComboBox.IsDropDownOpen = true;
+                    });
+                });
+            }
+            catch (Exception error)
+            {
+                _dshVersionsLoading = false;
+                DshVersionComboBox.IsEnabled = true;
+                ShowDshVersionManagementInfo(InfoBarSeverity.Error, "读取失败", error.Message);
+            }
+        }
+
+        private void DshVersionComboBox_SelectionChanged(object sender, SelectionChangedEventArgs args)
+        {
+            RefreshDshVersionManagementState();
+        }
+
+        private async void ApplyDshVersionButton_Click(object sender, RoutedEventArgs args)
+        {
+            if (_dshVersionOperationActive || IsDshUpdateBusy()) return;
+            DshUpdatePackage package = GetSelectedDshVersionPackage();
+            if (package == null) return;
+
+            var confirmation = new ContentDialog
+            {
+                XamlRoot = SettingsRoot.XamlRoot,
+                Title = "更换 DSH 版本",
+                Content = "启用此功能会关闭自动更新，是否继续？",
+                PrimaryButtonText = "继续",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Close
+            };
+            if (await confirmation.ShowAsync() != ContentDialogResult.Primary) return;
+            if (_dshVersionOperationActive || IsDshUpdateBusy())
+            {
+                ShowDshVersionManagementInfo(InfoBarSeverity.Warning,
+                    "DSH 正在处理中", "等当前 DSH 检查、安装或数据传输完成后再试。");
+                return;
+            }
+
+            _dshVersionOperationActive = true;
+            _dshVersionManagementRequested = true;
+            ApplyDshVersionButton.IsEnabled = false;
+            DshVersionComboBox.IsEnabled = false;
+            UpdateDshRollbackButtonVisibility();
+            ShowDshVersionManagementInfo(InfoBarSeverity.Informational,
+                "正在更换 DSH 版本", "目标版本 v" + package.Version + "。已确认关闭 DSH 自动更新，安装完成后会重启服务。");
+            _host.InstallDshVersion(package);
+        }
+
+        private async void RollbackDshChannelButton_Click(object sender, RoutedEventArgs args)
+        {
+            if (_dshVersionOperationActive || IsDshUpdateBusy()) return;
+            var confirmation = new ContentDialog
+            {
+                XamlRoot = SettingsRoot.XamlRoot,
+                Title = "回退到正式版",
+                Content = "将使用 npm latest 正式版替换当前 DSH，并在安装成功后切换到正式版通道。自动更新设置保持不变，服务会重启。是否继续？",
+                PrimaryButtonText = "回退到正式版",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Close
+            };
+            if (await confirmation.ShowAsync() != ContentDialogResult.Primary) return;
+            if (_dshVersionOperationActive || IsDshUpdateBusy())
+            {
+                ShowDshVersionManagementInfo(InfoBarSeverity.Warning,
+                    "DSH 正在处理中", "等当前 DSH 检查、安装或数据传输完成后再试。");
+                return;
+            }
+
+            _dshVersionOperationActive = true;
+            _dshVersionManagementRequested = true;
+            ApplyDshVersionButton.IsEnabled = false;
+            DshVersionComboBox.IsEnabled = false;
+            UpdateDshRollbackButtonVisibility();
+            ShowDshVersionManagementInfo(InfoBarSeverity.Informational,
+                "正在更换 DSH 版本", "正在获取 npm latest 正式版，并准备替换当前版本…");
+            _host.RollbackDshToStable();
+        }
+
+        private void UpdateDshRollbackButtonVisibility()
+        {
+            if (RollbackDshChannelButton == null || DshChannelComboBox == null) return;
+            string channel = GetSelectedTag(DshChannelComboBox, "Auto");
+            bool eligible = String.Equals(channel, "Auto", StringComparison.OrdinalIgnoreCase)
+                || String.Equals(channel, "next", StringComparison.OrdinalIgnoreCase)
+                || String.Equals(channel, "alpha", StringComparison.OrdinalIgnoreCase);
+            RollbackDshChannelButton.Visibility = eligible ? Visibility.Visible : Visibility.Collapsed;
+            RollbackDshChannelButton.IsEnabled = eligible && !_dshVersionOperationActive
+                && !IsDshUpdateBusy() && !_host.IsPreview;
+        }
+
+        private void RefreshDshVersionManagementState()
+        {
+            if (DshVersionComboBox == null) return;
+
+            // The host owns these settings. Reflect successful mode/channel changes without
+            // triggering a second update check from the selection-changed handlers.
+            bool previousInitializing = _initializing;
+            _initializing = true;
+            try
+            {
+                if (!String.Equals(GetSelectedTag(DshUpdateModeComboBox, "Check"), _settings.DshUpdateMode,
+                    StringComparison.OrdinalIgnoreCase))
+                    SelectTaggedItem(DshUpdateModeComboBox, _settings.DshUpdateMode);
+                if (!String.Equals(GetSelectedTag(DshChannelComboBox, "Auto"), _settings.DshChannel,
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    _suppressUpdateChannelChange = true;
+                    SelectTaggedItem(DshChannelComboBox, _settings.DshChannel);
+                }
+            }
+            finally
+            {
+                _suppressUpdateChannelChange = false;
+                _initializing = previousInitializing;
+            }
+
+            bool busy = IsDshUpdateBusy();
+            DshUpdatePackage selected = GetSelectedDshVersionPackage();
+            ApplyDshVersionButton.IsEnabled = selected != null && !_dshVersionsLoading
+                && !_dshVersionOperationActive && !busy && !_host.IsPreview;
+            DshVersionComboBox.IsEnabled = !_dshVersionsLoading && !_dshVersionOperationActive && !busy;
+            UpdateDshRollbackButtonVisibility();
+            UpdateUpdateOptions();
+
+            UpdateUiSnapshot state = _host.GetDshUpdateState();
+            if (state == null) return;
+            if (_dshVersionManagementRequested && state.Activity == UpdateUiActivity.Installing)
+            {
+                string detail = String.IsNullOrWhiteSpace(state.ProgressText)
+                    ? "正在更换 DSH 版本…"
+                    : state.ProgressText;
+                ShowDshVersionManagementInfo(InfoBarSeverity.Informational,
+                    "正在更换 DSH 版本", detail);
+            }
+            else if (_dshVersionManagementRequested && state.Activity == UpdateUiActivity.Failed)
+            {
+                _dshVersionManagementRequested = false;
+                _dshVersionOperationActive = false;
+                ApplyDshVersionButton.IsEnabled = selected != null && !_dshVersionsLoading && !busy && !_host.IsPreview;
+                DshVersionComboBox.IsEnabled = !_dshVersionsLoading && !busy;
+                UpdateDshRollbackButtonVisibility();
+                ShowDshVersionManagementInfo(InfoBarSeverity.Error, "版本更换失败",
+                    String.IsNullOrWhiteSpace(state.Detail) ? "DSH 版本更换失败，请查看启动器日志。" : state.Detail);
+            }
+            else if (_dshVersionManagementRequested
+                && (state.Activity == UpdateUiActivity.UpToDate || state.Activity == UpdateUiActivity.Completed))
+            {
+                _dshVersionManagementRequested = false;
+                _dshVersionOperationActive = false;
+                ApplyDshVersionButton.IsEnabled = selected != null && !_dshVersionsLoading && !busy && !_host.IsPreview;
+                DshVersionComboBox.IsEnabled = !_dshVersionsLoading && !busy;
+                UpdateDshRollbackButtonVisibility();
+                ShowDshVersionManagementInfo(InfoBarSeverity.Success, "版本更换完成",
+                    String.IsNullOrWhiteSpace(state.Version) ? "DSH 版本已更新。" : "DSH 已切换到 v" + state.Version + "。");
+            }
+        }
+
+        internal void SetDshUpdateModeFromHost(string mode)
+        {
+            _settings.DshUpdateMode = String.IsNullOrWhiteSpace(mode) ? "Check" : mode;
+            bool previousInitializing = _initializing;
+            _initializing = true;
+            try { SelectTaggedItem(DshUpdateModeComboBox, _settings.DshUpdateMode); }
+            finally { _initializing = previousInitializing; }
+            UpdateUpdateOptions();
+        }
+
+        internal void SetDshChannelFromHost(string channel)
+        {
+            _settings.DshChannel = String.IsNullOrWhiteSpace(channel) ? "Auto" : channel;
+            bool previousInitializing = _initializing;
+            _initializing = true;
+            try { SelectTaggedItem(DshChannelComboBox, _settings.DshChannel); }
+            finally { _initializing = previousInitializing; }
+            UpdateDshRollbackButtonVisibility();
+            RefreshUpdateSummaries();
+        }
+
+        internal void RejectDshVersionOperation(string message)
+        {
+            _dshVersionManagementRequested = false;
+            _dshVersionOperationActive = false;
+            bool busy = IsDshUpdateBusy();
+            DshVersionComboBox.IsEnabled = !_dshVersionsLoading && !busy;
+            ApplyDshVersionButton.IsEnabled = GetSelectedDshVersionPackage() != null
+                && !_dshVersionsLoading && !busy && !_host.IsPreview;
+            UpdateDshRollbackButtonVisibility();
+            ShowDshVersionManagementInfo(
+                InfoBarSeverity.Warning,
+                "暂时无法更换 DSH 版本",
+                String.IsNullOrWhiteSpace(message) ? "请稍后重试。" : message);
+        }
+
+        private bool IsDshUpdateBusy()
+        {
+            UpdateUiSnapshot state = _host.GetDshUpdateState();
+            return state != null && (state.Activity == UpdateUiActivity.Checking
+                || state.Activity == UpdateUiActivity.Installing);
+        }
+
+        private DshUpdatePackage GetSelectedDshVersionPackage()
+        {
+            return DshVersionComboBox?.SelectedItem is ComboBoxItem item
+                ? item.Tag as DshUpdatePackage
+                : null;
+        }
+
+        private static string DescribeDshVersionChannels(List<string> channels)
+        {
+            if (channels == null || channels.Count == 0) return "历史版本";
+            return String.Join(" / ", channels.Select(channel =>
+            {
+                if (String.Equals(channel, "latest", StringComparison.OrdinalIgnoreCase)) return "正式版";
+                if (String.Equals(channel, "next", StringComparison.OrdinalIgnoreCase)) return "预览版";
+                if (String.Equals(channel, "alpha", StringComparison.OrdinalIgnoreCase)) return "内测版";
+                return channel + " 通道";
+            }));
+        }
+
+        private void ShowDshVersionManagementInfo(InfoBarSeverity severity, string title, string message)
+        {
+            if (DshVersionManagementInfoBar == null) return;
+            DshVersionManagementInfoBar.Severity = severity;
+            DshVersionManagementInfoBar.Title = title ?? String.Empty;
+            DshVersionManagementInfoBar.Message = message ?? String.Empty;
+            DshVersionManagementInfoBar.IsOpen = true;
         }
 
         private static string DescribeDshChannel(string channel)
@@ -5984,6 +6930,7 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
+            int loadGeneration = _aboutPageLoadGeneration;
             _authorAvatarLoading = true;
             AuthorAvatarLoading.IsActive = true;
             AuthorAvatarLoading.Visibility = Visibility.Visible;
@@ -5993,6 +6940,11 @@ namespace DeepSeekHarnessLauncher
                 BilibiliAvatarResult result =
                     await System.Threading.Tasks.Task.Run(
                         BilibiliProfileService.FetchAvatarOnceAsync);
+                if (_settingsClosed || loadGeneration != _aboutPageLoadGeneration)
+                {
+                    return;
+                }
+
                 if (!result.Ok)
                 {
                     AuthorAvatarLoading.IsActive = false;
@@ -6018,6 +6970,11 @@ namespace DeepSeekHarnessLauncher
                     Microsoft.UI.Xaml.Media.Imaging.BitmapImage bitmap =
                         new Microsoft.UI.Xaml.Media.Imaging.BitmapImage();
                     await bitmap.SetSourceAsync(stream);
+                    if (_settingsClosed || loadGeneration != _aboutPageLoadGeneration)
+                    {
+                        return;
+                    }
+
                     AuthorAvatarImage.Source = bitmap;
                     AuthorAvatarImage.Visibility = Visibility.Visible;
                     AuthorAvatarLoading.IsActive = false;
@@ -6029,7 +6986,8 @@ namespace DeepSeekHarnessLauncher
             }
             finally
             {
-                _authorAvatarLoading = false;
+                if (loadGeneration == _aboutPageLoadGeneration)
+                    _authorAvatarLoading = false;
             }
         }
 
@@ -6105,6 +7063,7 @@ namespace DeepSeekHarnessLauncher
         private void SettingsWindow_Closed(object sender, WindowEventArgs args)
         {
             _settingsClosed = true;
+            CancelPageMemoryTrim();
             _dshDataFindCancellation?.Cancel();
             _dshDataPreviewCancellation?.Cancel();
             _backupCancellation?.Cancel();
@@ -6292,6 +7251,7 @@ namespace DeepSeekHarnessLauncher
         /// <summary>官方推荐技能：启动器仓库的 featured-skills.json，失败回退内置列表。</summary>
         private void LoadFeaturedSkills(bool forceRefresh)
         {
+            int loadGeneration = _skillPageLoadGeneration;
             _ = System.Threading.Tasks.Task.Run(delegate
             {
                 FeaturedSkillResult result = FeaturedSkillService.Load(
@@ -6300,6 +7260,7 @@ namespace DeepSeekHarnessLauncher
                     _host.Log);
                 DispatcherQueue.TryEnqueue(delegate
                 {
+                    if (_settingsClosed || loadGeneration != _skillPageLoadGeneration) return;
                     _featuredSkillsLoaded = true;
                     _featuredSkills = new List<SkillCardItem>();
                     for (int index = 0; index < result.Items.Count; index++)
@@ -6472,13 +7433,14 @@ namespace DeepSeekHarnessLauncher
                 : "本地缓存已显示，正在后台刷新目录…";
             SkillCatalogInfoBar.IsOpen = true;
 
+            int loadGeneration = _skillPageLoadGeneration;
             _ = System.Threading.Tasks.Task.Run(delegate
             {
                 SkillMarketService.MarketResult result =
                     SkillMarketService.Load(_settings, forceRefresh || staleCache != null, _host.Log);
                 DispatcherQueue.TryEnqueue(delegate
                 {
-                    if (_settingsClosed) return;
+                    if (_settingsClosed || loadGeneration != _skillPageLoadGeneration) return;
                     _skillMarketLoading = false;
                     ApplySkillCatalog(result);
                 });
@@ -9374,6 +10336,7 @@ namespace DeepSeekHarnessLauncher
             HomeUsageInstallButton.Visibility = Visibility.Collapsed;
             HomeUsageRefreshButton.IsEnabled = false;
 
+            int loadGeneration = _homePageLoadGeneration;
             _ = System.Threading.Tasks.Task.Run(delegate
             {
                 TokenUsageSummary usage = TokenUsageService.Load(_settings);
@@ -9402,6 +10365,7 @@ namespace DeepSeekHarnessLauncher
 
                 DispatcherQueue.TryEnqueue(delegate
                 {
+                    if (_settingsClosed || loadGeneration != _homePageLoadGeneration) return;
                     HomeUsageRefreshButton.IsEnabled = true;
                     string currentAccount = BalanceLedger.AccountKey(LauncherSettingsStore.ReadApiKey(_settings));
                     if (homeBalance != null && homeBalance.Ok && currentAccount != homeBalance.AccountHash)
@@ -10301,6 +11265,7 @@ namespace DeepSeekHarnessLauncher
 
         private void LoadAnnouncements(bool forceRefresh)
         {
+            if (forceRefresh) _ = LoadHomeNotificationAsync();
             if (!forceRefresh)
             {
                 // 缓存是同步读的，只在真有缓存时用，免得卡住 UI 线程。
@@ -10317,6 +11282,7 @@ namespace DeepSeekHarnessLauncher
             // 网络那步可能要等几秒（远端文件不存在时要把候选逐个试完），
             // 先把状态写出来，别让公告卡看着像空的。
             HomeAnnouncementStateText.Text = "正在读取…";
+            int loadGeneration = _homePageLoadGeneration;
             _ = System.Threading.Tasks.Task.Run(delegate
             {
                 AnnouncementResult result = AnnouncementService.Load(
@@ -10325,6 +11291,7 @@ namespace DeepSeekHarnessLauncher
                     _host.Log);
                 DispatcherQueue.TryEnqueue(delegate
                 {
+                    if (_settingsClosed || loadGeneration != _homePageLoadGeneration) return;
                     _homeAnnouncements = result.Items;
                     RebuildHomeAnnouncements(result.FromCache, result.Error);
                 });
@@ -10398,6 +11365,7 @@ namespace DeepSeekHarnessLauncher
                     { "Featured", DeveloperFeaturedPanel },
                     { "Messages", DeveloperMessagesPanel },
                     { "Feedback", DeveloperFeedbackPanel },
+                    { "Acknowledgements", DeveloperAcknowledgementsPanel },
                     { "Tools", DeveloperToolsPanel }
                 };
             }
@@ -10435,6 +11403,14 @@ namespace DeepSeekHarnessLauncher
             if (String.Equals(tag, "Feedback", StringComparison.OrdinalIgnoreCase))
             {
                 _ = LoadDeveloperFeedbackCoreAsync();
+            }
+            else if (String.Equals(tag, "Messages", StringComparison.OrdinalIgnoreCase))
+            {
+                TriggerAutomaticManagementLoad();
+            }
+            else if (String.Equals(tag, "Acknowledgements", StringComparison.OrdinalIgnoreCase))
+            {
+                _ = LoadDeveloperAcknowledgementsAsync();
             }
         }
 
@@ -11514,39 +12490,38 @@ namespace DeepSeekHarnessLauncher
             BackupExportDetail.Text = "勾选内容后开始导出。";
         }
 
-        private async void BackupExportFolderButton_Click(
+        private void BackupExportFolderButton_Click(
             object sender,
             RoutedEventArgs args)
         {
-            await PickDymExportFolderAsync();
+            PickDymExportFolderAsync();
         }
 
-        private async System.Threading.Tasks.Task PickDymExportFolderAsync()
+        private System.Threading.Tasks.Task PickDymExportFolderAsync()
         {
             if (_settingsClosed || _backupBusy || _dshDataBusy)
             {
-                return;
+                return System.Threading.Tasks.Task.CompletedTask;
             }
 
             SetDshDataBusy(true);
             try
             {
-                var picker = new Microsoft.Windows.Storage.Pickers.FolderPicker(_appWindow.Id);
-                var folder =
-                    await picker.PickSingleFolderAsync();
+                string folder = NativeFolderPicker.Pick(_windowHandle, "选择 DYM 导出文件夹");
                 if (_settingsClosed || folder == null)
                 {
-                    return;
+                    return System.Threading.Tasks.Task.CompletedTask;
                 }
 
-                _backupExportDirectory = folder.Path;
-                BackupExportTargetBox.Text = folder.Path;
+                _backupExportDirectory = folder;
+                BackupExportTargetBox.Text = folder;
             }
             catch (Exception exception)
             {
                 ShowBackupInfo(InfoBarSeverity.Error, "无法选择目录：" + exception.Message);
             }
             finally { SetDshDataBusy(false); }
+            return System.Threading.Tasks.Task.CompletedTask;
         }
 
         private async void BackupExportStartButton_Click(
@@ -11599,25 +12574,6 @@ namespace DeepSeekHarnessLauncher
                 new System.Threading.CancellationTokenSource();
             _backupCancellation = cancellation;
 
-            // 7z 每打一个文件都会报一行，把它变成「正在打包 xxx」——
-            // 只有百分比的话，用户不知道它到底在动哪个文件。
-            Action<string> packingLog = delegate(string message)
-            {
-                _host.Log(message);
-                string file = BackupFlow.DescribeProgressLine(message);
-                if (String.IsNullOrWhiteSpace(file))
-                {
-                    return;
-                }
-
-                DispatcherQueue.TryEnqueue(delegate
-                {
-                    if (_settingsClosed || _backupCancellation != cancellation) return;
-                    BackupExportDetail.Text = "正在打包 " + file;
-                    ReportBackupOperationProgress(BackupExportDetail.Text, BackupExportProgress.Value);
-                });
-            };
-
             BackupResult result;
             try
             {
@@ -11627,18 +12583,15 @@ namespace DeepSeekHarnessLauncher
                     dshRoot,
                     chosen,
                     directory,
-                    delegate(string text, double percent)
+                    BackupProgress(delegate(string text, double percent)
                     {
-                        DispatcherQueue.TryEnqueue(delegate
-                        {
                             if (_settingsClosed || _backupCancellation != cancellation) return;
                             if (!String.IsNullOrWhiteSpace(text)) BackupExportDetail.Text = text;
                             BackupExportProgress.Value =
                                 Math.Max(0, Math.Min(100, percent));
                             ReportBackupOperationProgress(BackupExportDetail.Text, percent);
-                        });
-                    },
-                    packingLog,
+                    }),
+                    _host.Log,
                         cancellation.Token,
                         dshHome);
                 });
@@ -11850,10 +12803,8 @@ namespace DeepSeekHarnessLauncher
                     dshRoot,
                     chosen,
                     policy,
-                    delegate(string text, double percent)
+                    BackupProgress(delegate(string text, double percent)
                     {
-                        DispatcherQueue.TryEnqueue(delegate
-                        {
                             if (_settingsClosed || _backupCancellation != cancellation) return;
                             if (!String.IsNullOrWhiteSpace(text))
                             {
@@ -11864,8 +12815,7 @@ namespace DeepSeekHarnessLauncher
                             BackupImportProgress.Value =
                                 Math.Max(0, Math.Min(100, percent));
                             ReportBackupOperationProgress(BackupImportDetail.Text, percent);
-                        });
-                    },
+                    }),
                     _host.Log,
                         cancellation.Token,
                         dshHome);
@@ -12978,7 +13928,7 @@ namespace DeepSeekHarnessLauncher
                 PageTag = pageTag,
                 PageTitle = title,
                 Alias = "补丁 " + pageKey,
-                Initials = SettingsSearchInitials.Build(title + "补丁"),
+                Initials = SettingsSearchPinyin.BuildInitials(title + "补丁"),
                 Anchor = anchor,
                 Enabled = true
             });

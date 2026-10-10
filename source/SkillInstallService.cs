@@ -20,6 +20,11 @@ namespace DeepSeekHarnessLauncher
     {
         private const int DownloadTimeoutMs = 180000;
 
+        internal static void CleanupDownloadedArchives()
+        {
+            SkillArchiveTempFiles.CleanupAll();
+        }
+
         internal sealed class InstallResult
         {
             public bool Ok { get; set; }
@@ -637,6 +642,7 @@ namespace DeepSeekHarnessLauncher
             finally
             {
                 TryDelete(staging);
+                SkillArchiveTempFiles.SetExpectedUses(archivePath, skills.Count);
             }
 
             return skills;
@@ -644,6 +650,25 @@ namespace DeepSeekHarnessLauncher
 
         /// <summary>从本地压缩包装一个技能。relativePath 为空时自己找第一个技能目录。</summary>
         internal static InstallResult InstallFromArchive(
+            LauncherSettings settings,
+            string archivePath,
+            string relativePath,
+            string fallbackName,
+            Action<string, double> progress,
+            Action<string> log)
+        {
+            try
+            {
+                return InstallFromArchiveCore(settings, archivePath, relativePath, fallbackName, progress, log);
+            }
+            finally
+            {
+                string useKey = !String.IsNullOrWhiteSpace(relativePath) ? relativePath : (fallbackName ?? String.Empty);
+                SkillArchiveTempFiles.CompleteUse(archivePath, useKey);
+            }
+        }
+
+        private static InstallResult InstallFromArchiveCore(
             LauncherSettings settings,
             string archivePath,
             string relativePath,
@@ -757,6 +782,7 @@ namespace DeepSeekHarnessLauncher
                     throw new Exception(downloadError);
                 }
 
+                SkillArchiveTempFiles.Register(target);
                 return target;
             }
             catch (Exception exception)

@@ -62,3 +62,6 @@ source/obj-regression-*.xbf
 
 # InfoHost 的本地发布目录（构建产物，几百 MB，不进仓库）
 source/InfoHost/dist-*/
+
+# 本地构建临时目录（VBCSCompiler 里有超长路径，git 索引会直接失败）
+.build-temp/

@@ -5,6 +5,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Windows.UI;
 
 namespace DeepSeekHarnessLauncher
 {
@@ -12,14 +13,61 @@ namespace DeepSeekHarnessLauncher
     {
         private DispatcherQueueTimer _downloadCenterTimer;
         private readonly Dictionary<string, DownloadRow> _downloadRows = new Dictionary<string, DownloadRow>();
+        private string _downloadCenterLastFailure;
+        private DateTime _downloadCenterLastFailureUtc;
 
         private void InitializeDownloadCenter()
         {
             try
             {
                 _downloadCenterTimer = DispatcherQueue.CreateTimer();
-                _downloadCenterTimer.Interval = TimeSpan.FromMilliseconds(400);
+                // The task count still keeps the navigation entry current while the
+                // page is hidden; only build/update row controls at the active rate.
+                _downloadCenterTimer.Interval = TimeSpan.FromSeconds(2);
                 _downloadCenterTimer.Tick += delegate { RefreshDownloadCenter(); };
+                _downloadCenterTimer.Start();
+                RefreshDownloadCenter();
+            }
+            catch (Exception exception)
+            {
+                LogDownloadCenterFailure(exception);
+            }
+        }
+
+        private void DeactivateDownloadCenter()
+        {
+            try
+            {
+                if (_downloadCenterTimer != null)
+                {
+                    _downloadCenterTimer.Stop();
+                    _downloadCenterTimer.Interval = TimeSpan.FromSeconds(2);
+                    _downloadCenterTimer.Start();
+                }
+                foreach (DownloadRow row in _downloadRows.Values)
+                    (row.Root?.Parent as Panel)?.Children.Remove(row.Root);
+                ActiveDownloadRows?.Children.Clear();
+                DownloadHistoryRows?.Children.Clear();
+                _downloadRows.Clear();
+            }
+            catch (Exception exception)
+            {
+                LogDownloadCenterFailure(exception);
+            }
+        }
+
+        private void ReactivateDownloadCenter()
+        {
+            try
+            {
+                if (_downloadCenterTimer == null)
+                {
+                    InitializeDownloadCenter();
+                    return;
+                }
+
+                _downloadCenterTimer.Stop();
+                _downloadCenterTimer.Interval = TimeSpan.FromMilliseconds(400);
                 _downloadCenterTimer.Start();
                 RefreshDownloadCenter();
             }
@@ -34,10 +82,22 @@ namespace DeepSeekHarnessLauncher
         {
             try
             {
-                if (_host != null)
+                if (_host == null || exception == null) return;
+                string signature = exception.GetType().FullName + "|0x"
+                    + exception.HResult.ToString("X8") + "|" + exception.Message;
+                DateTime now = DateTime.UtcNow;
+                // A 400 ms active-page timer must not turn one unavailable WinUI
+                // resource into an unbounded launcher.log stream. Keep a later
+                // report useful when the failure changes or persists long enough.
+                if (String.Equals(_downloadCenterLastFailure, signature, StringComparison.Ordinal)
+                    && (now - _downloadCenterLastFailureUtc).TotalSeconds < 10)
                 {
-                    _host.Log("下载任务中心刷新失败: " + exception);
+                    return;
                 }
+                _downloadCenterLastFailure = signature;
+                _downloadCenterLastFailureUtc = now;
+                _host.Log("下载任务中心刷新失败: HRESULT=0x" + exception.HResult.ToString("X8")
+                    + " " + exception.GetType().Name + "：" + exception.Message);
             }
             catch
             {
@@ -79,7 +139,12 @@ namespace DeepSeekHarnessLauncher
                 && (active > 0 || DownloadsPage.Visibility == Visibility.Visible)
                 ? Visibility.Visible
                 : Visibility.Collapsed;
-            if (DownloadsPage.Visibility != Visibility.Visible) return;
+            // The page can be visible while its Pivot content is still detached
+            // from the window. WinUI 3 may throw SPAPI_E_ERROR_NOT_INSTALLED
+            // when UIElementCollection is mutated before XamlRoot is assigned;
+            // the active timer retries once the page is realized.
+            if (DownloadsPage.Visibility != Visibility.Visible || ActiveDownloadRows.XamlRoot == null)
+                return;
             int downloading = tasks.Count(t => t.Status == "Downloading" || t.Status == "Preparing");
             int paused = tasks.Count(t => t.Status == "Paused");
             int failed = tasks.Count(t => t.Status == "Failed" && IsActiveDownload(t));
@@ -95,8 +160,6 @@ namespace DeepSeekHarnessLauncher
                 (row.Root.Parent as Panel)?.Children.Remove(row.Root);
                 _downloadRows.Remove(id);
             }
-            int activeIndex = 0;
-            int historyIndex = 0;
             foreach (DownloadTaskRecord task in tasks.OrderByDescending(t => t.CreatedUtc))
             {
                 if (!_downloadRows.TryGetValue(task.Id, out DownloadRow row))
@@ -105,13 +168,16 @@ namespace DeepSeekHarnessLauncher
                     _downloadRows.Add(task.Id, row);
                 }
                 StackPanel parent = IsActiveDownload(task) ? ActiveDownloadRows : DownloadHistoryRows;
-                int index = IsActiveDownload(task) ? activeIndex++ : historyIndex++;
-                if (row.Root.Parent != parent || parent.Children.IndexOf(row.Root) != index)
+                UpdateDownloadRow(row, task);
+                if (row.Root.Parent != parent)
                 {
                     (row.Root.Parent as Panel)?.Children.Remove(row.Root);
-                    parent.Children.Insert(index, row.Root);
+                    // WinUI's projected IList.Insert can throw 0x800F1000 when a
+                    // visual tree is being reparented while the page is changing.
+                    // Appending is stable and the task list is already sorted by
+                    // creation time; a failed row must not abort all progress updates.
+                    parent.Children.Add(row.Root);
                 }
-                UpdateDownloadRow(row, task);
             }
         }
 
@@ -124,12 +190,12 @@ namespace DeepSeekHarnessLauncher
             for (int i = 0; i < 5; i++) row.Root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             row.Name = new TextBlock { FontSize = 14, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
             row.Detail = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap };
-            row.Detail.Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"];
+            row.Detail.Foreground = DownloadBrush("TextFillColorSecondaryBrush", Color.FromArgb(255, 170, 170, 170));
             row.Progress = new ProgressBar { Minimum = 0, Maximum = 100, Height = 4, HorizontalAlignment = HorizontalAlignment.Stretch };
             row.Error = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap, MaxLines = 3, TextTrimming = TextTrimming.CharacterEllipsis };
-            row.Error.Foreground = (Brush)Application.Current.Resources["SystemFillColorCriticalBrush"];
+            row.Error.Foreground = DownloadBrush("SystemFillColorCriticalBrush", Color.FromArgb(255, 196, 43, 28));
             row.Time = new TextBlock { FontSize = 11, TextWrapping = TextWrapping.Wrap };
-            row.Time.Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"];
+            row.Time.Foreground = DownloadBrush("TextFillColorSecondaryBrush", Color.FromArgb(255, 170, 170, 170));
             row.Root.Children.Add(row.Name);
             // Keep the action buttons clear of the detail line (the buttons span rows 0-1).
             Place(row.Root, row.Detail, 1, 1);
@@ -149,6 +215,25 @@ namespace DeepSeekHarnessLauncher
             Grid.SetRowSpan(actions, 2);
             row.Root.Children.Add(actions);
             return row;
+        }
+
+        private static Brush DownloadBrush(string key, Color fallback)
+        {
+            try
+            {
+                ResourceDictionary resources = Application.Current?.Resources;
+                if (resources != null && resources.TryGetValue(key, out object resource)
+                    && resource is Brush brush)
+                {
+                    return brush;
+                }
+            }
+            catch
+            {
+                // Theme resources vary between WinAppSDK runtime versions. The
+                // row remains usable with a fixed readable fallback brush.
+            }
+            return new SolidColorBrush(fallback);
         }
 
         private static void Place(Grid root, FrameworkElement child, int row, int columnSpan = 2)

@@ -201,7 +201,8 @@ namespace DeepSeekHarnessLauncher
     {
         internal const int GWL_STYLE = -16, DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2, DWMWA_BORDER_COLOR = 34;
         internal const long WS_POPUP = 0x80000000L;
-        internal const uint SWP_NOSIZE = 1, SWP_NOMOVE = 2, SWP_NOZORDER = 4, SWP_NOACTIVATE = 16, SWP_FRAMECHANGED = 32;
+        internal static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+        internal const uint SWP_NOSIZE = 1, SWP_NOMOVE = 2, SWP_NOZORDER = 4, SWP_NOACTIVATE = 16, SWP_FRAMECHANGED = 32, SWP_SHOWWINDOW = 64;
         [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
         internal static extern IntPtr GetWindowLongPtr(IntPtr h, int index);
         [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]

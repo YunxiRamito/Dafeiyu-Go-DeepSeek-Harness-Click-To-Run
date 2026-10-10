@@ -305,6 +305,7 @@ namespace DeepSeekHarnessLauncher.Backup
                 log("开始打包：" + exportItems.Count + " 个文件，" + FormatSize(totalBytes));
             }
             string staging = Path.Combine(DymArchive.GetWritableCacheRoot(), "export-" + Guid.NewGuid().ToString("N"));
+            bool completed = false;
             try
             {
                 var sourceFiles = new List<string>();
@@ -354,7 +355,7 @@ namespace DeepSeekHarnessLauncher.Backup
                     {
                         if (!Double.IsNaN(percent))
                         {
-                            currentPercent = 30 + percent * 0.7;
+                            currentPercent = 30 + percent * 0.68;
                             // 7z 的百分比是整个压缩阶段的总体进度。
                             report("正在压缩 " + sourceFiles.Count + " 个文件 · " + FormatSize(totalBytes)
                                 + " · " + Math.Round(percent) + "%", currentPercent);
@@ -374,17 +375,15 @@ namespace DeepSeekHarnessLauncher.Backup
                 token,
                 false);
 
-            if (ok && report != null)
-            {
-                report("打包完成", 100);
-            }
-
+            completed = ok;
             return ok;
             }
             finally
             {
+                if (completed) report?.Invoke("正在清理临时备份文件…", 98);
                 try { if (Directory.Exists(staging)) Directory.Delete(staging, true); }
                 catch (Exception exception) { log?.Invoke("无法清理临时备份目录：" + exception.Message); }
+                if (completed) report?.Invoke("打包完成", 100);
             }
         }
 
@@ -477,9 +476,28 @@ namespace DeepSeekHarnessLauncher.Backup
                 throw new IOException("插件链接指向所选数据目录之外，无法完整备份：" + path);
             if (Directory.Exists(full))
             {
-                if (!ancestors.Add(full)) throw new IOException("插件目录包含循环链接：" + relative);
+                if (!ancestors.Add(full)) return;
                 foreach (string child in Directory.EnumerateFileSystemEntries(full))
                     MaterializePlugin(child, relative + "/" + Path.GetFileName(child), home, root, items, seen, ancestors, ref bytes, token);
+                string manifestPath = Path.Combine(full, "package.json");
+                if (File.Exists(manifestPath))
+                {
+                    var package = JsonNode.Parse(File.ReadAllText(manifestPath)) as JsonObject;
+                    var dependencies = (package?["dependencies"] as JsonObject ?? new JsonObject())
+                        .Concat(package?["optionalDependencies"] as JsonObject ?? new JsonObject());
+                    foreach (string dependency in dependencies.Select(pair => pair.Key).Distinct(StringComparer.Ordinal))
+                    {
+                        if (dependency.Contains("..") || dependency.Contains('\\') || dependency.Contains(':') || dependency.StartsWith('/'))
+                            throw new IOException("插件依赖名称无效。");
+                        if (Directory.Exists(Path.Combine(full, "node_modules", dependency))) continue;
+                        string modules = Path.GetDirectoryName(full);
+                        if (Path.GetFileName(modules).StartsWith('@')) modules = Path.GetDirectoryName(modules);
+                        string sibling = Path.Combine(modules, dependency.Replace('/', Path.DirectorySeparatorChar));
+                        if (Directory.Exists(sibling))
+                            MaterializePlugin(sibling, relative + "/node_modules/" + dependency, home, root,
+                                items, seen, ancestors, ref bytes, token);
+                    }
+                }
                 ancestors.Remove(full);
             }
             else if (seen.Add(relative))

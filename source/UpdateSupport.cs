@@ -45,8 +45,20 @@ namespace DeepSeekHarnessLauncher
                 // launcher.json is an explicit fallback order, so each configured URL
                 // gets its own priority group instead of racing the next URL.
                 foreach (string url in configured)
-                    groups.Add(new List<string> { url });
-                return groups;
+                {
+                    // A stale launcher.json must not punch through the selected
+                    // engine. In particular, switching to CDN must never retain a
+                    // backend URL written by an older installation.
+                    if (BackendDownloadSource.IsSelected(settings))
+                        groups.Add(new List<string> { BackendDownloadSource.WrapMetadata(BackendDownloadSource.Unwrap(url)) });
+                    else
+                    {
+                        string upstream = BackendDownloadSource.Unwrap(url);
+                        if (!BackendDownloadSource.IsBackendUrl(upstream))
+                            groups.Add(new List<string> { upstream });
+                    }
+                }
+                if (groups.Count > 0) return groups;
             }
             bool preview = String.Equals(settings?.LauncherChannel, "Preview", StringComparison.OrdinalIgnoreCase);
             var releaseGroups = new List<IReadOnlyList<string>>();
@@ -591,6 +603,19 @@ namespace DeepSeekHarnessLauncher
         /// </summary>
         public static void ApplyUpdateAndExit(string newFilesDirectory, string installDirectory, string infoSession = null)
         {
+            try
+            {
+                StartApplyUpdate(newFilesDirectory, installDirectory, infoSession);
+            }
+            catch (Exception exception)
+            {
+                InstallLoggerLight("更新替换进程未能启动；暂存文件保留用于诊断：" + exception.Message);
+                throw;
+            }
+        }
+
+        private static void StartApplyUpdate(string newFilesDirectory, string installDirectory, string infoSession)
+        {
             string scriptPath = Path.Combine(Path.GetTempPath(), "DeepSeekHarnessUpdate", "apply-update.ps1");
             string restartCommandPath = Path.Combine(
                 Path.GetTempPath(),
@@ -644,6 +669,31 @@ namespace DeepSeekHarnessLauncher
             InstallLoggerLight("已拉起替换脚本,本进程退出");
         }
 
+        internal static string LauncherStagingRoot(string newFilesDirectory)
+        {
+            if (String.IsNullOrWhiteSpace(newFilesDirectory)) return null;
+            try
+            {
+                string parent = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "DeepSeekHarnessUpdate"));
+                string candidate = Path.GetFullPath(newFilesDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                while (candidate != null)
+                {
+                    string name = Path.GetFileName(candidate);
+                    if (String.Equals(Path.GetDirectoryName(candidate), parent, StringComparison.OrdinalIgnoreCase)
+                        && name.StartsWith("launcher-", StringComparison.Ordinal)
+                        && Guid.TryParseExact(name.Substring("launcher-".Length), "N", out _))
+                    {
+                        for (string ancestor = candidate; ancestor != null; ancestor = Path.GetDirectoryName(ancestor))
+                            if (Directory.Exists(ancestor) && (File.GetAttributes(ancestor) & FileAttributes.ReparsePoint) != 0) return null;
+                        return candidate;
+                    }
+                    candidate = Path.GetDirectoryName(candidate);
+                }
+            }
+            catch { }
+            return null;
+        }
+
         /// <summary>
         /// 生成替换脚本。
         ///
@@ -671,6 +721,7 @@ namespace DeepSeekHarnessLauncher
             builder.AppendLine("}");
             builder.AppendLine("$dir = " + Quote(installDirectory));
             builder.AppendLine("$new = " + Quote(newFilesDirectory));
+            builder.AppendLine("$stage = " + Quote(LauncherStagingRoot(newFilesDirectory)));
             builder.AppendLine("$launcher = " + Quote(Path.Combine(installDirectory, "DeepSeek Harness.exe")));
             builder.AppendLine("$procId = " + processId.ToString(CultureInfo.InvariantCulture));
             builder.AppendLine("$newVersion = " + Quote(newVersion));
@@ -686,7 +737,8 @@ namespace DeepSeekHarnessLauncher
             builder.AppendLine("Copy-Item -Path $dir -Destination $backup -Recurse -Force -ErrorAction SilentlyContinue");
             builder.AppendLine("$fail = 0");
             builder.AppendLine("$total = 0");
-            builder.AppendLine("Get-ChildItem -Path $new -Recurse -File | ForEach-Object {");
+            builder.AppendLine("try {");
+            builder.AppendLine("Get-ChildItem -LiteralPath $new -Recurse -File -ErrorAction Stop | ForEach-Object {");
             builder.AppendLine("  $total++");
             builder.AppendLine("  $rel = $_.FullName.Substring($new.Length).TrimStart('\\')");
             builder.AppendLine("  $target = Join-Path $dir $rel");
@@ -695,6 +747,8 @@ namespace DeepSeekHarnessLauncher
             builder.AppendLine("  try { Copy-Item -LiteralPath $_.FullName -Destination $target -Force -ErrorAction Stop }");
             builder.AppendLine("  catch { $fail++; W (\"copy failed: $rel -> \" + $_.Exception.Message) }");
             builder.AppendLine("}");
+            builder.AppendLine("} catch { $fail++; W ('update source enumeration failed: ' + $_.Exception.Message) }");
+            builder.AppendLine("if ($total -eq 0) { $fail++; W 'update source contained no files' }");
             builder.AppendLine("W \"files copied: total=$total failed=$fail\"");
             // Older helpers bundled Windows App Runtime. Remove obsolete helper
             // files only after every new file was copied successfully.
@@ -731,6 +785,10 @@ namespace DeepSeekHarnessLauncher
             builder.AppendLine("schtasks.exe /delete /tn $task /f 2>&1 | Out-Null");
             builder.AppendLine("Remove-Item -LiteralPath " + Quote(restartCommandPath) + " -Force -ErrorAction SilentlyContinue");
             builder.AppendLine("W 'restart command issued'");
+            builder.AppendLine("if ($fail -eq 0 -and -not [string]::IsNullOrEmpty($stage) -and ((Get-Item -LiteralPath $stage -ErrorAction SilentlyContinue).Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {");
+            builder.AppendLine("  try { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction Stop; W 'update staging removed' }");
+            builder.AppendLine("  catch { W ('update staging cleanup failed: ' + $_.Exception.Message) }");
+            builder.AppendLine("} else { W 'update staging retained for failure diagnostics' }");
             builder.AppendLine("W 'done'");
             return builder.ToString();
         }

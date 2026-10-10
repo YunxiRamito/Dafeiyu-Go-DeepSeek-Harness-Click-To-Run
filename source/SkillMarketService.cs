@@ -966,7 +966,8 @@ namespace DeepSeekHarnessLauncher
 
         /// <summary>
         /// GitHub API 的原始根地址。加速档位下，匿名 API 元数据由 TryFetchOnce
-        /// 改走自有后端的 /api/fetch；官方档位和带 Token 的请求仍访问这里。
+        /// 仅后端服务器模式下的匿名请求改走自有后端 /api/fetch；大陆 CDN/镜像、
+        /// 官方档位和带 Token 的请求都直连 GitHub。
         /// </summary>
         private static string ApiBase(LauncherSettings settings)
         {
@@ -1055,9 +1056,11 @@ namespace DeepSeekHarnessLauncher
                 url,
                 settings,
                 !String.IsNullOrWhiteSpace(token));
-            if (!String.IsNullOrWhiteSpace(metadataProxyUrl)
-                && TryFetchDirect(metadataProxyUrl, settings, null,
-                    out json, out status, out error, Math.Min(timeoutMs, 3500), cancellationToken)) return true;
+            if (!String.IsNullOrWhiteSpace(metadataProxyUrl))
+            {
+                return TryFetchDirect(metadataProxyUrl, settings, null,
+                    out json, out status, out error, Math.Min(timeoutMs, 3500), cancellationToken);
+            }
             if (cancellationToken.IsCancellationRequested)
             {
                 json = null;

@@ -52,8 +52,8 @@ CheckCompletion(client => client.CompleteService(true, false, "started"), "Succe
 DeepSeekHarnessLauncher.Program.Settings.NotificationMuted = false;
 var replyClient = Client();
 replyClient.NotifyFeedbackReply("反馈有新回复", "收到");
-Check((double)typeof(InfoWindowClient).GetField("_resultHoldSeconds", privateInstance).GetValue(replyClient) == 5,
-    "feedback reply holds for five seconds");
+Check((double)typeof(InfoWindowClient).GetField("_resultHoldSeconds", privateInstance).GetValue(replyClient) == 8,
+    "feedback reply holds for eight seconds");
 typeof(InfoWindowClient).GetField("_resultUtc", privateInstance).SetValue(replyClient, DateTime.UtcNow.AddSeconds(-4));
 Check(!replyClient.IsClosed, "reply stays active beyond generic result lifetime");
 typeof(InfoWindowClient).GetField("_resultUtc", privateInstance).SetValue(replyClient, DateTime.UtcNow.AddSeconds(-6));
@@ -120,8 +120,8 @@ Check(NotificationService.Show("balance alert", true), "former Windows balloon e
 Check(NotificationService.ShowPluginUpdateCompleted(2), "plugin completion enters information-window queue");
 Check(localNotifications.Count == 2 && localNotifications.All(item => item.IsLocal && item.Validate(out _)),
     "queued notifications are validated local messages without backend identity");
-Check(localNotifications[0].AutoDismiss && !localNotifications[1].AutoDismiss,
-    "short notification dismisses automatically while plugin action stays available");
+Check(localNotifications.All(item => item.AutoDismiss),
+    "local and plugin completion notifications dismiss automatically after eight seconds");
 Check(localNotifications[1].Buttons.Select(button => button.Text).SequenceEqual(new[] { "重启 DSH", "稍后" }),
     "plugin update retains both actions");
 localNotifications[1].Buttons[0].LocalAction();

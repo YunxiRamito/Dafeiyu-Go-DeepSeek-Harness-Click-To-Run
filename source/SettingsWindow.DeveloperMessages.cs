@@ -28,6 +28,11 @@ namespace DeepSeekHarnessLauncher
         private bool _announcementOrderDirty;
         private bool _messageBodyDialogOpen;
         private bool _messageEditorSaved;
+        private bool _editingPublishedNotification;
+        private bool _developerAnnouncementsAutoLoaded;
+        private bool _developerNotificationsAutoLoaded;
+        private DateTimeOffset? _loadedNotificationEditorExpiry;
+        private double _loadedNotificationEditorExpiryHours;
 
         private static AnnouncementItem NewManagedAnnouncement() => new AnnouncementItem
         { Id = "local-" + Guid.NewGuid().ToString("N"), Tag = "公告", Date = DateTime.Now.ToString("yyyy-MM-dd") };
@@ -42,6 +47,7 @@ namespace DeepSeekHarnessLauncher
             LoadManagementEditor();
             SetComposeEditorVisibility(false);
             BuildManagedAnnouncementRows();
+            TriggerAutomaticManagementLoad();
         }
 
         private static string DeveloperSelectionTag(ComboBox box)
@@ -55,6 +61,24 @@ namespace DeepSeekHarnessLauncher
             DeveloperAnnouncementManagePanel.Visibility = _messageManagementIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
             DeveloperNotificationPanel.Visibility = _messageManagementIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
             LoadManagementEditor();
+            TriggerAutomaticManagementLoad();
+        }
+
+        private void TriggerAutomaticManagementLoad()
+        {
+            if (!_messageEditorReady || _developerMessageBusy || DeveloperMessagesPanel.Visibility != Visibility.Visible) return;
+            if (_messageManagementIndex == 0 && !_developerAnnouncementsAutoLoaded)
+            {
+                if (_developerMessageBusy) return;
+                _developerAnnouncementsAutoLoaded = true;
+                _ = LoadManagedAnnouncementsAsync();
+            }
+            else if (_messageManagementIndex == 1 && !_developerNotificationsAutoLoaded)
+            {
+                if (_developerMessageBusy) return;
+                _developerNotificationsAutoLoaded = true;
+                _ = LoadCurrentNotificationAsync();
+            }
         }
 
         private async void DeveloperMessageCompose_Click(object sender, RoutedEventArgs args)
@@ -62,6 +86,17 @@ namespace DeepSeekHarnessLauncher
             if (_developerMessageBusy || _messageBodyDialogOpen) return;
             CaptureManagementEditor();
             bool editExisting = sender is FrameworkElement element && element.Tag as string == "Edit";
+            if (editExisting && _messageManagementIndex == 1 && (_currentNotification == null || String.IsNullOrWhiteSpace(_currentNotificationId)))
+            {
+                ReportDeveloperMessage(false, "暂无可编辑通知", "请先检测现有通知。");
+                return;
+            }
+            _editingPublishedNotification = editExisting && _messageManagementIndex == 1;
+            if (_editingPublishedNotification)
+            {
+                _notificationEditor = CloneManagedNotification(_currentNotification);
+                LoadManagementEditor();
+            }
             if (!editExisting)
             {
                 if (_messageManagementIndex == 0) _announcementEditor = NewManagedAnnouncement();
@@ -92,6 +127,8 @@ namespace DeepSeekHarnessLauncher
         private DateTimeOffset? EditorExpiry()
         {
             double hours = DeveloperMessageExpiryBox.Value;
+            if (_messageManagementIndex == 1 && _editingPublishedNotification && hours == _loadedNotificationEditorExpiryHours)
+                return _loadedNotificationEditorExpiry;
             return Double.IsFinite(hours) && hours > 0 ? DateTimeOffset.UtcNow.AddHours(Math.Min(hours, 8760)) : null;
         }
 
@@ -103,7 +140,7 @@ namespace DeepSeekHarnessLauncher
             DeveloperAnnouncementManagePanel.Visibility = announcement ? Visibility.Visible : Visibility.Collapsed;
             DeveloperNotificationPanel.Visibility = announcement ? Visibility.Collapsed : Visibility.Visible;
             DeveloperMessageDraftButton.Visibility = DeveloperMessageClearButton.Visibility = announcement ? Visibility.Visible : Visibility.Collapsed;
-            DeveloperMessagePublishText.Text = announcement ? "发布 / 更新公告" : "修改并重新推送";
+            DeveloperMessagePublishText.Text = announcement ? "发布 / 更新公告" : (_editingPublishedNotification ? "更新通知" : "推送通知");
             DeveloperMessageTitleBox.Text = announcement ? _announcementEditor.Title : _notificationEditor.Title;
             DeveloperMessageBodyBox.Text = announcement ? _announcementEditor.Body : _notificationEditor.Markdown;
             RefreshDeveloperMessageSummary();
@@ -111,6 +148,11 @@ namespace DeepSeekHarnessLauncher
             DeveloperMessageTagBox.Text = _announcementEditor.Tag; DeveloperMessagePinnedBox.IsChecked = _announcementEditor.Pinned;
             DateTimeOffset? expiry = announcement ? _announcementEditor.ExpiresAt : _notificationEditor.ExpiresAt;
             DeveloperMessageExpiryBox.Value = expiry.HasValue ? Math.Clamp(Math.Ceiling((expiry.Value - DateTimeOffset.UtcNow).TotalHours), 1, 8760) : 0;
+            if (!announcement)
+            {
+                _loadedNotificationEditorExpiry = expiry;
+                _loadedNotificationEditorExpiryHours = DeveloperMessageExpiryBox.Value;
+            }
             DeveloperMessageButton1Label.Text = DeveloperMessageButton1Target.Text = String.Empty;
             DeveloperMessageButton2Label.Text = DeveloperMessageButton2Target.Text = String.Empty;
             DeveloperMessageButton1Action.SelectedIndex = DeveloperMessageButton2Action.SelectedIndex = 0;
@@ -201,6 +243,7 @@ namespace DeepSeekHarnessLauncher
             DeveloperNotificationComposeButton.IsEnabled = !busy;
             DeveloperNotificationMetricsButton.IsEnabled = !busy && _currentNotificationId != null;
             DeveloperNotificationPreviewButton.IsEnabled = !busy && _currentNotification != null;
+            DeveloperNotificationEditButton.IsEnabled = !busy && _currentNotification != null;
         }
         private static void SetManagedControlsEnabled(DependencyObject parent, bool enabled)
         {
@@ -225,6 +268,7 @@ namespace DeepSeekHarnessLauncher
             bool hasNotification = message != null;
             DeveloperNotificationContentPanel.Visibility = hasNotification ? Visibility.Visible : Visibility.Collapsed;
             DeveloperNotificationPreviewButton.IsEnabled = hasNotification && !_developerMessageBusy;
+            DeveloperNotificationEditButton.IsEnabled = hasNotification && !_developerMessageBusy;
             DeveloperNotificationTitleText.Text = hasNotification ? message.Title ?? String.Empty : String.Empty;
             DeveloperNotificationDateText.Text = hasNotification ? message.DisplayDate : String.Empty;
             DeveloperNotificationMarkdownHost.Content = hasNotification ? NoticeMarkdownRenderer.Create(message.Markdown) : null;
@@ -268,7 +312,7 @@ namespace DeepSeekHarnessLauncher
                 _host.Log(LauncherLog.DescribeException("开发者公告或通知操作", exception));
                 ReportDeveloperMessage(false, "操作失败", exception.Message);
             }
-            finally { SetDeveloperMessageBusy(false); BuildManagedAnnouncementRows(); }
+            finally { SetDeveloperMessageBusy(false); BuildManagedAnnouncementRows(); TriggerAutomaticManagementLoad(); }
         }
 
         private void DeveloperMessageDraft_Click(object sender, RoutedEventArgs args)
@@ -344,16 +388,7 @@ namespace DeepSeekHarnessLauncher
             }
             else
             {
-                await RunDeveloperMessageOperation(async (api, endpoint, token) =>
-                {
-                    ClientNoticeMessage message = ReadDeveloperMessage();
-                    string id = await api.CreateAndPublishAsync(endpoint, token, message, CancellationToken.None);
-                    message.Id = id;
-                    _notificationEditor = message; _currentNotificationId = id; _currentNotificationEndpoint = endpoint;
-                    SetCurrentNotification(message);
-                    SetNotificationStatus("当前通知已推送 · " + message.Title);
-                    await RefreshCurrentNotificationMetrics(api, endpoint, token); ReportDeveloperMessage(true, "通知已重新推送", "");
-                });
+                await PublishNotificationFromEditorAsync();
             }
         }
         private static ClientNoticeMessage ManagedAnnouncementNotice(AnnouncementItem item) => new ClientNoticeMessage
@@ -374,6 +409,9 @@ namespace DeepSeekHarnessLauncher
             catch (Exception exception) { ReportDeveloperMessage(false, "无法预览", exception.Message); }
         }
         private async void DeveloperMessageRefresh_Click(object sender, RoutedEventArgs args)
+            => await LoadManagedAnnouncementsAsync();
+
+        private async Task LoadManagedAnnouncementsAsync()
         {
             await RunDeveloperMessageOperation(async (api, endpoint, token) =>
             {
@@ -438,6 +476,9 @@ namespace DeepSeekHarnessLauncher
         { Id = item.Id, Title = item.Title, Body = item.Body, Tag = item.Tag, Date = item.Date, Pinned = item.Pinned,
             Url = item.Url, Order = item.Order, PublishedAt = item.PublishedAt, ExpiresAt = item.ExpiresAt };
         private async void DeveloperNotificationLoad_Click(object sender, RoutedEventArgs args)
+            => await LoadCurrentNotificationAsync();
+
+        private async Task LoadCurrentNotificationAsync()
         {
             await RunDeveloperMessageOperation(async (api, endpoint, token) =>
             {
@@ -446,7 +487,7 @@ namespace DeepSeekHarnessLauncher
                 _notificationEditor = current == null ? NewManagedNotification() : new ClientNoticeMessage
                 { Id = current.Id, Kind = "notification", Title = current.Title, Markdown = current.Markdown, Date = current.Date,
                     PublishedAt = current.PublishedAt ?? current.CreatedAt, ExpiresAt = current.ExpiresAt, Buttons = current.Buttons ?? new List<ClientNoticeButton>() };
-                SetCurrentNotification(current == null ? null : _notificationEditor);
+                SetCurrentNotification(current == null ? null : CloneManagedNotification(_notificationEditor));
                 LoadManagementEditor(); SetNotificationStatus(current == null ? "当前没有正在推送的通知" : "当前通知 · " + current.Title);
                 await RefreshCurrentNotificationMetrics(api, endpoint, token);
             });
@@ -461,7 +502,7 @@ namespace DeepSeekHarnessLauncher
                 _currentNotificationEndpoint = endpoint;
                 _notificationEditor = NewManagedNotification();
                 SetCurrentNotification(null);
-                DeveloperNotificationMetricsText.Text = "收到人数：0 · 展示：0 · 已读：0 · 点击：0 / 0";
+                DeveloperNotificationMetricsText.Text = "收到人数：0 · 展示：0 · 全屏延后：0 · 已读：0 · 点击：0 / 0";
                 SetNotificationStatus("推送已关闭");
                 ReportDeveloperMessage(true, "已关闭通知推送", "");
             });
@@ -477,11 +518,11 @@ namespace DeepSeekHarnessLauncher
         private async void DeveloperNotificationMetrics_Click(object sender, RoutedEventArgs args) => await RunDeveloperMessageOperation(RefreshCurrentNotificationMetrics);
         private async Task RefreshCurrentNotificationMetrics(DeveloperNoticeAdminClient api, string endpoint, string token)
         {
-            if (_currentNotificationId == null) { DeveloperNotificationMetricsText.Text = "收到人数：0 · 展示：0 · 已读：0 · 点击：0 / 0"; return; }
+            if (_currentNotificationId == null) { DeveloperNotificationMetricsText.Text = "收到人数：0 · 展示：0 · 全屏延后：0 · 已读：0 · 点击：0 / 0"; return; }
             if (!String.Equals(endpoint.TrimEnd('/'), _currentNotificationEndpoint?.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("服务端地址已更改，请重新检测现有通知。");
             var metrics = await api.GetMetricsAsync(endpoint, token, _currentNotificationId, CancellationToken.None);
-            DeveloperNotificationMetricsText.Text = "收到人数：" + metrics.Delivered + " · 展示：" + metrics.Displayed + " · 已读：" + metrics.Read
+            DeveloperNotificationMetricsText.Text = "收到人数：" + metrics.Delivered + " · 展示：" + metrics.Displayed + " · 全屏延后：" + metrics.Deferred + " · 已读：" + metrics.Read
                 + " · 按钮点击：" + metrics.Clicks(0) + " / " + metrics.Clicks(1);
         }
         private void DeveloperMarkdownFormat_Click(object sender, RoutedEventArgs args)
@@ -542,8 +583,8 @@ namespace DeepSeekHarnessLauncher
             DeveloperMessageEditorDialogHost.Children.Add(DeveloperMessageButtonsPanel);
             DeveloperMessageEditorDialogHost.Width = Math.Max(280, Math.Min(660, SettingsRoot.ActualWidth - 140));
             DeveloperMessageEditorDialog.XamlRoot = SettingsRoot.XamlRoot;
-            DeveloperMessageEditorDialog.Title = _messageManagementIndex == 0 ? "编写公告" : "编写通知";
-            DeveloperMessageEditorDialog.PrimaryButtonText = _messageManagementIndex == 0 ? "保存到列表" : "推送通知";
+            DeveloperMessageEditorDialog.Title = _messageManagementIndex == 0 ? "编写公告" : (_editingPublishedNotification ? "编辑通知" : "编写通知");
+            DeveloperMessageEditorDialog.PrimaryButtonText = _messageManagementIndex == 0 ? "保存到列表" : (_editingPublishedNotification ? "更新通知" : "推送通知");
                 await DeveloperMessageEditorDialog.ShowAsync();
                 if (!_messageEditorSaved)
                 {
@@ -600,14 +641,21 @@ namespace DeepSeekHarnessLauncher
             await RunDeveloperMessageOperation(async (api, endpoint, token) =>
             {
                 ClientNoticeMessage message = ReadDeveloperMessage();
-                string id = await api.CreateAndPublishAsync(endpoint, token, message, CancellationToken.None);
+                string id;
+                if (_editingPublishedNotification)
+                {
+                    id = _currentNotificationId;
+                    var updated = await api.UpdatePublishedNotificationAsync(endpoint, token, id, message, CancellationToken.None);
+                    message.PublishedAt = updated.PublishedAt ?? message.PublishedAt;
+                }
+                else id = await api.CreateAndPublishAsync(endpoint, token, message, CancellationToken.None);
                 message.Id = id;
                 _notificationEditor = message; _currentNotificationId = id; _currentNotificationEndpoint = endpoint;
-                SetCurrentNotification(message);
+                SetCurrentNotification(CloneManagedNotification(message));
                 published = true;
-                SetNotificationStatus("当前通知已推送 · " + message.Title);
+                SetNotificationStatus((_editingPublishedNotification ? "当前通知已更新 · " : "当前通知已推送 · ") + message.Title);
                 await RefreshCurrentNotificationMetrics(api, endpoint, token);
-                ReportDeveloperMessage(true, "通知已重新推送", "");
+                ReportDeveloperMessage(true, _editingPublishedNotification ? "通知已更新" : "通知已重新推送", "");
             });
             return published;
         }

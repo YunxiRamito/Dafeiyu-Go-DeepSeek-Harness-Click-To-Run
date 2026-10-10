@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using TinyPinyin;
 
 namespace DeepSeekHarnessLauncher
 {
@@ -32,8 +33,33 @@ namespace DeepSeekHarnessLauncher
         /// <summary>少量实用别名（中英混搜用），可为空。</summary>
         public string Alias { get; set; } = String.Empty;
 
+        /// <summary>标题、描述、位置与别名的拼音全拼，索引文案变化时自动重建。</summary>
+        public string FullPinyin { get; private set; } = String.Empty;
+
         /// <summary>拼音首字母串（含页名与别名），用来支持首字母搜索。</summary>
         public string Initials { get; set; } = String.Empty;
+
+        private string _pinyinSource = String.Empty;
+
+        internal void EnsurePinyinSearchForms()
+        {
+            string source = String.Join(" ", new[]
+            {
+                Title ?? String.Empty,
+                Description ?? String.Empty,
+                PageTitle ?? String.Empty,
+                Group ?? String.Empty,
+                Alias ?? String.Empty
+            });
+            if (String.Equals(source, _pinyinSource, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            FullPinyin = SettingsSearchPinyin.BuildFull(source);
+            Initials = SettingsSearchPinyin.BuildInitials(source);
+            _pinyinSource = source;
+        }
 
         /// <summary>当前是否可用。禁用/条件隐藏的选项要在结果里提示而不是跳空。</summary>
         public bool Enabled { get; set; } = true;
@@ -54,6 +80,24 @@ namespace DeepSeekHarnessLauncher
                     ? Group
                     : Group + " · " + PageTitle;
             }
+        }
+    }
+
+    /// <summary>通过离线拼音字典为真实 UI 文案生成全拼和首字母。</summary>
+    internal static class SettingsSearchPinyin
+    {
+        internal static string BuildFull(string text)
+        {
+            return String.IsNullOrEmpty(text)
+                ? String.Empty
+                : PinyinHelper.GetPinyin(text, String.Empty).ToLowerInvariant();
+        }
+
+        internal static string BuildInitials(string text)
+        {
+            return String.IsNullOrEmpty(text)
+                ? String.Empty
+                : PinyinHelper.GetPinyinInitials(text).ToLowerInvariant();
         }
     }
 
@@ -97,6 +141,7 @@ namespace DeepSeekHarnessLauncher
     {
         internal const int TitleWeight = 3;
         internal const int AliasWeight = 2;
+        internal const int PinyinWeight = 2;
         internal const int InitialsWeight = 2;
         internal const int DescriptionWeight = 1;
 
@@ -183,6 +228,7 @@ namespace DeepSeekHarnessLauncher
             }
 
             int total = 0;
+            entry.EnsurePinyinSearchForms();
             for (int index = 0; index < terms.Length; index++)
             {
                 string term = terms[index];
@@ -199,6 +245,11 @@ namespace DeepSeekHarnessLauncher
                 else if (Contains(entry.Alias, term))
                 {
                     best = AliasWeight;
+                }
+                else if (IsAsciiLetters(term) && term.Length >= 2
+                    && Contains(entry.FullPinyin, term))
+                {
+                    best = PinyinWeight;
                 }
                 else if (IsAsciiLetters(term) && Contains(entry.Initials, term))
                 {

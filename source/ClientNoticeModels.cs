@@ -26,6 +26,10 @@ namespace DeepSeekHarnessLauncher
     // Markdown stays source text. A renderer must disable raw HTML and remote assets.
     internal sealed class ClientNoticeMessage
     {
+        // Runtime-only state: a notice held while a fullscreen app owns the foreground.
+        internal bool WasFullscreenDeferred { get; set; }
+        internal bool FullscreenDeferredMetricSent { get; set; }
+
         public string Id { get; set; } = String.Empty;
         [JsonIgnore]
         internal bool IsFeedbackReply { get; set; }
@@ -92,17 +96,25 @@ namespace DeepSeekHarnessLauncher
     {
         public List<ClientNoticeMessage> Messages { get; set; } = new List<ClientNoticeMessage>();
     }
+    internal sealed class ClientNoticeCurrentResponse
+    {
+        public ClientNoticeMessage Message { get; set; }
+    }
     internal sealed class ClientNoticePresence
     {
         public int OnlineCount { get; set; } = -1;
         public DateTimeOffset ObservedAt { get; set; }
         public List<ClientNoticePresenceSample> History { get; set; } = new List<ClientNoticePresenceSample>();
+        public List<ClientNoticeVersionCount> LauncherVersions { get; set; } = new List<ClientNoticeVersionCount>();
         public int WindowHours { get; set; }
         public int SampleIntervalSeconds { get; set; }
         internal void Validate()
         {
             if (OnlineCount < 0 || History == null || History.Count > 2048
                 || History.Any(sample => sample == null || sample.OnlineCount < 0 || sample.ObservedAt == default)
+                || LauncherVersions == null || LauncherVersions.Count > 128
+                || LauncherVersions.Any(item => item == null || String.IsNullOrWhiteSpace(item.Version)
+                    || item.Version.Length > 64 || item.Count < 0)
                 || (WindowHours != 0 && WindowHours != 24)
                 || (SampleIntervalSeconds != 0 && SampleIntervalSeconds != 60))
                 throw new System.IO.InvalidDataException("Invalid online presence payload.");
@@ -113,9 +125,15 @@ namespace DeepSeekHarnessLauncher
         public DateTimeOffset ObservedAt { get; set; }
         public int OnlineCount { get; set; } = -1;
     }
+    internal sealed class ClientNoticeVersionCount
+    {
+        public string Version { get; set; } = String.Empty;
+        public int Count { get; set; }
+    }
     internal sealed class ClientNoticeHeartbeat
     {
         public string InstallationId { get; set; } = String.Empty;
+        public string LauncherVersion { get; set; } = String.Empty;
     }
     internal sealed class ClientNoticeReceipt
     {
@@ -150,7 +168,27 @@ namespace DeepSeekHarnessLauncher
             lock (_sync)
             {
                 string key = Key(message);
-                if (_announcements.Count + _notifications.Count + _localNotifications.Count >= 256 || !_ids.Add(key)) return false;
+                if (_ids.Contains(key))
+                {
+                    if (message.Kind != "notification" || message.IsLocal || _active == key) return false;
+                    bool replaced = false;
+                    int count = _notifications.Count;
+                    while (count-- > 0)
+                    {
+                        var queued = _notifications.Dequeue();
+                        if (Key(queued) == key)
+                        {
+                            message.WasFullscreenDeferred = queued.WasFullscreenDeferred;
+                            message.FullscreenDeferredMetricSent = queued.FullscreenDeferredMetricSent;
+                            _notifications.Enqueue(message);
+                            replaced = true;
+                        }
+                        else _notifications.Enqueue(queued);
+                    }
+                    return replaced;
+                }
+                if (_announcements.Count + _notifications.Count + _localNotifications.Count >= 256) return false;
+                _ids.Add(key);
                 QueueFor(message).Enqueue(message);
                 return true;
             }
@@ -220,6 +258,23 @@ namespace DeepSeekHarnessLauncher
                 return _localNotifications.Concat(_notifications).Any(message =>
                     (!message.ExpiresAt.HasValue || message.ExpiresAt > now)
                     && (!_displayRetries.TryGetValue(Key(message), out var retry) || retry.After <= now));
+            }
+        }
+        internal void MarkWaitingFullscreenDeferred()
+        {
+            lock (_sync)
+            {
+                foreach (var queue in new[] { _localNotifications, _notifications, _announcements })
+                    foreach (ClientNoticeMessage message in queue)
+                        message.WasFullscreenDeferred = true;
+            }
+        }
+        internal void MarkFullscreenDeferred(ClientNoticeMessage message)
+        {
+            if (message == null) return;
+            lock (_sync)
+            {
+                if (_active == Key(message)) message.WasFullscreenDeferred = true;
             }
         }
         internal void RemoveWaiting(Predicate<ClientNoticeMessage> predicate)

@@ -487,9 +487,10 @@ namespace DeepSeekHarnessLauncher
         {
             if (BackendDownloadSource.IsSelected(settings) && method == "GET" && String.IsNullOrWhiteSpace(token))
             {
-                string proxied = SendRead(settings, BackendDownloadSource.WrapMetadata(url),
+                // This engine never spills an unavailable backend request onto
+                // direct GitHub; the user can choose the CDN or official mode.
+                return SendRead(settings, BackendDownloadSource.WrapMetadata(url),
                     null, Math.Min(timeoutMs, 4000), out status, out error);
-                if (proxied != null) return proxied;
             }
             return method == "GET" ? SendRead(settings, url, token, Math.Min(timeoutMs, 8000), out status, out error)
                 : SendOnce(settings, url, method, body, token, timeoutMs, out status, out error, out _);

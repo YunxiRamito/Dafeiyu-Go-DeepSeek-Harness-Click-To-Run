@@ -26,6 +26,8 @@ namespace DeepSeekHarnessLauncher.Backup
         internal List<string> Warnings = new List<string>();
         internal HashSet<string> UnavailableModules = new HashSet<string>(StringComparer.Ordinal);
         internal bool ForExport;
+        internal Action<string, double> PreviewProgress;
+        internal long LastPreviewProgress;
     }
 
     internal sealed class OfficialImportFile
@@ -75,10 +77,11 @@ namespace DeepSeekHarnessLauncher.Backup
                 && File.Exists(Path.Combine(path, "package.json"))).Select(Path.GetFileName).OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList();
         }
 
-        internal static OfficialImportPlan Preview(string selected, string targetHome, string sourceProfile, string targetProfile, CancellationToken token, string legacyRoot = null, bool forExport = false)
+        internal static OfficialImportPlan Preview(string selected, string targetHome, string sourceProfile, string targetProfile, CancellationToken token, string legacyRoot = null, bool forExport = false, Action<string, double> progress = null)
         {
             var plan = new OfficialImportPlan { SourceHome = ResolveSourceHome(selected), TargetHome = Path.GetFullPath(targetHome),
-                SourceProfile = ValidateProfile(sourceProfile), TargetProfile = ValidateProfile(targetProfile), ForExport = forExport };
+                SourceProfile = ValidateProfile(sourceProfile), TargetProfile = ValidateProfile(targetProfile), ForExport = forExport,
+                PreviewProgress = progress, LastPreviewProgress = Environment.TickCount64 - 100 };
             string selectedRoot = Path.GetFullPath(legacyRoot ?? selected);
             if (!PathComparer.Equals(selectedRoot, plan.SourceHome))
             {
@@ -215,17 +218,58 @@ namespace DeepSeekHarnessLauncher.Backup
             string resolved = ResolveWithinSource(path, plan.SourceHome, plan.LegacyRoot);
             if (Directory.Exists(resolved))
             {
-                if (!ancestors.Add(resolved)) throw new InvalidDataException("来源目录包含循环链接：" + relative);
+                if (!ancestors.Add(resolved))
+                {
+                    if (group == "plugins") return;
+                    throw new InvalidDataException("来源目录包含循环链接：" + relative);
+                }
                 foreach (string child in Directory.EnumerateFileSystemEntries(resolved))
                     Collect(plan, group, child, Path.Combine(relative, Path.GetFileName(child)), unit, ancestors, token);
+                string packageJson = Path.Combine(resolved, "package.json");
+                if (group == "plugins" && File.Exists(packageJson))
+                {
+                    var package = JsonNode.Parse(File.ReadAllText(packageJson)) as JsonObject;
+                    var dependencies = (package?["dependencies"] as JsonObject ?? new JsonObject())
+                        .Concat(package?["optionalDependencies"] as JsonObject ?? new JsonObject());
+                    foreach (string dependency in dependencies.Select(pair => pair.Key).Distinct(StringComparer.Ordinal))
+                    {
+                        if (dependency.Contains("..") || dependency.Contains('\\') || dependency.Contains(':') || dependency.StartsWith('/'))
+                            throw new InvalidDataException("插件依赖名称无效。");
+                        if (Directory.Exists(Path.Combine(resolved, "node_modules", dependency))) continue;
+                        // pnpm keeps dependency links next to the package, outside its own directory.
+                        string modules = Path.GetDirectoryName(resolved);
+                        if (Path.GetFileName(modules).StartsWith('@')) modules = Path.GetDirectoryName(modules);
+                        string sibling = Path.Combine(modules, dependency.Replace('/', Path.DirectorySeparatorChar));
+                        if (Directory.Exists(sibling))
+                            Collect(plan, group, sibling, Path.Combine(relative, "node_modules", dependency), unit, ancestors, token);
+                    }
+                }
                 ancestors.Remove(resolved);
                 return;
             }
             if (plan.Files.Count >= 250000) throw new InvalidDataException("来源文件数量超过 250000 个，请分开导入。");
             if (!plan.ForExport) Target(plan, relative);
             using var input = new FileStream(resolved, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            byte[] buffer = new byte[81920];
+            int read;
+            long bytes = 0;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                token.ThrowIfCancellationRequested();
+                hash.AppendData(buffer, 0, read);
+                bytes += read;
+                long now = Environment.TickCount64;
+                if (now - plan.LastPreviewProgress >= 100)
+                {
+                    plan.LastPreviewProgress = now;
+                    plan.PreviewProgress?.Invoke("已读取 " + plan.Files.Count + " 个文件 · 正在校验 " + relative
+                        + " · " + bytes + "/" + input.Length + " B", Double.NaN);
+                }
+            }
+            token.ThrowIfCancellationRequested();
             plan.Files.Add(new OfficialImportFile { Group = group, Source = resolved, Relative = relative, Unit = unit ?? relative,
-                Length = input.Length, Hash = SHA256.HashData(input) });
+                Length = input.Length, Hash = hash.GetHashAndReset() });
         }
 
         internal static OfficialImportResult Import(OfficialImportPlan plan, IEnumerable<string> selectedGroups, Action<string, double> progress, CancellationToken token)

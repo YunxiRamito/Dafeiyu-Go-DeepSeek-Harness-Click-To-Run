@@ -27,20 +27,104 @@ LauncherSettings acceleratedSettings = new LauncherSettings
     UpdateSource = "Accelerated",
     MirrorSource = "Auto"
 };
+Check(GitHubAccelerator.MetadataProxyUrl(
+    githubSearchUrl, acceleratedSettings, hasGitHubToken: false) == null,
+    "Mainland CDN mode keeps anonymous GitHub metadata requests direct");
+Check(!GitHubAccelerator.OrderedSourceIds(acceleratedSettings).Contains("backend", StringComparer.OrdinalIgnoreCase),
+    "backend source is excluded from Mainland CDN automatic mirror ordering");
+var cdnFileCandidates = GitHubAccelerator.Candidates(
+    "https://github.com/test/repo/releases/download/1.7.0/launcher.zip", acceleratedSettings);
+Check(cdnFileCandidates.Count > 0 && cdnFileCandidates.All(url => !BackendDownloadSource.IsBackendUrl(url)),
+    "Mainland CDN download candidates never cross into the backend cache");
+var cdnRawCandidates = GitHubAccelerator.RawCandidates("test/repo", "main", "README.md", acceleratedSettings);
+Check(cdnRawCandidates.Count > 0 && cdnRawCandidates.All(url => !BackendDownloadSource.IsBackendUrl(url)),
+    "Mainland CDN raw directory candidates never cross into the backend cache");
+var cdnArchiveCandidates = GitHubAccelerator.ArchiveCandidates("test", "repo", "main", acceleratedSettings);
+Check(cdnArchiveCandidates.Count > 0 && cdnArchiveCandidates.All(url => !BackendDownloadSource.IsBackendUrl(url)),
+    "Mainland CDN archive candidates never cross into the backend cache");
+foreach (string mirror in new[] { "ghproxy", "gh-proxy", "ghfast", "jsdelivr" })
+{
+    var selectedCdn = new LauncherSettings { UpdateSource = "Accelerated", MirrorSource = mirror };
+    Check(GitHubAccelerator.OrderedSourceIds(selectedCdn).All(id => !String.Equals(id, "backend", StringComparison.OrdinalIgnoreCase)),
+        mirror + " selection excludes backend from fallback order");
+    Check(GitHubAccelerator.Candidates("https://github.com/test/repo/releases/download/1.7.0/launcher.zip", selectedCdn)
+        .All(url => !BackendDownloadSource.IsBackendUrl(url)), mirror + " file candidates exclude backend");
+    Check(GitHubAccelerator.RawCandidates("test/repo", "main", "README.md", selectedCdn)
+        .All(url => !BackendDownloadSource.IsBackendUrl(url)), mirror + " raw candidates exclude backend");
+    Check(GitHubAccelerator.ArchiveCandidates("test", "repo", "main", selectedCdn)
+        .All(url => !BackendDownloadSource.IsBackendUrl(url)), mirror + " archive candidates exclude backend");
+}
+var backendSettings = new LauncherSettings { UpdateSource = "Accelerated", MirrorSource = "backend" };
+var backendRawCandidates = GitHubAccelerator.RawCandidates("test/repo", "main", "README.md", backendSettings);
+Check(backendRawCandidates.Count == 1 && BackendDownloadSource.IsBackendUrl(backendRawCandidates[0]),
+    "backend raw directory requests use only the backend metadata cache");
+var backendArchiveCandidates = GitHubAccelerator.ArchiveCandidates("test", "repo", "main", backendSettings);
+Check(backendArchiveCandidates.Count == 1 && BackendDownloadSource.IsBackendUrl(backendArchiveCandidates[0]),
+    "backend archive candidates do not fall through to direct GitHub or CDN mirrors");
+var backendMetadataCandidates = UpdateMetadataReader.BackendCandidates(
+    "https://api.github.com/repos/test/repo/releases/latest", "https://cdn.jsdelivr.net/gh/test/repo@main/manifest.json");
+Check(backendMetadataCandidates.Count == 1 && BackendDownloadSource.IsBackendUrl(backendMetadataCandidates[0]),
+    "backend metadata candidates do not include CDN/direct fallback URLs");
+
+// A view can prepare candidate URLs, then the user may change engines before a
+// later download starts. The public download boundary resolves those stale URLs
+// against the shared, current LauncherSettings instance.
+var staleCdnCandidates = new List<string>(cdnFileCandidates);
+acceleratedSettings.MirrorSource = "backend";
 string proxiedSearchUrl = GitHubAccelerator.MetadataProxyUrl(
     githubSearchUrl, acceleratedSettings, hasGitHubToken: false);
 Check(proxiedSearchUrl != null
     && proxiedSearchUrl.StartsWith(BackendDownloadSource.BaseUrl + "/api/fetch?url=", StringComparison.Ordinal)
     && proxiedSearchUrl.Contains(Uri.EscapeDataString(githubSearchUrl), StringComparison.Ordinal),
-    "accelerated anonymous GitHub search uses the domestic metadata proxy");
+    "backend engine routes anonymous GitHub metadata through its backend endpoint");
+var backendFileCandidates = GitHubAccelerator.DownloadCandidates(staleCdnCandidates, acceleratedSettings);
+Check(backendFileCandidates.Count == 1 && BackendDownloadSource.IsBackendUrl(backendFileCandidates[0]),
+    "a new download after switching to backend is re-resolved to the backend cache only");
+var staleBackendCandidates = new List<string>(backendFileCandidates);
+acceleratedSettings.MirrorSource = "Auto";
+var switchedBackCandidates = GitHubAccelerator.DownloadCandidates(staleBackendCandidates, acceleratedSettings);
+Check(switchedBackCandidates.Count > 0 && switchedBackCandidates.All(url => !BackendDownloadSource.IsBackendUrl(url)),
+    "a new download after switching back to Mainland CDN unwraps old backend URLs");
+var npmMirror = "https://registry.npmmirror.com/mirrors/node/v22.13.0/node.zip";
+Check(GitHubAccelerator.DownloadCandidates(new[] { npmMirror }, acceleratedSettings).SequenceEqual(new[] { npmMirror }),
+    "non-GitHub component mirror URLs remain on their configured source in Mainland CDN mode");
 Check(GitHubAccelerator.MetadataProxyUrl(githubSearchUrl,
     new LauncherSettings { UpdateSource = "Official", MirrorSource = "backend" }, false) == null,
     "official source keeps GitHub search direct");
-Check(GitHubAccelerator.MetadataProxyUrl(githubSearchUrl, acceleratedSettings, true) == null,
+Check(GitHubAccelerator.MetadataProxyUrl(githubSearchUrl,
+    new LauncherSettings { UpdateSource = "Accelerated", MirrorSource = "backend" }, true) == null,
     "GitHub token is never forwarded through the metadata proxy");
 Check(GitHubAccelerator.MetadataProxyUrl("https://raw.githubusercontent.com/o/r/main/SKILL.md",
     acceleratedSettings, false) == null,
     "raw skill content keeps using the configured CDN candidate route");
+Check(GitHubAccelerator.Prefixes.All(prefix => !BackendDownloadSource.IsBackendUrl(prefix)),
+    "generic CDN prefix pool excludes the backend endpoint");
+foreach (string mirror in new[] { "Auto", "ghproxy", "gh-proxy", "ghfast", "jsdelivr", "backend" })
+{
+    foreach (string engine in new[] { "Accelerated", "Official" })
+    {
+        var current = new LauncherSettings { UpdateSource = engine, MirrorSource = mirror };
+        bool backend = engine == "Accelerated" && mirror == "backend";
+        var probes = GitHubAccelerator.Sources.Where(source => GitHubAccelerator.ShouldProbeSource(source, current)).ToList();
+        Check(engine == "Official" ? probes.Count == 0 : probes.Count > 0
+            && probes.All(source => (source.Id == "backend") == backend),
+            engine + "/" + mirror + " probes only the current engine");
+        var fresh = GitHubAccelerator.DownloadCandidates(staleBackendCandidates, current);
+        Check(fresh.Count > 0 && fresh.All(url => BackendDownloadSource.IsBackendUrl(url) == backend),
+            engine + "/" + mirror + " resolves cached backend URLs using the current engine");
+        Check(backend
+            ? DshUpdateService.ResolveInstallRegistry(current) == BackendDownloadSource.BaseUrl + "/api/npm/"
+            : !BackendDownloadSource.IsBackendUrl(DshUpdateService.ResolveInstallRegistry(current)),
+            engine + "/" + mirror + " npm registry respects engine selection");
+        if (!backend)
+        {
+            Check(GitHubAccelerator.DownloadCandidates(new[] { BackendDownloadSource.BaseUrl + "/api/download?url=invalid" }, current).Count == 0,
+                engine + "/" + mirror + " rejects an unresolvable cached backend endpoint");
+            Check(GitHubAccelerator.Candidates(staleBackendCandidates[0], current).All(url => !BackendDownloadSource.IsBackendUrl(url)),
+                engine + "/" + mirror + " direct candidate generation also removes the stale backend wrapper");
+        }
+    }
+}
 
 using (var server = new FixtureServer())
 {
@@ -117,6 +201,19 @@ using (var server = new FixtureServer())
         Check(configuredGroups.Count == 2 && configuredGroups[0].Single() == server.Url("/priority-first")
             && configuredGroups[1].Single() == server.Url("/priority-later"),
             "configured metadata URLs retain explicit fallback order");
+        File.WriteAllText(configuredPath, System.Text.Json.JsonSerializer.Serialize(new
+        {
+            updateManifestUrls = new[] { BackendDownloadSource.WrapMetadata("https://raw.githubusercontent.com/test/repo/main/manifest.json") }
+        }));
+        Check(UpdateSupport.ResolveManifestGroups(acceleratedSettings).SelectMany(group => group)
+            .All(url => !BackendDownloadSource.IsBackendUrl(url)), "CDN metadata removes backend wrappers from launcher.json");
+        File.WriteAllText(configuredPath, System.Text.Json.JsonSerializer.Serialize(new
+        {
+            updateManifestUrls = new[] { BackendDownloadSource.BaseUrl + "/api/download?url=invalid" }
+        }));
+        var invalidConfigured = UpdateSupport.ResolveManifestGroups(acceleratedSettings);
+        Check(invalidConfigured.Count > 0 && invalidConfigured.SelectMany(group => group).All(url => !BackendDownloadSource.IsBackendUrl(url)),
+            "CDN falls back to its normal manifest groups when configured backend URLs cannot be restored");
     }
     finally { try { File.Delete(configuredPath); } catch { } }
 
@@ -139,6 +236,38 @@ using (var server = new FixtureServer())
     DshUpdatePackage missingIntegrity = DshUpdateService.ParsePackage(packageWithoutIntegrity, new LauncherSettings(), out _);
     Check(missingIntegrity == null && !DshUpdateService.HasValidIntegrity(null),
         "DSH metadata without integrity is rejected before installation");
+    string validIntegrity = "sha512-" + Convert.ToBase64String(new byte[64]);
+    string packageCatalog = "{\"dist-tags\":{\"latest\":\"1.0.0\",\"next\":\"2.0.0-rc.1\",\"beta\":\"2.0.0-rc.1\"},"
+        + "\"versions\":{\"1.0.0\":{\"dist\":{\"tarball\":\"https://example.invalid/stable.tgz\",\"integrity\":\"" + validIntegrity + "\"}},"
+        + "\"2.0.0-rc.1\":{\"dist\":{\"tarball\":\"https://example.invalid/preview.tgz\",\"integrity\":\"" + validIntegrity + "\"}},"
+        + "\"0.9.0\":{\"dist\":{\"tarball\":\"https://example.invalid/old.tgz\"}}},"
+        + "\"time\":{\"1.0.0\":\"2026-01-01T00:00:00Z\",\"2.0.0-rc.1\":\"2026-02-01T00:00:00Z\"}}";
+    List<DshUpdatePackage> allVersions = DshUpdateService.ParseAllVersions(packageCatalog, out string catalogError);
+    Check(allVersions != null && allVersions.Count == 2
+        && allVersions[0].Version == "2.0.0-rc.1"
+        && allVersions[0].Channels.Contains("next") && allVersions[0].Channels.Contains("beta")
+        && allVersions[0].PublishedAt.HasValue,
+        "DSH version catalog lists installable versions across tags, newest first");
+    DshUpdatePackage stableRelease = DshUpdateService.ParsePackage(packageCatalog, "latest", out _);
+    Check(stableRelease?.Version == "1.0.0" && stableRelease.Channels.Contains("latest"),
+        "DSH channel rollback resolves the exact latest dist-tag version");
+    Check(DshUpdateService.ParsePackageForChannel(packageCatalog, "latest", true, out _)?.Version == "1.0.0",
+        "exact stable lookup chooses latest even when preview has a newer version");
+    string missingStableCatalog = packageCatalog.Replace("\"latest\":\"1.0.0\",", String.Empty);
+    Check(DshUpdateService.ParsePackageForChannel(missingStableCatalog, "latest", true,
+        out string missingStableError) == null && missingStableError.Contains("latest", StringComparison.Ordinal),
+        "stable rollback rejects a missing latest tag instead of falling back to preview");
+    Check(DshUpdateService.ParsePackageForChannel(missingStableCatalog, "latest", false, out _)?.Version == "2.0.0-rc.1",
+        "ordinary update lookup retains automatic fallback for a missing channel");
+    string historicalCatalog = packageCatalog.Replace(
+        "\"0.9.0\":{\"dist\":{\"tarball\":\"https://example.invalid/old.tgz\"}}",
+        "\"0.9.0\":{\"dist\":{\"tarball\":\"https://example.invalid/old.tgz\",\"integrity\":\"" + validIntegrity + "\"}}");
+    List<DshUpdatePackage> historicalVersions = DshUpdateService.ParseAllVersions(historicalCatalog, out _);
+    Check(historicalVersions?.Count == 3 && historicalVersions[2].Version == "0.9.0"
+        && historicalVersions[2].Channels.Count == 0,
+        "version catalog includes installable historical releases without current dist-tags");
+    Check(allVersions != null && catalogError == null,
+        "valid DSH version catalog has no parse error");
     DownloadSupport.Calls = 0;
     bool downloaded = DshUpdateService.DownloadPackage(
         new DshUpdatePackage { Version = "1.0.0", TarballUrl = server.Url("/package") },

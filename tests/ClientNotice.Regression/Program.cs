@@ -41,6 +41,40 @@ Check(queue.TryTake(DateTimeOffset.UtcNow) == null, "one active notice");
 queue.Complete(n);
 Check(queue.TryTake(DateTimeOffset.UtcNow) == a, "announcement next"); queue.Complete(a);
 Check(!queue.Enqueue(n), "completed notifications do not repeat each poll");
+var replaceQueue = new ClientNoticeQueue();
+var oldWaiting = Notice("editable"); oldWaiting.WasFullscreenDeferred = true; oldWaiting.FullscreenDeferredMetricSent = true;
+replaceQueue.Enqueue(oldWaiting);
+var newWaiting = Notice("editable"); newWaiting.Markdown = "updated pending payload";
+Check(replaceQueue.Enqueue(newWaiting), "pending same-ID notification is replaced by edited content");
+Check(replaceQueue.TryTake(DateTimeOffset.UtcNow) == newWaiting && newWaiting.WasFullscreenDeferred && newWaiting.FullscreenDeferredMetricSent,
+    "pending edit retains fullscreen deferral state without resetting delivery order");
+Check(!replaceQueue.Enqueue(Notice("editable")), "active notice is not replaced by edited content");
+replaceQueue.Complete(newWaiting);
+Check(!replaceQueue.Enqueue(Notice("editable")), "completed edited notice does not repeat");
+var fullscreenQueue = new ClientNoticeQueue();
+var fullscreenNotice = Notice("fullscreen-deferred");
+Check(fullscreenQueue.Enqueue(fullscreenNotice), "fullscreen notice enqueues normally");
+fullscreenQueue.MarkWaitingFullscreenDeferred();
+Check(fullscreenNotice.WasFullscreenDeferred, "fullscreen foreground marks waiting notices as deferred");
+Check(fullscreenQueue.TryTake(DateTimeOffset.UtcNow) == fullscreenNotice, "deferred notice remains queued until the foreground gate opens");
+fullscreenQueue.MarkFullscreenDeferred(fullscreenNotice);
+Check(fullscreenNotice.WasFullscreenDeferred, "active notice retains fullscreen deferral state");
+fullscreenQueue.Defer(fullscreenNotice);
+Check(fullscreenQueue.TryTake(DateTimeOffset.UtcNow) == fullscreenNotice && fullscreenNotice.WasFullscreenDeferred,
+    "notice resumes with deferral state intact after fullscreen ends");
+fullscreenQueue.Complete(fullscreenNotice);
+var fullscreen = new FullscreenWindowDetector.Bounds(0, 0, 1920, 1080);
+Check(FullscreenWindowDetector.IsFullscreen(new FullscreenWindowDetector.WindowSnapshot(22, true, false,
+    false, false, fullscreen, fullscreen), 11), "borderless foreground window covering monitor is fullscreen");
+Check(!FullscreenWindowDetector.IsFullscreen(new FullscreenWindowDetector.WindowSnapshot(22, true, false,
+    true, false, fullscreen, fullscreen), 11), "decorated maximized window is not treated as fullscreen");
+Check(!FullscreenWindowDetector.IsFullscreen(new FullscreenWindowDetector.WindowSnapshot(22, true, false,
+    false, false, new FullscreenWindowDetector.Bounds(0, 0, 1900, 1080), fullscreen), 11),
+    "window leaving a visible monitor edge is not treated as fullscreen");
+Check(!FullscreenWindowDetector.IsFullscreen(new FullscreenWindowDetector.WindowSnapshot(11, true, false,
+    false, false, fullscreen, fullscreen), 11), "launcher foreground is excluded from fullscreen detection");
+Check(!FullscreenWindowDetector.IsFullscreen(new FullscreenWindowDetector.WindowSnapshot(22, false, false,
+    false, false, fullscreen, fullscreen), 11), "hidden foreground window is ignored");
 var deferred = Notice("deferred", "announcement"); queue.Enqueue(deferred);
 Check(queue.TryTake(DateTimeOffset.UtcNow) == deferred, "notice can become active");
 queue.Defer(deferred);
@@ -135,6 +169,7 @@ try
  Check(messages[0].Buttons[1].ActionTarget == "https://example.test", "server URL contract");
  Check(presence?.OnlineCount == 12, "presence model");
  Check(handler.Requests.Count == 2, "feed and presence requests");
+ Check(handler.Requests[0].EndsWith("?installationId=" + Guid.Parse(id).ToString("D")), "feed identifies installation for server display filtering");
  handler.MultipleNotifications = true;
  messages.Clear();
  await client.PollOnceAsync(CancellationToken.None);
@@ -360,7 +395,16 @@ try
  var closedDeliveries = new List<ClientNoticeMessage>();
  var afterClose = new ClientNoticeClient(new ClientNoticeStore(readFixture), () => readSettings, closedDeliveries.Add, null, readHttp);
  await afterClose.PollMessagesOnceAsync(CancellationToken.None);
- Check(closedDeliveries.Count == 1 && closedDeliveries[0].Id == "n", "reloading state without a button click keeps notice unread after ordinary closure");
+ Check(closedDeliveries.Count == 0 && !new ClientNoticeStore(readFixture).IsNotificationRead("n"),
+     "displayed notification remains unread but is not automatically redelivered after restart");
+ int beforePreview = readHandler.Requests.Count;
+ var preview = await afterClose.GetCurrentNotificationPreviewAsync(CancellationToken.None);
+ Check(preview?.Id == "n" && preview.Markdown == "**current preview**"
+     && readHandler.Requests.Count == beforePreview + 1
+     && readHandler.Requests.Last().EndsWith("/api/notifications/current"),
+     "manual current preview uses its own GET route even after display");
+ Check(!readStore.IsNotificationRead("n") && closedDeliveries.Count == 0,
+     "preview does not acknowledge or enqueue notification");
  Check(readClient.AcknowledgeAction(unreadNotification, 1), "second URL action button synchronously persists acknowledgement");
  string savedState = File.ReadAllText(Path.Combine(readFixture, "ClientNoticeState.json"));
  using (var saved = JsonDocument.Parse(savedState))
@@ -456,6 +500,8 @@ sealed class OfflineHandler : HttpMessageHandler
   if (MultipleNotifications && request.RequestUri.AbsolutePath.EndsWith("messages"))
    response = """{"messages":[{"id":"old","kind":"Notification","title":"old","markdown":"old","publishedAt":"2026-10-06T00:00:00Z"},{"id":"newest","kind":"Notification","title":"new","markdown":"new","publishedAt":"2026-10-07T00:00:00Z"},{"id":"unread-announcement","kind":"Announcement","title":"announcement","markdown":"announcement"}]}""";
   if (InvalidFeedJson && request.RequestUri.AbsolutePath.EndsWith("messages")) response = "{invalid json";
+  if (request.RequestUri.AbsolutePath.EndsWith("/notifications/current"))
+   response = """{"message":{"id":"n","kind":"Notification","title":"current","markdown":"**current preview**","buttons":[]}}""";
   if (InvalidPresence && request.RequestUri.AbsolutePath.EndsWith("presence")) response = "{\"onlineCount\":-1}";
   if (LargeResponse && request.RequestUri.AbsolutePath.EndsWith("messages")) response = new string('x', 1024 * 1024 + 1);
   return new HttpResponseMessage(HttpStatusCode.OK) { Content=new StringContent(response,Encoding.UTF8,"application/json") };

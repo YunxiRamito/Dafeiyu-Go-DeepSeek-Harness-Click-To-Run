@@ -256,19 +256,82 @@ try
 
     Check(PluginOperationSupport.IsTransientFailure("ETIMEDOUT fetch https://example.invalid/package"), "network timeout is retryable");
     Check(PluginOperationSupport.IsTransientFailure("ERR_PNPM_FETCH_503 Service Unavailable"), "temporary registry failure is retryable");
+    Check(PluginOperationSupport.IsTransientFailure("ERR_PNPM_PACKAGE_MANAGER_ADD_RESOLVE_GIT git clone failed (exit code: 128) error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500 fatal: expected packfile"), "git HTTP 500 is retryable");
+    Check(PluginOperationSupport.IsTransientFailure("git fetch failed: HTTP 502 Bad Gateway"), "git HTTP 502 is retryable");
+    Check(!PluginOperationSupport.IsTransientFailure("git clone failed: HTTP 404 Not Found"), "git HTTP 404 is not retried");
+    Check(!PluginOperationSupport.IsTransientFailure("git clone failed: HTTP 403 Forbidden"), "git HTTP 403 is not retried");
+    Check(PluginOperationSupport.IsTransientFailure("getaddrinfo ENOTFOUND github.com"), "DNS failure is retryable");
+    Check(!PluginOperationSupport.IsTransientFailure("git clone failed for owner/plugin-500 at commit v1.500.0 (exit code: 128)"),
+        "repository and version digits do not imply an HTTP failure");
+    Check(!PluginOperationSupport.IsTransientFailure("ERR_PNPM_FETCH_400 Bad Request ETIMEDOUT"),
+        "permanent HTTP 400 takes precedence over a wrapped timeout");
+    Check(!PluginOperationSupport.IsTransientFailure("git clone failed: HTTP 401 Unauthorized ECONNRESET"),
+        "permanent Git HTTP 401 takes precedence over a wrapped connection reset");
+    Check(PluginOperationSupport.IsTransientFailure("ERR_PNPM_FETCH_429 Too Many Requests"),
+        "rate limiting remains eligible for bounded retry");
+    Check(PluginOperationSupport.HasTransportFailure("git clone failed: The requested URL returned error: 500"),
+        "Git curl HTTP status is a transport failure even without the HTTP prefix");
+    Check(!PluginOperationSupport.HasTransportFailure("ERR_PNPM_IGNORED_BUILDS allowBuilds"),
+        "standalone build authorization is not transport failure");
+    Check(PluginOperationSupport.HasTransportFailure("fatal: unable to access repository: Connection timed out"),
+        "Git textual timeout is transport failure for authorization diagnosis");
+    string realGitTransportOutput = """
+        ERR_PNPM_PACKAGE_MANAGER_ADD_RESOLVE_GIT
+        git clone failed (exit code: 128)
+        error: RPC failed; HTTP 500 curl 22 The requested URL returned error:
+          500
+        fatal: expected packfile
+        dsh: git-hosted plugins build on install via their prepare script, which pnpm blocks until allowed — add the exact key pnpm printed above under allowBuilds in G:\DeepSeek DSH\.dsh\profiles\web\pnpm-workspace.yaml, then re-run。
+        diagnostics operation-u9KZrq
+        """;
+    Check(PluginOperationSupport.IsTransientFailure(realGitTransportOutput),
+        "real multiline Git HTTP 500 is retryable");
+    Check(PluginOperationSupport.DescribeFailure(realGitTransportOutput, 128).Contains("HTTP 500")
+        && !PluginOperationSupport.DescribeFailure(realGitTransportOutput, 128).Contains("授权"),
+        "real multiline Git HTTP 500 is not misclassified as prepare authorization");
+    Check(!DshPluginCliService.IsBuildScriptAuthorizationFailure(realGitTransportOutput),
+        "real multiline Git transport failure suppresses generic prepare authorization");
     Check(PluginOperationSupport.IsTransientFailure("timed out waiting for the writer lock"), "official writer-lock timeout is retryable");
     Check(!PluginOperationSupport.IsTransientFailure("ERR_PNPM_FETCH_404 package not found"), "missing package is not retried");
     Check(!PluginOperationSupport.IsTransientFailure("ERR_PNPM_FETCH_401 unauthorized"), "authentication error is not retried");
     Check(!PluginOperationSupport.IsTransientFailure("ERR_PNPM_IGNORED_BUILDS allowBuilds"), "build authorization error is not retried");
+    string gitServerMessage = PluginOperationSupport.DescribeFailure(
+        "ERR_PNPM_PACKAGE_MANAGER_ADD_RESOLVE_GIT git clone failed (exit code: 128) error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500 fatal: expected packfile", 128);
+    Check(gitServerMessage.Contains("Git") && gitServerMessage.Contains("HTTP 500")
+        && gitServerMessage.Contains("稍后重试") && !gitServerMessage.Contains("授权"),
+        "git HTTP 500 explains temporary Git server failure instead of build authorization");
+    string wrappedGitMessage = PluginOperationSupport.DescribeFailure(
+        "ERR_PNPM_PACKAGE_MANAGER_ADD_RESOLVE_GIT git clone failed (exit code: 128) HTTP 500 curl 22\n"
+        + "ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED allowBuilds", 128);
+    Check(wrappedGitMessage.Contains("Git") && wrappedGitMessage.Contains("HTTP 500")
+        && !wrappedGitMessage.Contains("授权"),
+        "real Git transport failure takes priority over generic preparation authorization advice");
+    Check(PluginOperationSupport.DescribeFailure("getaddrinfo ENOTFOUND https://private.invalid/repository", 128)
+        .Contains("域名解析失败"), "wrapped DNS failure has a specific short diagnosis");
+    Check(PluginOperationSupport.DescribeFailure("git clone failed: HTTP 404 Not Found", 128).Contains("HTTP 404"),
+        "git HTTP 404 explains a permanent missing repository");
+    string approvalMessage = PluginOperationSupport.DescribeFailure(
+        "ERR_PNPM_IGNORED_BUILDS Ignored build scripts: esbuild@0.25.0", 1);
+    Check(approvalMessage.Contains("启动器") && approvalMessage.Contains("拒绝")
+        && !approvalMessage.Contains("官方插件管理器") && !approvalMessage.Contains("浏览器"),
+        "build-script failure tells the user to approve or cancel in the launcher");
     Check(!PluginOperationSupport.DescribeFailure("ETIMEDOUT https://example.invalid/private/path", 1).Contains("https://"), "failure text hides URL diagnostics");
 
     string progressText = null;
     long progressBytes = -1;
-    using (var transfer = new PluginTransferProgress(value => progressText = value, value => progressBytes = value))
+    long progressTotal = -1;
+    double progressSpeed = -1;
+    using (var transfer = new PluginTransferProgress(
+        value => progressText = value,
+        value => progressBytes = value,
+        (bytes, total, speed) => { progressBytes = bytes; progressTotal = total; progressSpeed = speed; }))
     {
-        Check(progressBytes == 0 && progressText.StartsWith("缓存中 · "), "official progress starts with cache state and actual zero bytes");
+        Check(progressBytes == 0 && progressText.StartsWith("连接插件源并检查缓存")
+            && !progressText.Contains("0 B"), "official progress shows the connection/cache phase without claiming a zero-byte completed download");
         Check(transfer.Consume("{\"name\":\"pnpm:fetching-progress\",\"packageId\":\"a\",\"downloaded\":1048576}"), "fetching NDJSON is recognized");
-        Check(progressBytes == 1048576 && progressText.Contains("1.0 MB"), "fetching NDJSON reports actual downloaded bytes");
+        Check(progressBytes == 1048576 && progressText.Contains("1.0 MB")
+            && progressText.Contains("/s") && progressSpeed > 0,
+            "fetching NDJSON reports downloaded bytes and measured transfer speed");
         transfer.Consume("{\"name\":\"pnpm:fetching-progress\",\"packageId\":\"a\",\"downloaded\":512}");
         Check(progressBytes == 1048576, "duplicate lower byte count cannot regress package progress");
         transfer.Consume("{\"name\":\"pnpm:fetching-progress\",\"packageId\":\"b\",\"status\":\"finished\",\"size\":524288}");
@@ -276,8 +339,39 @@ try
         transfer.Consume("{\"name\":\"pnpm:progress\",\"packageId\":\"a\",\"status\":\"resolved\"}");
         transfer.Consume("{\"name\":\"pnpm:progress\",\"packageId\":\"b\",\"status\":\"resolved\"}");
         transfer.Consume("{\"name\":\"pnpm:progress\",\"packageId\":\"a\",\"status\":\"found_in_store\"}");
+        transfer.Consume("{\"name\":\"pnpm:fetching-progress\",\"packageId\":\"a\",\"status\":\"finished\",\"downloaded\":\"1048576\",\"size\":\"1048576\"}");
+        Check(progressTotal == 1572864 && progressText.Contains("1.5 MB / 1.5 MB"),
+            "string-valued package sizes are parsed and shown when all resolved dependencies have known sizes");
         Check(progressText.Contains("依赖 1/2"), "cache hit and resolved dependency counts are reported");
         Check(!transfer.Consume("ordinary CLI output") && !transfer.Consume("{\"unrelated\":true}"), "non-PNPM output is not swallowed by the progress parser");
+    }
+
+    string storeFixture = Path.Combine(Path.GetTempPath(), "dafeiyu-plugin-progress-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(storeFixture);
+    try
+    {
+        using var cacheReported = new ManualResetEventSlim(false);
+        long cacheBytes = 0;
+        string cacheText = String.Empty;
+        using (var transfer = new PluginTransferProgress(
+            value => { cacheText = value; if (value.Contains("已写入缓存")) cacheReported.Set(); },
+            value => cacheBytes = value,
+            (bytes, total, speed) => { cacheBytes = bytes; }))
+        {
+            transfer.Consume(System.Text.Json.JsonSerializer.Serialize(new
+            {
+                name = "pnpm:context",
+                storeDir = storeFixture
+            }));
+            File.WriteAllBytes(Path.Combine(storeFixture, "cache-entry"), new byte[4096]);
+            Check(cacheReported.Wait(TimeSpan.FromSeconds(3)) && cacheBytes >= 4096
+                && cacheText.Contains("已写入缓存"),
+                "new cache-store bytes appear immediately in the progress row with an explicit cache-write stage");
+        }
+    }
+    finally
+    {
+        if (Directory.Exists(storeFixture)) Directory.Delete(storeFixture, true);
     }
 
     Console.WriteLine($"PASS {checks} official-plugin checks; offline, no node, no real profile writes.");
@@ -301,11 +395,13 @@ namespace DeepSeekHarnessLauncher
         internal static void Apply(System.Diagnostics.ProcessStartInfo process, LauncherSettings settings) =>
             throw new Exception("Unexpected process launch");
     }
-    internal static class BackendDownloadSource { internal static bool IsSelected(LauncherSettings settings) => false; }
+    internal static class BackendDownloadSource { internal const string BaseUrl = "https://202.189.21.218:8787"; internal static bool IsSelected(LauncherSettings settings) => false; }
 
     internal sealed class LauncherSettings
     {
         public string DshRoot { get; set; }
+        public string UpdateSource { get; set; }
+        public string MirrorSource { get; set; }
     }
 
     // 只编译了 DshPluginCliService；这些替身保证它不会意外发起真实操作。

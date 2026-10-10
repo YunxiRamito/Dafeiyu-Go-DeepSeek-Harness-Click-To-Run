@@ -7,6 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../source/SettingsSearch.cs" Link="SettingsSearch.cs" />
-    <Compile Include="../../source/SettingsSearchInitials.cs" Link="SettingsSearchInitials.cs" />
+    <PackageReference Include="TinyPinyin.Net" Version="1.0.2" />
   </ItemGroup>
 </Project>

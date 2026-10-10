@@ -63,7 +63,7 @@ namespace DeepSeekHarnessLauncher
 
         internal bool IsClosed
         {
-            get { return _closed || (_showingResult && _resultHoldSeconds != 5 && (DateTime.UtcNow - _resultUtc).TotalSeconds > _resultHoldSeconds + 0.3); }
+            get { return _closed || (_showingResult && _resultHoldSeconds != 8 && (DateTime.UtcNow - _resultUtc).TotalSeconds > _resultHoldSeconds + 0.3); }
         }
         internal bool IsShowingResult { get { return _showingResult; } }
         internal bool HasDisplayedNotice => _noticeDisplayed;
@@ -454,13 +454,13 @@ namespace DeepSeekHarnessLauncher
         internal void CompleteInfo(InfoOutcome outcome, string title, string detail, bool? playChime = null)
         {
             _resultUtc = DateTime.UtcNow;
-            _resultHoldSeconds = outcome == InfoOutcome.Information ? 5 : 3;
+            _resultHoldSeconds = outcome == InfoOutcome.Information ? 8 : 3;
             _showingResult = true;
             Send("Complete", title, detail, -1, outcome.ToString(), playChime ?? outcome == InfoOutcome.Success);
             DateTime completedUtc = _resultUtc;
             // Reply lifetime starts when the helper displays it. Allow helper startup
             // before applying a fallback timeout, so it can remain visible for five seconds.
-            int closeDelayMs = outcome == InfoOutcome.Information ? 15000 : 3500;
+            int closeDelayMs = outcome == InfoOutcome.Information ? 18000 : 3500;
             ThreadPool.QueueUserWorkItem(delegate
             {
                 Thread.Sleep(closeDelayMs);

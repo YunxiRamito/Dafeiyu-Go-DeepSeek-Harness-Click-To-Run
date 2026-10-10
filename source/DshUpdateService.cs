@@ -19,6 +19,9 @@ namespace DeepSeekHarnessLauncher
         /// <summary>这个版本是从哪个 dist-tag 挑出来的（latest / next / alpha…）。</summary>
         public string Channel { get; set; }
 
+        /// <summary>指向这个版本的全部 npm dist-tag。</summary>
+        public List<string> Channels { get; set; } = new List<string>();
+
         public DateTimeOffset? PublishedAt { get; set; }
         public Dictionary<string, DateTimeOffset> PublishedTimes { get; } =
             new Dictionary<string, DateTimeOffset>(
@@ -32,6 +35,8 @@ namespace DeepSeekHarnessLauncher
             "https://registry.npmmirror.com/@deepseek-ai/dsh";
         private const string OfficialRegistry =
             "https://registry.npmjs.org/@deepseek-ai%2Fdsh";
+        private const string OfficialInstallRegistry =
+            "https://registry.npmjs.org/";
 
         internal static string GetInstalledVersion(string dshRoot)
         {
@@ -75,7 +80,48 @@ namespace DeepSeekHarnessLauncher
             LauncherSettings settings,
             out string error)
         {
-            error = null;
+            return FetchLatestPackageForChannel(
+                settings,
+                settings == null ? null : settings.DshChannel,
+                out error);
+        }
+
+        internal static DshUpdatePackage FetchLatestPackageForChannel(
+            LauncherSettings settings,
+            string channel,
+            out string error,
+            bool requireExactChannel = false)
+        {
+            return FetchPackageData(
+                settings,
+                json =>
+                {
+                    DshUpdatePackage package = ParsePackageForChannel(
+                        json, channel, requireExactChannel, out string parseError);
+                    if (package == null)
+                        throw new InvalidDataException(parseError ?? "DSH 包信息无效。");
+                    return package;
+                },
+                out error);
+        }
+
+        internal static List<DshUpdatePackage> FetchAllVersions(
+            LauncherSettings settings,
+            out string error)
+        {
+            return FetchPackageData(
+                settings,
+                json => ParseAllVersions(json, out string parseError)
+                    ?? throw new InvalidDataException(parseError ?? "DSH 版本列表无效。"),
+                out error);
+        }
+
+        private static T FetchPackageData<T>(
+            LauncherSettings settings,
+            Func<string, T> parser,
+            out string error)
+            where T : class
+        {
             string url = settings != null
                 && String.Equals(
                     settings.UpdateSource,
@@ -87,17 +133,39 @@ namespace DeepSeekHarnessLauncher
                 ? UpdateMetadataReader.BackendCandidates(OfficialRegistry, AcceleratedRegistry)
                 : new List<string> { url };
 
-            var result = UpdateMetadataReader.ReadFirstValid(new[] { (IReadOnlyList<string>)urls }, json =>
-            {
-                var package = ParsePackage(json, settings, out string parseError);
-                if (package == null) throw new InvalidDataException(parseError ?? "DSH 包信息无效。");
-                return package;
-            }, request => ProxySupport.Apply(request, settings), groupBudgetMilliseconds: 8000);
-            error = result.Value == null ? "DSH 更新检查失败：" + result.Error : null;
+            var result = UpdateMetadataReader.ReadFirstValid(
+                new[] { (IReadOnlyList<string>)urls },
+                parser,
+                request => ProxySupport.Apply(request, settings),
+                groupBudgetMilliseconds: 8000);
+            error = result.Value == null
+                ? "DSH 更新检查失败：" + result.Error
+                : null;
             return result.Value;
         }
 
         internal static DshUpdatePackage ParsePackage(string json, LauncherSettings settings, out string error)
+        {
+            return ParsePackage(
+                json,
+                settings == null ? null : settings.DshChannel,
+                out error);
+        }
+
+        internal static DshUpdatePackage ParsePackageForChannel(
+            string json, string channel, bool requireExactChannel, out string error)
+        {
+            DshUpdatePackage package = ParsePackage(json, channel, out error);
+            if (package != null && requireExactChannel && !package.Channels.Exists(tag =>
+                String.Equals(tag, channel, StringComparison.OrdinalIgnoreCase)))
+            {
+                error = "DSH 更新源没有返回“" + channel + "”通道版本。";
+                return null;
+            }
+            return package;
+        }
+
+        internal static DshUpdatePackage ParsePackage(string json, string preferredChannel, out string error)
         {
             error = null;
             try
@@ -126,7 +194,7 @@ namespace DeepSeekHarnessLauncher
                         string latest = SelectNewestVersion(
                             distTags,
                             versions,
-                            settings == null ? null : settings.DshChannel,
+                            preferredChannel,
                             out channel);
                         if (String.IsNullOrWhiteSpace(latest))
                         {
@@ -161,6 +229,7 @@ namespace DeepSeekHarnessLauncher
                         {
                             Version = latest,
                             Channel = channel,
+                            Channels = FindChannels(distTags, latest),
                             TarballUrl = tarball.GetString(),
                             Integrity = dist.TryGetProperty("integrity", out var integrity) && integrity.ValueKind == JsonValueKind.String
                                 ? integrity.GetString() : null
@@ -175,6 +244,103 @@ namespace DeepSeekHarnessLauncher
             }
             catch (Exception exception) { error = "DSH 更新检查失败：" + exception.Message; }
             return null;
+        }
+
+        internal static List<DshUpdatePackage> ParseAllVersions(string json, out string error)
+        {
+            error = null;
+            try
+            {
+                using (JsonDocument document = JsonDocument.Parse(json))
+                {
+                    if (!document.RootElement.TryGetProperty("versions", out JsonElement versions)
+                        || versions.ValueKind != JsonValueKind.Object
+                        || !document.RootElement.TryGetProperty("dist-tags", out JsonElement distTags)
+                        || distTags.ValueKind != JsonValueKind.Object)
+                    {
+                        error = "DSH 更新源没有返回完整包信息。";
+                        return null;
+                    }
+
+                    var packages = new List<DshUpdatePackage>();
+                    JsonElement publishedTimes;
+                    bool hasPublishedTimes = document.RootElement.TryGetProperty("time", out publishedTimes)
+                        && publishedTimes.ValueKind == JsonValueKind.Object;
+                    foreach (JsonProperty version in versions.EnumerateObject())
+                    {
+                        if (version.Value.ValueKind != JsonValueKind.Object
+                            || !version.Value.TryGetProperty("dist", out JsonElement dist)
+                            || dist.ValueKind != JsonValueKind.Object
+                            || !dist.TryGetProperty("tarball", out JsonElement tarball)
+                            || tarball.ValueKind != JsonValueKind.String
+                            || String.IsNullOrWhiteSpace(tarball.GetString()))
+                        {
+                            continue;
+                        }
+
+                        string integrity = dist.TryGetProperty("integrity", out JsonElement value)
+                            && value.ValueKind == JsonValueKind.String
+                            ? value.GetString()
+                            : null;
+                        if (!HasValidIntegrity(integrity)) continue;
+
+                        List<string> channels = FindChannels(distTags, version.Name);
+                        DateTimeOffset? publishedAt = null;
+                        if (hasPublishedTimes
+                            && publishedTimes.TryGetProperty(version.Name, out JsonElement publishedValue)
+                            && publishedValue.ValueKind == JsonValueKind.String
+                            && DateTimeOffset.TryParse(
+                                publishedValue.GetString(),
+                                CultureInfo.InvariantCulture,
+                                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                                out DateTimeOffset parsedPublishedAt))
+                        {
+                            publishedAt = parsedPublishedAt;
+                        }
+                        packages.Add(new DshUpdatePackage
+                        {
+                            Version = version.Name,
+                            Channel = channels.Count == 0 ? String.Empty : String.Join(" / ", channels),
+                            Channels = channels,
+                            PublishedAt = publishedAt,
+                            TarballUrl = tarball.GetString(),
+                            Integrity = integrity
+                        });
+                    }
+
+                    packages.Sort(delegate(DshUpdatePackage left, DshUpdatePackage right)
+                    {
+                        if (UpdateSupport.IsNewer(left.Version, right.Version)) return -1;
+                        if (UpdateSupport.IsNewer(right.Version, left.Version)) return 1;
+                        return StringComparer.OrdinalIgnoreCase.Compare(right.Version, left.Version);
+                    });
+                    if (packages.Count == 0)
+                    {
+                        error = "DSH 更新源没有返回可安装的版本。";
+                        return null;
+                    }
+                    return packages;
+                }
+            }
+            catch (Exception exception)
+            {
+                error = "DSH 版本列表读取失败：" + exception.Message;
+                return null;
+            }
+        }
+
+        private static List<string> FindChannels(JsonElement distTags, string version)
+        {
+            var channels = new List<string>();
+            foreach (JsonProperty tag in distTags.EnumerateObject())
+            {
+                if (tag.Value.ValueKind == JsonValueKind.String
+                    && String.Equals(tag.Value.GetString(), version, StringComparison.OrdinalIgnoreCase))
+                {
+                    channels.Add(tag.Name);
+                }
+            }
+            return channels;
         }
 
         /// <summary>
@@ -445,6 +611,17 @@ namespace DeepSeekHarnessLauncher
             catch { return false; }
         }
 
+        internal static void CleanupPackage(string packagePath, Action<string> log = null)
+        {
+            if (String.IsNullOrWhiteSpace(packagePath)) return;
+            try
+            {
+                DownloadSupport.TryDeleteOwnedDirectory(Path.GetDirectoryName(Path.GetFullPath(packagePath)),
+                    Path.Combine(Path.GetTempPath(), "DeepSeekHarnessUpdate"), "dsh-", log);
+            }
+            catch (Exception exception) { try { log?.Invoke("DSH package cleanup failed: " + exception.Message); } catch { } }
+        }
+
         internal static bool InstallVersion(
             string dshRoot,
             string nodePath,
@@ -515,7 +692,7 @@ namespace DeepSeekHarnessLauncher
                     settings.UpdateSource,
                     "Official",
                     StringComparison.OrdinalIgnoreCase);
-            return official ? null : "https://registry.npmmirror.com";
+            return official ? OfficialInstallRegistry : "https://registry.npmmirror.com/";
         }
 
         internal static bool InstallPackage(

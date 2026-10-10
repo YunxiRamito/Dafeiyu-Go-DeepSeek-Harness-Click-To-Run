@@ -40,8 +40,11 @@ namespace DeepSeekHarnessLauncher
     {
         internal const int DefaultThreads = 4;
         internal static int Calls;
+        internal static bool TryDeleteOwnedDirectory(string path, string parent, string prefix, Action<string> log = null)
+        { return false; }
         internal static bool Download(List<string> urls, string path, LauncherSettings settings, int threads,
-            Action<DownloadProgressInfo> progress, Action<string> log, out string usedUrl, out string error)
+            Action<DownloadProgressInfo> progress, Action<string> log, out string usedUrl, out string error,
+            int automaticRetries = 0, Action<string> stateChanged = null)
         { Calls++; usedUrl = error = null; throw new Exception("Unexpected package transfer in metadata regression."); }
     }
 }

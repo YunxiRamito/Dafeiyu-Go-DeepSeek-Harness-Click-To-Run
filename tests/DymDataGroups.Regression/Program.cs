@@ -218,6 +218,19 @@ try
     string prefix = Path.Combine(fixture, "prefix.dym");
     Check(DymArchive.Create(prefix, new[] { "skills-extra", "plugins-extra" }, source, null, null, CancellationToken.None, false), "prefix mismatch fixture created");
     Check(UserDataBackup.DescribeFromArchive(prefix, null).Count == 0 && InstallerBackup.DescribeFromArchive(prefix, null).Count == 0, "archive group matching requires directory boundary");
+    Write(".dsh/profiles/web/node_modules/@fixture/portable/package.json", """{"name":"@fixture/portable","dependencies":{"sibling-dependency":"1.0.0"}}""");
+    Write(".dsh/profiles/web/node_modules/sibling-dependency/index.js", "required dependency");
+    Write(".dsh/profiles/web/node_modules/sibling-dependency/package.json", """{"name":"sibling-dependency","dependencies":{"@fixture/portable":"1.0.0"}}""");
+    string dependencyArchive = Path.Combine(fixture, "plugin-dependencies.dym");
+    var dependencyProgress = new List<(string Text, double Percent)>();
+    Check(UserDataBackup.Export(source, groups.Where(group => group.Id == "plugins").ToList(), dependencyArchive,
+        (text, percent) => dependencyProgress.Add((text, percent)), null, CancellationToken.None), "DYM packs declared sibling plugin dependencies");
+    Check(DymArchive.List(dependencyArchive, null, out error).Any(entry => entry.Path
+        == ".dsh/plugin-profiles/web/node_modules/@fixture/portable/node_modules/sibling-dependency/index.js"),
+        "scoped plugin archive includes required dependency while avoiding package dependency cycles");
+    Check(dependencyProgress.Last().Text == "打包完成" && dependencyProgress.Last().Percent == 100
+        && dependencyProgress.Any(item => item.Text.Contains("正在清理") && item.Percent < 100),
+        "DYM reports cleanup before the final completion event");
 }
 finally
 {

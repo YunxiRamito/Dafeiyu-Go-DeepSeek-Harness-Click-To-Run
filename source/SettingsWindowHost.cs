@@ -10,6 +10,8 @@ namespace DeepSeekHarnessLauncher
 
         public Func<string> GetServiceStatus { get; set; } =
             delegate { return "状态未知"; };
+        public Func<string> GetServiceUrl { get; set; } = delegate { return null; };
+        public Func<string> GetDeepSeekBalance { get; set; } = delegate { return null; };
 
         public Func<bool> IsDshDataInUse { get; set; } = delegate { return false; };
         public Func<bool> TryBeginDshDataTransfer { get; set; } = delegate { return false; };
@@ -24,6 +26,12 @@ namespace DeepSeekHarnessLauncher
         public Action InstallInstallerUpdate { get; set; } = delegate { };
         public Action CheckDshUpdate { get; set; } = delegate { };
         public Action InstallDshUpdate { get; set; } = delegate { };
+        public Action<Action<System.Collections.Generic.List<DshUpdatePackage>, string>> LoadDshVersions { get; set; } = delegate { };
+        public Action<DshUpdatePackage> InstallDshVersion { get; set; } = delegate { };
+        public Action RollbackDshToStable { get; set; } = delegate { };
+        public Action<string> SetDshChannel { get; set; } = delegate { };
+        public Action<string> SetDshUpdateMode { get; set; } = delegate { };
+        public Action<string> DshVersionOperationRejected { get; set; } = delegate { };
         public Action CheckPluginUpdates { get; set; } = delegate { };
         public Action InstallPluginUpdates { get; set; } = delegate { };
         public Action<string> InstallPluginUpdate { get; set; } = delegate { };
@@ -41,6 +49,7 @@ namespace DeepSeekHarnessLauncher
         public Func<ClientNoticePresence> GetNoticePresence { get; set; } = delegate { return null; };
         public Action<bool> SetPresencePollingEnabled { get; set; } = delegate { };
         public Action NoticeSettingsChanged { get; set; } = delegate { };
+        public Func<ClientNoticeMessage, int, bool> ExecuteNotificationAction { get; set; }
         public Action DeveloperIdentityActivated { get; set; } = delegate { };
         public Action DeveloperCredentialsChanged { get; set; } = delegate { };
         public Action<string, string, double> PatchProgress { get; set; } = delegate { };
@@ -61,8 +70,11 @@ namespace DeepSeekHarnessLauncher
         public event Action UpdateStateChanged = delegate { };
         public event Action ServiceStateChanged = delegate { };
         public event Action NoticePresenceChanged = delegate { };
+        public event Action BalanceChanged = delegate { };
 
         public void RaiseNoticePresenceChanged() { NoticePresenceChanged(); }
+
+        public void RaiseBalanceChanged() { BalanceChanged(); }
 
         public void RaiseUpdateStateChanged()
         {

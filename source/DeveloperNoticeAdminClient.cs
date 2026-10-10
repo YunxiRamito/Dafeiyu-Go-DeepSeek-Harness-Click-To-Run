@@ -54,6 +54,7 @@ namespace DeepSeekHarnessLauncher
         public List<DeveloperNoticeMetricCount> Counts { get; set; } = new List<DeveloperNoticeMetricCount>();
         internal long Delivered => Total("Delivered");
         internal long Displayed => Total("Displayed");
+        internal long Deferred => Total("Deferred");
         internal long Read => Total("Read");
         internal long Clicks(int position) => Counts.Where(item => String.Equals(item.Kind, "Click", StringComparison.OrdinalIgnoreCase)
             && item.ButtonPosition == position).Sum(item => item.Count);
@@ -97,7 +98,30 @@ namespace DeepSeekHarnessLauncher
         internal async Task<string> SaveDraftAsync(string endpoint, string token, ClientNoticeMessage draft, CancellationToken cancellationToken)
         {
             ValidateDraft(draft);
-            var payload = new
+            var result = await SendAsync<DeveloperNoticeAdminMessage>(endpoint, token, HttpMethod.Post,
+                "api/admin/messages", BuildMessagePayload(draft), cancellationToken).ConfigureAwait(false);
+            if (!Guid.TryParse(result.Id, out var id) || result.State != "draft")
+                throw new InvalidDataException("The server did not return a valid draft ID.");
+            return id.ToString("D");
+        }
+
+        internal async Task<DeveloperNoticeAdminMessage> UpdatePublishedNotificationAsync(string endpoint, string token,
+            string id, ClientNoticeMessage draft, CancellationToken cancellationToken)
+        {
+            if (!Guid.TryParse(id, out var messageId) || messageId == Guid.Empty)
+                throw new ArgumentException("A valid message ID is required.", nameof(id));
+            ValidateDraft(draft);
+            if (draft.Kind != "notification") throw new ArgumentException("Only published notifications can be edited.", nameof(draft));
+            var result = await SendAsync<DeveloperNoticeAdminMessage>(endpoint, token, HttpMethod.Put,
+                "api/admin/messages/" + messageId.ToString("D"), BuildMessagePayload(draft), cancellationToken).ConfigureAwait(false);
+            if (!Guid.TryParse(result.Id, out var resultId) || resultId != messageId || result.Kind != "notification"
+                || result.State != "published" || result.Expired || result.ExpiresAt <= DateTimeOffset.UtcNow)
+                throw new InvalidDataException("The notification update was not confirmed by the server.");
+            return result;
+        }
+
+        private static object BuildMessagePayload(ClientNoticeMessage draft)
+            => new
             {
                 kind = draft.Kind == "announcement" ? "Announcement" : "Notification",
                 title = draft.Title.Trim(), markdown = draft.Markdown, expiresAt = draft.ExpiresAt, date = draft.Date,
@@ -109,12 +133,6 @@ namespace DeepSeekHarnessLauncher
                     command = button.Action == "powershell" ? button.ActionTarget : null
                 }).ToArray()
             };
-            var result = await SendAsync<DeveloperNoticeAdminMessage>(endpoint, token, HttpMethod.Post,
-                "api/admin/messages", payload, cancellationToken).ConfigureAwait(false);
-            if (!Guid.TryParse(result.Id, out var id) || result.State != "draft")
-                throw new InvalidDataException("The server did not return a valid draft ID.");
-            return id.ToString("D");
-        }
 
         internal async Task<DeveloperNoticeMetrics> GetMetricsAsync(string endpoint, string token, string id, CancellationToken cancellationToken)
         {
@@ -122,9 +140,9 @@ namespace DeepSeekHarnessLauncher
                 throw new ArgumentException("A valid message ID is required.", nameof(id));
             var result = await SendAsync<DeveloperNoticeMetrics>(endpoint, token, HttpMethod.Get,
                 "api/admin/messages/" + messageId.ToString("D") + "/metrics", null, cancellationToken).ConfigureAwait(false);
-            if (!Guid.TryParse(result.MessageId, out var resultId) || resultId != messageId || result.Counts == null || result.Counts.Count > 5
+            if (!Guid.TryParse(result.MessageId, out var resultId) || resultId != messageId || result.Counts == null || result.Counts.Count > 6
                 || result.Counts.Any(item => item == null || item.Count < 0
-                    || (item.Kind != "Delivered" && item.Kind != "Displayed" && item.Kind != "Read" && item.Kind != "Click")
+                    || (item.Kind != "Delivered" && item.Kind != "Displayed" && item.Kind != "Deferred" && item.Kind != "Read" && item.Kind != "Click")
                     || (item.Kind == "Click" ? item.ButtonPosition < 0 || item.ButtonPosition > 1 : item.ButtonPosition != -1))
                 || result.Counts.GroupBy(item => new { item.Kind, item.ButtonPosition }).Any(group => group.Count() != 1))
                 throw new InvalidDataException("Invalid message metrics response.");

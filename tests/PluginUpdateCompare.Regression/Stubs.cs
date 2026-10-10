@@ -15,11 +15,13 @@ namespace DeepSeekHarnessLauncher
         internal static void Apply(ProcessStartInfo process, LauncherSettings settings) =>
             throw new Exception("Unexpected process launch");
     }
-    internal static class BackendDownloadSource { internal static bool IsSelected(LauncherSettings settings) => false; }
+    internal static class BackendDownloadSource { internal const string BaseUrl = "https://202.189.21.218:8787"; internal static bool IsSelected(LauncherSettings settings) => false; }
 
     internal sealed class LauncherSettings
     {
         public string DshRoot { get; set; }
+        public string UpdateSource { get; set; }
+        public string MirrorSource { get; set; }
     }
 
     internal static class LauncherSettingsStore
@@ -87,6 +89,7 @@ namespace DeepSeekHarnessLauncher
             public string Output { get; set; } = String.Empty;
             public bool TimedOut { get; set; }
             public bool Started { get; set; }
+            public bool Cancelled { get; set; }
         }
 
         internal static string LocatePnpm(LauncherSettings settings) => null;
@@ -97,7 +100,7 @@ namespace DeepSeekHarnessLauncher
             string arguments,
             int timeoutMs,
             Action<string> log,
-            LauncherSettings settings = null) => new RunResult();
+            LauncherSettings settings = null, Func<bool> cancelled = null) => new RunResult();
     }
 
     internal static class DshUpdateService

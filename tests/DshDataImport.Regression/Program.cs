@@ -95,6 +95,27 @@ try
     Check(DshDataImportService.Import(linkPlan, new[] { "plugins" }, null, CancellationToken.None).Ok
         && File.ReadAllText(Path.Combine(linkImportTarget, "profiles/web/node_modules/linked-plugin/index.js")) == "pnpm plugin", "internal pnpm package link materialized as portable files");
     Check((File.GetAttributes(Path.Combine(linkImportTarget, "profiles/web/node_modules/linked-plugin")) & FileAttributes.ReparsePoint) == 0, "imported plugin package is independent from source link");
+    Write(packageStore, "package.json", """{"name":"linked-plugin","dependencies":{"sibling-dependency":"1.0.0"}}""");
+    string dependencyStore = Path.Combine(Path.GetDirectoryName(packageStore), "sibling-dependency");
+    Write(dependencyStore, "index.js", "required dependency");
+    Write(dependencyStore, "package.json", """{"name":"sibling-dependency","dependencies":{"linked-plugin":"1.0.0"}}""");
+    string dependencyTarget = Path.Combine(fixture, "dependency-target");
+    var dependencyPlan = DshDataImportService.Preview(source, dependencyTarget, "desktop", "web", CancellationToken.None);
+    Check(!dependencyPlan.UnavailableModules.Contains("linked-plugin")
+        && dependencyPlan.Files.Any(file => file.Relative.Replace('\\', '/') == "profiles/web/node_modules/linked-plugin/node_modules/sibling-dependency/index.js"),
+        "pnpm sibling dependencies are materialized and cyclic package dependencies keep the plugin available");
+    Check(DshDataImportService.Import(dependencyPlan, new[] { "plugins" }, null, CancellationToken.None).Ok
+        && File.ReadAllText(Path.Combine(dependencyTarget, "profiles/web/node_modules/linked-plugin/node_modules/sibling-dependency/index.js")) == "required dependency",
+        "migrated pnpm plugin keeps its runtime dependency files");
+    using var previewCancel = new CancellationTokenSource();
+    bool previewProgress = false;
+    try
+    {
+        DshDataImportService.Preview(source, Path.Combine(fixture, "preview-cancel-target"), "desktop", "web", previewCancel.Token,
+            progress: (text, percent) => { previewProgress = text.Contains("正在校验"); previewCancel.Cancel(); });
+        throw new Exception("Preview should honor cancellation during hash computation");
+    }
+    catch (OperationCanceledException) { Check(previewProgress, "preview reports current file and cancellation interrupts hashing"); }
     Directory.Delete(packageLink);
     string concurrentTarget = Path.Combine(fixture, "concurrent-target");
     var concurrentPlan = DshDataImportService.Preview(source, concurrentTarget, "desktop", "web", CancellationToken.None);

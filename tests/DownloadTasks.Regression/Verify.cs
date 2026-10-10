@@ -17,9 +17,15 @@ namespace DeepSeekHarnessLauncher
         internal string DshChannel { get; set; }
         internal string UpdateSource { get; set; }
         internal string MirrorSource { get; set; }
+        internal string NodePath { get; set; }
     }
 
     internal static class Program { internal static int PreviousProcessId => 0; }
+    internal static class PackageManagerRunner
+    {
+        internal static string ResolveComponentsRoot(LauncherSettings settings) => null;
+        internal static string LocatePnpm(LauncherSettings settings) => null;
+    }
     internal static class LauncherSettingsStore { internal static string DirectoryPath => Path.GetTempPath(); }
     internal static class Constants
     {
@@ -33,6 +39,8 @@ namespace DeepSeekHarnessLauncher
     {
         internal static AcceleratorSource[] Sources = { new AcceleratorSource() };
         internal static List<string> Candidates(string url, LauncherSettings settings) => new List<string> { url };
+        internal static List<string> DownloadCandidates(IEnumerable<string> urls, LauncherSettings settings)
+            => urls == null ? new List<string>() : new List<string>(urls);
         internal static List<string> RawCandidates(string repository, string branch, string path, LauncherSettings settings)
             => new List<string> { "https://raw.githubusercontent.com/" + repository + "/" + branch + "/" + path };
     }
@@ -60,6 +68,8 @@ namespace DeepSeekHarnessLauncher
 
         /// <summary>Reset the connection mid-body while still declaring the full length.</summary>
         internal volatile bool Truncate;
+
+        internal volatile int DelayMilliseconds = 10;
 
         internal string BaseUrl { get; private set; }
 
@@ -210,7 +220,7 @@ namespace DeepSeekHarnessLauncher
                         int count = (int)Math.Min(16384, to - position + 1);
                         stream.Write(payload, (int)position, count);
                         position += count;
-                        Thread.Sleep(10);
+                        Thread.Sleep(DelayMilliseconds);
                     }
 
                     stream.Flush();
@@ -315,8 +325,29 @@ public static class Verification
                     string staging = UpdateSupport.PrepareStaging(manifest, root, null, out error);
                     Assert(staging != null && File.Exists(Path.Combine(staging, "DeepSeek Harness.Core.exe")),
                         "isolated launcher staging retains installable payload");
-                    if (staging != null) Directory.Delete(Path.GetDirectoryName(staging), true);
+                    if (staging != null)
+                    {
+                        string stagingRoot = UpdateSupport.LauncherStagingRoot(staging);
+                        Assert(stagingRoot != null && Directory.Exists(stagingRoot), "launcher payload resolves to its owned GUID staging root");
+                        string script = UpdateSupport.BuildApplyScript(root, staging, 123, Path.Combine(root, "update.log"),
+                            Path.Combine(Path.GetTempPath(), "DeepSeekHarnessUpdate", "restart-launcher.cmd"), "test");
+                        Assert(script.Contains("if ($fail -eq 0 -and -not [string]::IsNullOrEmpty($stage)")
+                            && script.Contains("Remove-Item -LiteralPath $stage -Recurse -Force")
+                            && script.Contains("update staging retained for failure diagnostics"),
+                            "launcher apply script removes only its own stage after successful copy and preserves failed stage");
+                        Assert(!script.Contains("Remove-Item -LiteralPath $backup"), "launcher update script never deletes rollback backup");
+                        Directory.Delete(stagingRoot, true);
+                    }
                 }
+
+                DshUpdateService.CleanupPackage(first);
+                Assert(!File.Exists(first) && File.Exists(second), "DSH package cleanup removes only the supplied DSH GUID stage");
+                DshUpdateService.CleanupPackage(second);
+                Assert(!Directory.Exists(Path.GetDirectoryName(second)), "completed DSH update cleanup removes its package directory");
+
+                VerifySkillArchiveLeases();
+                VerifyComponentExtractionCleanup(root);
+
                 string[] before = Directory.GetDirectories(parent, "installer-*");
                 bool installed = InstallerUpdateService.PrepareAndApply(new InstallerUpdatePackage
                 {
@@ -347,14 +378,116 @@ public static class Verification
                         && File.ReadAllText(Path.Combine(root, "DSH-Uninstall.exe")) == "regression-payload",
                         "verified installer appended ZIP still installs both payload files: " + error);
                 }
+
+                byte[] installerSetup;
+                using (var memory = new MemoryStream())
+                {
+                    using (var archive = new System.IO.Compression.ZipArchive(memory, System.IO.Compression.ZipArchiveMode.Create, true))
+                    {
+                        foreach (string name in new[] { "DSH-Installer.exe", "DSH-Uninstall.exe" })
+                        using (var writer = new StreamWriter(archive.CreateEntry(name).Open())) writer.Write("progress-retry-fixture");
+                        byte[] incompressible = new byte[2 * 1024 * 1024];
+                        new Random(731).NextBytes(incompressible);
+                        using (var output = archive.CreateEntry("progress-fixture.bin", System.IO.Compression.CompressionLevel.NoCompression).Open())
+                            output.Write(incompressible, 0, incompressible.Length);
+                    }
+                    installerSetup = new byte[] { 77, 90, 0, 0 }.Concat(memory.ToArray()).ToArray();
+                }
+                using (var retryServer = new TestHttpServer(installerSetup))
+                {
+                    retryServer.Truncate = true;
+                    retryServer.DelayMilliseconds = 25;
+                    var progress = new List<DownloadProgressInfo>();
+                    var states = new List<string>();
+                    bool retainedRetryTask = false;
+                    string sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(installerSetup));
+                    bool applied = InstallerUpdateService.PrepareAndApplyDetailed(new InstallerUpdatePackage
+                    {
+                        SetupUrl = retryServer.BaseUrl + "retry-installer", Sha256 = sha
+                    }, root, info => progress.Add(info), state =>
+                    {
+                        states.Add(state);
+                        if (state.StartsWith("下载失败，等待 ", StringComparison.Ordinal))
+                        {
+                            DownloadTaskRecord task = DownloadTaskCenter.Snapshot()
+                                .FirstOrDefault(record => record.Name == "DSH-Installer-Setup.exe");
+                            retainedRetryTask |= task != null && task.Status == "Failed" && task.CanRetry && task.CanCancel;
+                            retryServer.Truncate = false;
+                        }
+                    }, out error);
+                    Assert(applied, "installer download automatically retries in its original task: " + error);
+                    Assert(states.Any(state => state.StartsWith("下载失败，等待 1 秒后重试 · ", StringComparison.Ordinal)
+                        && state.Length > "下载失败，等待 1 秒后重试 · ".Length)
+                        && states.Any(state => state.StartsWith("正在重试下载", StringComparison.Ordinal)),
+                        "installer download reports failure reason, countdown, and retry on the same callback");
+                    Assert(retainedRetryTask, "installer task remains visible and manually retryable during automatic backoff");
+                    Assert(progress.Any(info => info.TotalBytes == installerSetup.Length && info.BytesReceived > 0)
+                        && progress.Any(info => info.BytesPerSecond > 0 && info.Describe().Contains("/")),
+                        "installer download exposes the same byte, total-size, and transfer-speed progress as launcher updates");
+                    Assert(DownloadTaskCenter.Snapshot().Any(record => record.Name == "DSH-Installer-Setup.exe" && record.Status == "Completed"),
+                        "automatic installer retry completes the existing download task");
+                }
             }
             finally
             {
                 Directory.Delete(sibling, true);
-                Directory.Delete(Path.GetDirectoryName(first), true);
-                Directory.Delete(Path.GetDirectoryName(second), true);
+                if (Directory.Exists(Path.GetDirectoryName(first))) Directory.Delete(Path.GetDirectoryName(first), true);
+                if (Directory.Exists(Path.GetDirectoryName(second))) Directory.Delete(Path.GetDirectoryName(second), true);
             }
         }
+    }
+
+    private static void VerifySkillArchiveLeases()
+    {
+        string temp = Path.GetTempPath();
+        string archive = Path.Combine(temp, "DafeiyuGoSkillArchive-" + Guid.NewGuid().ToString("N") + ".zip");
+        string unowned = Path.Combine(temp, "DafeiyuGoSkillArchive-" + Guid.NewGuid().ToString("N") + ".zip");
+        File.WriteAllText(archive, "launcher-owned");
+        File.WriteAllText(unowned, "user-owned");
+        Assert(SkillArchiveTempFiles.Register(archive), "URL skill archive is registered as launcher-owned temporary data");
+        SkillArchiveTempFiles.SetExpectedUses(archive, 2);
+        SkillArchiveTempFiles.CompleteUse(archive, "skills/one");
+        Assert(File.Exists(archive), "multi-skill URL archive remains until every listed skill is attempted");
+        SkillArchiveTempFiles.CompleteUse(archive, "skills/one");
+        Assert(File.Exists(archive), "repeated install attempt does not consume another skill lease");
+        SkillArchiveTempFiles.CompleteUse(archive, "skills/two");
+        Assert(!File.Exists(archive), "URL skill archive is deleted after the final skill attempt, including failures");
+        Assert(SkillArchiveTempFiles.Register(archive), "downloaded URL archive can be tracked for abandonment cleanup");
+        SkillArchiveTempFiles.CleanupAll();
+        Assert(!File.Exists(archive) && File.Exists(unowned), "abandoned URL archive cleanup leaves user-owned local archives untouched");
+
+        string staleCrashArchive = Path.Combine(temp, "DafeiyuGoSkillArchive-" + Guid.NewGuid().ToString("N") + ".zip");
+        string freshUnregisteredArchive = Path.Combine(temp, "DafeiyuGoSkillArchive-" + Guid.NewGuid().ToString("N") + ".zip");
+        File.WriteAllText(staleCrashArchive, "stale launcher temp");
+        File.WriteAllText(freshUnregisteredArchive, "fresh launcher temp");
+        File.SetLastWriteTimeUtc(staleCrashArchive, DateTime.UtcNow.AddDays(-2));
+        SkillArchiveTempFiles.CleanupExpired();
+        Assert(!File.Exists(staleCrashArchive) && File.Exists(freshUnregisteredArchive),
+            "startup cleanup reclaims stale crash leftovers and keeps recent URL archives");
+        File.Delete(freshUnregisteredArchive);
+        File.Delete(unowned);
+    }
+
+    private static void VerifyComponentExtractionCleanup(string root)
+    {
+        string tempComponents = Path.Combine(Path.GetTempPath(), "DSHComponents");
+        Directory.CreateDirectory(tempComponents);
+        string target = Path.Combine(root, "component-extract-success");
+        string validArchive = Path.Combine(tempComponents, "node-regression.zip");
+        using (var file = File.Create(validArchive))
+        using (var zip = new System.IO.Compression.ZipArchive(file, System.IO.Compression.ZipArchiveMode.Create))
+        using (var writer = new StreamWriter(zip.CreateEntry("node/node.exe").Open())) writer.Write("component");
+        Assert(ComponentService.ExtractZipWithStrip(validArchive, target, true, null, null, out string error)
+            && File.ReadAllText(Path.Combine(target, "node.exe")) == "component" && !File.Exists(validArchive)
+            && !Directory.EnumerateDirectories(tempComponents, "extract-*").Any(),
+            "component ZIP success removes its download and GUID extraction staging: " + error);
+
+        string invalidArchive = Path.Combine(tempComponents, "git-invalid.zip");
+        File.WriteAllText(invalidArchive, "not a zip");
+        Assert(!ComponentService.ExtractZipWithStrip(invalidArchive, Path.Combine(root, "component-extract-failure"), false,
+                null, null, out error)
+            && !File.Exists(invalidArchive) && !Directory.EnumerateDirectories(tempComponents, "extract-*").Any(),
+            "component ZIP failure removes its download and partial GUID extraction staging");
     }
 
     public static void Run()

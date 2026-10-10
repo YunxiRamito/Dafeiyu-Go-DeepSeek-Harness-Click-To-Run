@@ -91,6 +91,7 @@ namespace DeepSeekHarnessLauncher
     {
         private static readonly object Gate = new object();
         private static readonly string Session = Guid.NewGuid().ToString("N").Substring(0, 12);
+        private const long MaximumFileBytes = 2L * 1024 * 1024;
 
         internal static void Write(string path, string message, [CallerMemberName] string member = "",
             [CallerFilePath] string source = "", [CallerLineNumber] int line = 0)
@@ -104,16 +105,45 @@ namespace DeepSeekHarnessLauncher
                 lock (Gate)
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(path));
-                    const long maximumFileBytes = 8L * 1024 * 1024;
-                    if (File.Exists(path) && new FileInfo(path).Length > maximumFileBytes)
-                    {
-                        string old = path + ".previous";
-                        File.Move(path, old, true);
-                    }
-                    File.AppendAllText(path, entry, new UTF8Encoding(false));
+                    byte[] entryBytes = new UTF8Encoding(false).GetBytes(entry);
+                    TrimOldestEntriesIfNeeded(path, entryBytes.Length);
+                    using (var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read))
+                        stream.Write(entryBytes, 0, entryBytes.Length);
                 }
             }
             catch { }
+        }
+
+        private static void TrimOldestEntriesIfNeeded(string path, int nextEntryBytes)
+        {
+            if (!File.Exists(path)) return;
+            long fileLength = new FileInfo(path).Length;
+            if (fileLength + nextEntryBytes <= MaximumFileBytes) return;
+
+            long keepBytes = Math.Max(0, MaximumFileBytes - Math.Min((long)nextEntryBytes, MaximumFileBytes));
+            string temporaryPath = path + ".trim";
+            try
+            {
+                using (var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    input.Position = Math.Max(0, fileLength - keepBytes);
+                    int value = -1;
+                    while ((value = input.ReadByte()) >= 0 && value != '\n') { }
+                    if (value < 0)
+                    {
+                        input.Position = fileLength;
+                    }
+
+                    using (var output = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                        input.CopyTo(output);
+                }
+
+                File.Move(temporaryPath, path, true);
+            }
+            finally
+            {
+                try { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); } catch { }
+            }
         }
 
         internal static string DescribeException(string operation, Exception error, [CallerMemberName] string member = "",

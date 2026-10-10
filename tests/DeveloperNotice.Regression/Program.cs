@@ -54,11 +54,25 @@ handler.InvalidCurrent = true;
 try { await client.GetCurrentNotificationAsync(endpoint, "offline-token", CancellationToken.None); throw new Exception("invalid current kind accepted"); }
 catch (InvalidDataException) { checks++; }
 handler.InvalidCurrent = false;
+var updated = await client.UpdatePublishedNotificationAsync(endpoint, "offline-token", id, draft, CancellationToken.None);
+Check(updated.Id == id && updated.State == "published" && updated.Kind == "notification", "PUT updates original published notification identity");
+Check(handler.Paths.Last() == "/api/admin/messages/" + id && handler.LastMethod == HttpMethod.Put, "notification edit uses PUT existing ID");
+using (var updateBody = JsonDocument.Parse(handler.UpdateBody))
+{
+    Check(updateBody.RootElement.GetProperty("markdown").GetString() == draft.Markdown
+        && !updateBody.RootElement.TryGetProperty("id", out _) && !updateBody.RootElement.TryGetProperty("publishedAt", out _),
+        "notification update changes content without assigning identity or publication time");
+}
+handler.FailUpdate = true;
+try { await client.UpdatePublishedNotificationAsync(endpoint, "offline-token", id, draft, CancellationToken.None); throw new Exception("update conflict ignored"); }
+catch (HttpRequestException error) { Check(error.StatusCode == HttpStatusCode.Conflict, "update conflict preserved for UI"); }
+handler.FailUpdate = false;
 await client.WithdrawAsync(endpoint, "offline-token", id, CancellationToken.None);
 Check(handler.Paths.Last().EndsWith("/withdraw"), "withdraw route");
 var metrics = await client.GetMetricsAsync(endpoint, "offline-token", id, CancellationToken.None);
-Check(metrics.Delivered == 12 && metrics.Displayed == 10 && metrics.Read == 8 && metrics.Clicks(0) == 3 && metrics.Clicks(1) == 2,
-    "unique installation counts map to delivered/displayed/read/button clicks");
+Check(metrics.Delivered == 12 && metrics.Displayed == 10 && metrics.Deferred == 4
+    && metrics.Read == 8 && metrics.Clicks(0) == 3 && metrics.Clicks(1) == 2,
+    "unique installation counts map to delivered/displayed/deferred/read/button clicks");
 handler.InvalidMetrics = true;
 try { await client.GetMetricsAsync(endpoint, "offline-token", id, CancellationToken.None); throw new Exception("invalid metrics accepted"); }
 catch (InvalidDataException) { checks++; }
@@ -190,11 +204,13 @@ sealed class AdminHandler : HttpMessageHandler
     internal const string Id = "20c754a4-9b38-4373-b0b4-03b1a03b9742";
     internal List<string> Paths = new List<string>();
     internal List<string> Auth = new List<string>();
-    internal string CreateBody;
-    internal bool FailPublish, LargeResponse, InvalidMetrics, EmptyCurrent, InvalidCurrent;
+    internal string CreateBody, UpdateBody;
+    internal HttpMethod LastMethod;
+    internal bool FailPublish, FailUpdate, LargeResponse, InvalidMetrics, EmptyCurrent, InvalidCurrent;
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         string path = request.RequestUri.AbsolutePath;
+        LastMethod = request.Method;
         Paths.Add(path); Auth.Add(request.Headers.Authorization?.ToString());
         if (path == "/api/admin/notifications/current")
         {
@@ -207,13 +223,16 @@ sealed class AdminHandler : HttpMessageHandler
             string metrics = "{\"messageId\":\"" + Id + "\",\"semantics\":\"unique installations per read/button\",\"counts\":["
                 + "{\"kind\":\"Delivered\",\"buttonPosition\":-1,\"count\":" + (InvalidMetrics ? -1 : 12) + "},"
                 + "{\"kind\":\"Displayed\",\"buttonPosition\":-1,\"count\":10},"
+                + "{\"kind\":\"Deferred\",\"buttonPosition\":-1,\"count\":4},"
                 + "{\"kind\":\"Read\",\"buttonPosition\":-1,\"count\":8},"
                 + "{\"kind\":\"Click\",\"buttonPosition\":0,\"count\":3},"
                 + "{\"kind\":\"Click\",\"buttonPosition\":1,\"count\":2}]}";
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(metrics, Encoding.UTF8, "application/json") };
         }
         if (FailPublish && path.EndsWith("/publish")) return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
-        string state = path.EndsWith("/publish") || request.Method == HttpMethod.Get ? "Published" : path.EndsWith("/withdraw") ? "Withdrawn" : "Draft";
+        if (FailUpdate && request.Method == HttpMethod.Put) return new HttpResponseMessage(HttpStatusCode.Conflict);
+        if (request.Method == HttpMethod.Put) UpdateBody = await request.Content.ReadAsStringAsync(cancellationToken);
+        string state = path.EndsWith("/publish") || request.Method == HttpMethod.Get || request.Method == HttpMethod.Put ? "Published" : path.EndsWith("/withdraw") ? "Withdrawn" : "Draft";
         string json = "{\"id\":\"" + Id + "\",\"kind\":\"Notification\",\"state\":\"" + state + "\"}";
         if (request.Method == HttpMethod.Post && path == "/api/admin/messages") CreateBody = await request.Content.ReadAsStringAsync(cancellationToken);
         if (request.Method == HttpMethod.Get) json = "[" + json + "]";

@@ -32,7 +32,10 @@ try {
  # The read-only settings preview needs no administrative operations.
  if ($ReadOnlyPreview) { $env:__COMPAT_LAYER = 'RunAsInvoker' }
  $initialPage = if ($StartPage) { $StartPage } else { $Page }
- $process = Start-Process -FilePath (Join-Path $Dist 'DeepSeek Harness.Core.exe') -ArgumentList "--settings-preview=$initialPage" -PassThru
+ $launcherExe = Join-Path $Dist 'DeepSeek Harness.Core.exe'
+ if (!(Test-Path -LiteralPath $launcherExe)) { $launcherExe = Join-Path $Dist 'DeepSeek Harness.exe' }
+ if (!(Test-Path -LiteralPath $launcherExe)) { throw "Launcher executable missing from Dist: $Dist" }
+ $process = Start-Process -FilePath $launcherExe -ArgumentList "--settings-preview=$initialPage" -PassThru
 } finally { if ($ReadOnlyPreview) { Remove-Item Env:__COMPAT_LAYER -ErrorAction SilentlyContinue } }
 try {
  $deadline = [datetime]::UtcNow.AddSeconds(35)
@@ -123,6 +126,25 @@ try {
    if($saved.notificationMuted -ne $expectedMute){throw "Mute toggle was not persisted: expected=$expectedMute"}
   }
   Write-Host 'PASS reminder controls, all thresholds visible, mute enabled and disabled persist to isolated settings'
+ }
+ if ($Page -eq 'Model') {
+  $add=$element.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty,'ModelAddProviderButton'))
+  if(!$add -or $add.Current.Name -ne '添加提供商'){throw 'Model page add-provider action missing'}
+  $refresh=$element.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty,'ModelRefreshButton'))
+  if(!$refresh -or $refresh.Current.Name -ne '刷新目录' -or $refresh.Current.IsOffscreen){throw 'Model catalog refresh action missing'}
+  foreach($text in @('模型提供商','排列提供商顺序，管理其模型目录；自定义提供商可编辑、检测连通或删除。','管理由此启动器启动的 DSH 的模型提供商与模型目录。这里的设置只影响通过此启动器启动的 DSH。')) {
+   if(!$rows.Where({$_.Name -eq $text}).Count){throw "Model page section missing: $text"}
+  }
+  foreach($text in @('DeepSeek','OpenAI','Anthropic','更多','编辑')) {
+   if(!$rows.Where({$_.Name -eq $text}).Count){throw "Model provider fixture missing: $text"}
+  }
+  foreach($text in @('默认模型','同步到网页会话','应用模型','刷新会话')) {
+   if($rows.Where({$_.Name -eq $text -and !$_.Offscreen}).Count){throw "Removed model action is still visible: $text"}
+  }
+  foreach($text in @('上移 DeepSeek','下移 DeepSeek')) {
+   if(!$rows.Where({$_.Name -eq $text}).Count){throw "Model provider order control missing: $text"}
+  }
+  Write-Host 'PASS isolated model page fixture shows provider management, refresh, edit, more, and ordering without default-model or web-session controls'
  }
  if ($Page -in @('Patches','Updates')) {
   foreach ($tab in @('更新','补丁')) {
@@ -269,19 +291,82 @@ try {
   $names=@($items | ForEach-Object {$_.Current.Name} | Select-Object -Unique)
   if(($names -join '|') -ne '大陆 CDN 加速|后端服务器加速|自定义|官方源'){throw ('Unexpected source choices: '+($names -join '|'))}
   Save-SettingsScreenshot 'Source-choices'
-  foreach($selection in @('后端服务器加速','官方源','大陆 CDN 加速','后端服务器加速')) {
+  function Selected-ComboName($control) {
+   $selection=$null
+   if($control.TryGetCurrentPattern([Windows.Automation.SelectionPattern]::Pattern,[ref]$selection)) {
+    $selected=@($selection.Current.GetSelection())
+    if($selected.Count -eq 1) { return $selected[0].Current.Name }
+   }
+   return $control.Current.Name
+  }
+  function Select-Source([string]$selection) {
    $combo.GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
    Start-Sleep -Milliseconds 200
    $item=Source-Items | Where-Object {$_.Current.Name -eq $selection} | Select-Object -First 1
+   if(!$item) { throw "Source item is not visible: $selection" }
    $item.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
-   Start-Sleep -Milliseconds 400
-   $settings=Get-Content (Join-Path $env:DAFEIYU_LAUNCHER_SETTINGS_DIRECTORY 'LauncherSettings.json') -Raw | ConvertFrom-Json
+   Start-Sleep -Milliseconds 500
+  }
+  function Read-IsolatedSettings {
+   return Get-Content (Join-Path $env:DAFEIYU_LAUNCHER_SETTINGS_DIRECTORY 'LauncherSettings.json') -Raw | ConvertFrom-Json
+  }
+  $sourceEvidence=[Collections.Generic.List[object]]::new()
+  function Assert-PluginSourceLabel([string]$expected) {
+   $pluginCombo=$element.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty,'PluginSourceComboBox'))
+   if(!$pluginCombo){throw 'Plugin source ComboBox missing'}
+   $pluginCombo.GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
+   Start-Sleep -Milliseconds 200
+   $pluginNames=@(foreach($window in [Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Children,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty,$process.Id))) {
+    foreach($node in $window.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)) {
+     $selectionPattern=$null
+     if(!$node.Current.IsOffscreen -and $node.Current.Name -in @('GitHub 官方','GitHub 大陆节点') -and $node.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern,[ref]$selectionPattern)) {$node.Current.Name}
+    }
+   })
+   $pluginCombo.GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern).Collapse()
+   if($pluginNames -notcontains $expected){throw "Plugin source did not immediately follow online engine: expected=$expected actual=$($pluginNames -join '|')"}
+   $saved=Read-IsolatedSettings
+   $sourceEvidence.Add([pscustomobject]@{ProcessId=$process.Id;Engine=(Selected-ComboName $combo);UpdateSource=$saved.updateSource;MirrorSource=$saved.mirrorSource;PluginSource=$saved.pluginSource;GitHubLabel=$expected})
+  }
+  foreach($selection in @('后端服务器加速','官方源','大陆 CDN 加速','后端服务器加速')) {
+   Select-Source $selection
+   $settings=Read-IsolatedSettings
    if($selection -eq '官方源') {if($settings.updateSource -ne 'Official'){throw 'Official source failed to persist'}}
    elseif($selection -eq '后端服务器加速') {if($settings.updateSource -ne 'Accelerated' -or $settings.mirrorSource -ne 'backend'){throw 'Backend source failed to persist'}}
    elseif($settings.updateSource -ne 'Accelerated' -or $settings.mirrorSource -ne 'Auto'){throw 'CDN source failed to persist'}
+   Assert-PluginSourceLabel $(if($selection -eq '官方源'){'GitHub 官方'}else{'GitHub 大陆节点'})
   }
+  $pidBefore=$process.Id
+  Select-Source '大陆 CDN 加速'
+  $advancedToggle=$element.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty,'AcceleratorAdvancedToggle'))
+  if(!$advancedToggle -or $advancedToggle.Current.IsOffscreen){throw 'Advanced accelerator toggle did not return for CDN source'}
+  $advancedToggle.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+  Start-Sleep -Milliseconds 300
+  $customRadio=$element.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty,'AcceleratorGhproxyRadio'))
+  if(!$customRadio -or $customRadio.Current.IsOffscreen){throw 'ghproxy accelerator radio is not visible'}
+  $customRadio.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
+  Start-Sleep -Milliseconds 500
+  $settings=Read-IsolatedSettings
+  if($settings.updateSource -ne 'Accelerated' -or $settings.mirrorSource -ne 'ghproxy'){throw 'Custom accelerator radio failed to persist immediately'}
+  $combo=$element.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty,'UpdateSourceComboBox'))
+  if((Selected-ComboName $combo) -ne '自定义'){throw "Custom radio did not update online engine selection: $(Selected-ComboName $combo)"}
+  Assert-PluginSourceLabel 'GitHub 大陆节点'
+  Save-SettingsScreenshot 'Source-custom-ghproxy'
+  Select-Source '后端服务器加速'
+  $settings=Read-IsolatedSettings
+  if($settings.updateSource -ne 'Accelerated' -or $settings.mirrorSource -ne 'backend'){throw 'Custom to backend transition failed'}
+  if($advancedToggle -and !$advancedToggle.Current.IsOffscreen){throw 'Advanced accelerator controls remained visible for backend source'}
+  Assert-PluginSourceLabel 'GitHub 大陆节点'
   Save-SettingsScreenshot 'Source-backend-selected'
-  Write-Host 'PASS four online engine choices, backend/official/CDN switching and persisted defaults'
+  Select-Source '自定义'
+  $settings=Read-IsolatedSettings
+  if($settings.updateSource -ne 'Accelerated' -or $settings.mirrorSource -ne 'Auto'){throw 'Backend to custom transition retained backend marker'}
+  if((Selected-ComboName $combo) -ne '大陆 CDN 加速'){throw "Backend to custom transition did not normalize to CDN: $(Selected-ComboName $combo)"}
+  Assert-PluginSourceLabel 'GitHub 大陆节点'
+  $process.Refresh()
+  if($process.HasExited -or $process.Id -ne $pidBefore){throw 'Online engine switching restarted or exited the settings process'}
+  Write-Host 'PASS live UIA accelerator radio selection, custom/backend transitions, normalized backend-to-custom fallback, persistence, and same-process continuity'
+  $sourceEvidence | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $Output 'Source-switch-evidence.json') -Encoding utf8
+  Save-SettingsScreenshot 'Source-normalized-CDN'
  }
  if ($ExtensionTabs) {
   function Extension-Control([string]$Id) {
@@ -413,4 +498,4 @@ try {
  }
  $rows | Format-Table -AutoSize
  Write-Host "PASS settings UI: $Page"
-} finally { if (!$process.HasExited) { $process.CloseMainWindow() | Out-Null; if (!$process.WaitForExit(3000)) { Stop-Process -Id $process.Id -ErrorAction Continue } } }
+} finally { if (!$process.HasExited) { $process.CloseMainWindow() | Out-Null; if (!$process.WaitForExit(3000)) { Stop-Process -Id $process.Id -Force -ErrorAction Continue } } }

@@ -420,6 +420,15 @@ try
         && storedLog.Contains("System.InvalidOperationException") && storedLog.Contains("log regression")
         && storedLog.Contains(" at "), "error logger includes process session operation caller code location and full exception stack");
     Check(!storedLog.Contains("secret-never-log"), "error logger redacts credentials at persistence time");
+    string rotatingLog = Path.Combine(diagnosticDirectory, "launcher-rotation.log");
+    LauncherLog.Write(rotatingLog, new string('A', 1100 * 1024));
+    LauncherLog.Write(rotatingLog, new string('B', 1100 * 1024));
+    LauncherLog.Write(rotatingLog, "rotation-newest-entry");
+    byte[] rotatedLog = File.ReadAllBytes(rotatingLog);
+    string rotatedText = Encoding.UTF8.GetString(rotatedLog);
+    Check(rotatedLog.Length <= 2 * 1024 * 1024 && !rotatedText.Contains(new string('A', 128))
+        && rotatedText.Contains(new string('B', 128)) && rotatedText.Contains("rotation-newest-entry"),
+        "launcher log trims oldest complete entries at 2 MiB while preserving recent diagnostics");
     handler.LogContent = diagnosticBytes;
     handler.Logs = new FeedbackLogListResponse { Logs = new List<FeedbackLogModel>
         { new FeedbackLogModel { Id = Guid.NewGuid().ToString("D"), Bytes = diagnosticBytes.Length, CreatedAt = now } } };

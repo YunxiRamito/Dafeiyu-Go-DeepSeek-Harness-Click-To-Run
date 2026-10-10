@@ -17,7 +17,7 @@ namespace DeepSeekHarnessLauncher
 
         internal static bool ShowPluginUpdateCompleted(int count)
         {
-            return Enqueue("插件更新完成", "已更新 " + count + " 个插件，重启 DSH 后生效。", false,
+            return Enqueue("插件更新完成", "已更新 " + count + " 个插件，重启 DSH 后生效。", true,
                 new List<ClientNoticeButton>
                 {
                     new ClientNoticeButton { Text = "重启 DSH", LocalAction = Program.RestartAfterPluginUpdate },

@@ -375,8 +375,17 @@ namespace DeepSeekHarnessLauncher
                         _root.Opacity = 0;
                     }
 
-                    _window.Activate();
-                    _window.AppWindow.Show();
+                    // Show the topmost toast without activating it. Activate()/Show() can
+                    // steal foreground input from a fullscreen game even for a popup.
+                    IntPtr handle = WindowNative.GetWindowHandle(_window);
+                    NativeMethods.SetWindowPos(
+                        handle,
+                        NativeMethods.HWND_TOPMOST,
+                        offscreenX,
+                        targetY,
+                        _windowWidth,
+                        _windowHeight,
+                        NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
 
                     // 先把窗口内容真正渲染出来（它在屏幕外，用户看不到），
                     // 拿到的下一帧再开始滑动——启动阶段 UI 线程忙的时候也不会变成"瞬移"。
@@ -1233,7 +1242,7 @@ namespace DeepSeekHarnessLauncher
             }
 
             StopResultTimer();
-            _resultTimer.Interval = TimeSpan.FromSeconds(outcome == InfoOutcome.Information ? 5 : ResultHoldSeconds);
+            _resultTimer.Interval = TimeSpan.FromSeconds(outcome == InfoOutcome.Information ? 8 : ResultHoldSeconds);
             _resultTimer.Start();
         }
 

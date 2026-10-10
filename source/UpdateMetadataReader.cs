@@ -26,15 +26,13 @@ namespace DeepSeekHarnessLauncher
             internal string Diagnostics;
         }
 
-        // Keep the selected backend first, but retain independent metadata sources.
-        // Package downloads still use the user's selected source and integrity policy.
+        // Backend is an explicit online-engine mode. Do not fall through to a
+        // CDN or direct GitHub/registry URL when the user selected it.
         internal static List<string> BackendCandidates(string official, params string[] fallbacks)
         {
-            var urls = new List<string> { BackendDownloadSource.WrapMetadata(official) };
-            foreach (string url in fallbacks)
-                if (!String.IsNullOrWhiteSpace(url) && !urls.Contains(url)) urls.Add(url);
-            if (!urls.Contains(official)) urls.Add(official);
-            return urls;
+            return String.IsNullOrWhiteSpace(official)
+                ? new List<string>()
+                : new List<string> { BackendDownloadSource.WrapMetadata(official) };
         }
 
         internal static Result<T> ReadFirstValid<T>(IEnumerable<IReadOnlyList<string>> groups,

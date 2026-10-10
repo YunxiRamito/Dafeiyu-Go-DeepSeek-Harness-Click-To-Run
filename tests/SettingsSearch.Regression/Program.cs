@@ -30,7 +30,7 @@ SettingsSearchEntry Entry(
         Group = group,
         PageTitle = pageTitle,
         Alias = alias,
-        Initials = SettingsSearchInitials.Build(title + pageTitle + alias),
+        Initials = SettingsSearchPinyin.BuildInitials(title + pageTitle + alias),
         Enabled = enabled
     };
 }
@@ -147,9 +147,9 @@ index[0].Anchor = new object();
 Check(SettingsSearchMatcher.Search(index, "开机自启", 0).Count == 1, "matching ignores the anchor object");
 
 // ---------------------------------------------------------------- 拼音首字母
-Check(SettingsSearchInitials.Build("启动端口") == "qddk", "initials of a title");
-Check(SettingsSearchInitials.Build("常规") == "cg", "initials of a page name");
-Check(SettingsSearchInitials.Build("API Key") == "apikey", "latin text keeps its letters");
+Check(SettingsSearchPinyin.BuildInitials("启动端口") == "qddk", "initials of a title");
+Check(SettingsSearchPinyin.BuildInitials("常规") == "cg", "initials of a page name");
+Check(SettingsSearchPinyin.BuildInitials("API Key") == "api key", "Latin initials preserve searchable letters");
 var byTitleInitials = SettingsSearchMatcher.Search(index, "kjzq", 0);
 Check(byTitleInitials.Count == 1 && byTitleInitials[0].OptionId == "General:StartWithWindowsToggle",
     "initials find an entry by its title");
@@ -159,7 +159,10 @@ Check(byPageInitials.TrueForAll(e => e.PageTitle == "常规"), "page initials do
 Check(SettingsSearchMatcher.Search(index, "zzz").Count == 0, "unknown initials match nothing");
 
 // Read the production registrations so new controls cannot pass using a duplicate fixture index.
-string sourceDirectory = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../source"));
+string sourceDirectory = Environment.GetEnvironmentVariable("DAFEIYU_TEST_SOURCE_ROOT");
+if (String.IsNullOrWhiteSpace(sourceDirectory))
+    sourceDirectory = Path.Combine(AppContext.BaseDirectory, "../../../../../source");
+sourceDirectory = Path.GetFullPath(sourceDirectory);
 string windowSource = File.ReadAllText(Path.Combine(sourceDirectory, "SettingsWindow.xaml.cs"));
 XDocument windowXaml = XDocument.Load(Path.Combine(sourceDirectory, "SettingsWindow.xaml"));
 XNamespace xamlNamespace = "http://schemas.microsoft.com/winfx/2006/xaml";
@@ -187,8 +190,8 @@ string patchBody = patchRegistration.Groups["body"].Value;
 string PatchString(string name) => Regex.Match(patchBody, name + " = \"([^\"]+)\"").Groups[1].Value;
 var patchSearch = Entry("Updates:PatchSection", PatchString("Title"), PatchString("Description"),
     PatchString("PageTag"), PatchString("Group"), PatchString("PageTitle"), PatchString("Alias"));
-patchSearch.Initials = SettingsSearchInitials.Build(
-    Regex.Match(patchBody, "SettingsSearchInitials.Build\\(\"([^\"]+)\"\\)").Groups[1].Value);
+patchSearch.Initials = SettingsSearchPinyin.BuildInitials(
+    Regex.Match(patchBody, "SettingsSearchPinyin.BuildInitials\\(\"([^\"]+)\"\\)").Groups[1].Value);
 patchSearch.Anchor = Regex.Match(patchBody, "Anchor = (\\w+)").Groups[1].Value;
 newIndex.Add(patchSearch);
 foreach (string query in new[] { "补丁策略", "bdcl", "已安装补丁", "yazbd", "可用补丁", "kybd" })
@@ -204,7 +207,7 @@ var expectedSearches = new (string Query, string Id, string Page, string Anchor)
     ("DSH 会话", "BackupImport:Dsh", "BackupImport", "DshDataSection"),
     ("zip", "BackupImport:Dsh", "BackupImport", "DshDataSection"),
     ("迁移", "BackupImport:Dsh", "BackupImport", "DshDataSection"),
-    ("自动查找", "BackupImport:Discover", "BackupImport", "DshDataFindSection"),
+    ("自动导入", "BackupImport:Discover", "BackupImport", "DshDataFindSection"),
     ("其他磁盘", "BackupImport:Discover", "BackupImport", "DshDataFindSection"),
     ("我的提交", "Feedback:Mine", "Feedback", "FeedbackScopePivot"),
     ("wdtj", "Feedback:Mine", "Feedback", "FeedbackScopePivot"),
@@ -232,8 +235,6 @@ var expectedSearches = new (string Query, string Id, string Page, string Anchor)
     ("yjxx", "ServerMetrics:Hardware", "ServerMetrics", "ServerHardwareText"),
     ("管理员 Token", "Api:AdminTokenBox", "Api", "AdminTokenBox"),
     ("gly", "Api:AdminTokenBox", "Api", "AdminTokenBox"),
-    ("gglxjg", "General:NoticePollIntervalBox", "General", "NoticePollIntervalBox"),
-    ("zxtj", "General:NoticeTelemetryToggle", "General", "NoticeTelemetryToggle"),
     ("公告管理", "Developer:Announcements", "Developer", "DeveloperAnnouncementManagePanel"),
     ("gggl", "Developer:Announcements", "Developer", "DeveloperAnnouncementManagePanel"),
     ("推送公告", "Developer:PushAnnouncements", "Developer", "DeveloperAnnouncementPushButton"),
@@ -257,8 +258,8 @@ Check(windowSource.Contains("SelectPage(entry.NavigationTarget);"),
     "production search activation uses the tested route including feedback subview");
 Check(windowSource.Contains("GeneralPage.Children.Remove(DymBackupSection);")
     && windowSource.Contains("BackupImportPage.Children.Insert(2, DymBackupSection);")
-    && windowSource.Contains("AddGroupTab(AboutTabs, \"BackupImport\", \"备份与导入\", BackupImportPage);"),
-    "DYM backup moves into the About backup/import tab");
+    && windowSource.Contains("AddGroupTab(UpdatesTabs, \"BackupImport\", \"日志与备份\", BackupImportPage);"),
+    "DYM backup stays in the Updates logs and backup tab");
 Check(windowSource.Contains("SelectPage(\"BackupImport:\" + pluginTab);"),
     "previous General backup/restore links route to the moved tab");
 Check(windowSource.Contains("bool feedbackMine = target == \"Feedback\"")
@@ -272,9 +273,19 @@ var feedbackStatus = namedElements["FeedbackStatusFilter"];
 Check((string)feedbackStatus.Attribute("MinWidth") == "0"
     && (string)feedbackStatus.Attribute("HorizontalAlignment") == "Stretch",
     "feedback filter respects its column width rather than inheriting the wider global minimum");
-Check(SettingsSearchInitials.Build("硬件信息磁盘轮询频率遥测") == "yjxxcplxplyc", "new Chinese characters keep complete initials");
-Check(SettingsSearchInitials.Build("网络上传带宽上传速率百分比") == "wlscdkscslbfb",
-    "network bandwidth aliases have no missing Chinese initials");
+var futureSetting = Entry("General:FutureSetting", "账户迁移", "支持全拼和首字母自动生成。", alias: "后续新增设置");
+Check(SettingsSearchMatcher.Search(new[] { futureSetting }, "zhanghuqianyi").Single().OptionId
+    == "General:FutureSetting", "a newly introduced label matches its complete pinyin without hand-maintained registration");
+Check(SettingsSearchMatcher.Search(new[] { futureSetting }, "zhqy").Single().OptionId
+    == "General:FutureSetting", "a newly introduced label matches initials for characters absent from the legacy map");
+Check(futureSetting.FullPinyin.Contains("zhanghuqianyi", StringComparison.Ordinal),
+    "full pinyin is cached from the current displayed text");
+Check(windowSource.Contains("WalkCustomSettingsCards(page")
+    && windowSource.Contains("CollectSearchEntries(HomePage"),
+    "search rebuild scans standard rows and titled custom settings cards from the current XAML");
+Check(!windowXaml.Descendants().Any(element => element.Name.LocalName == "TextBlock"
+    && (string)element.Attribute("Text") == "开发者中心公告"),
+    "the unused developer center notice settings card is removed");
 Check(windowSource.Contains("if (DeveloperNavItem.Visibility == Visibility.Visible)\r\n            {")
     || windowSource.Contains("if (DeveloperNavItem.Visibility == Visibility.Visible)\n            {"),
     "developer search registrations require a visible unlocked entry");

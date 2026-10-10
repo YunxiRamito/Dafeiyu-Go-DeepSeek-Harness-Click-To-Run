@@ -24,6 +24,7 @@ namespace DeepSeekHarnessLauncher
         public string MachineId { get; set; } = String.Empty;
         public HashSet<string> ReadAnnouncementIds { get; set; } = new HashSet<string>(StringComparer.Ordinal);
         public HashSet<string> ReadNotificationIds { get; set; } = new HashSet<string>(StringComparer.Ordinal);
+        public HashSet<string> DisplayedNotificationIds { get; set; } = new HashSet<string>(StringComparer.Ordinal);
         public Dictionary<string, string> FeedbackReplySeen { get; set; } = new Dictionary<string, string>(StringComparer.Ordinal);
     }
 
@@ -136,6 +137,21 @@ namespace DeepSeekHarnessLauncher
             return message.Kind == "announcement" ? IsAnnouncementRead(message.Id)
                 : message.Kind == "notification" && IsNotificationRead(message.Id);
         }
+        internal bool IsMessageHandled(ClientNoticeMessage message)
+        {
+            if (IsMessageRead(message)) return true;
+            if (message == null || message.IsFeedbackReply || message.IsLocal || message.Kind != "notification") return false;
+            lock (Gate) return Load().DisplayedNotificationIds.Contains(message.Id);
+        }
+        internal void MarkNotificationDisplayed(ClientNoticeMessage message)
+        {
+            if (message == null || message.IsLocal || message.IsFeedbackReply || message.Kind != "notification") return;
+            lock (Gate)
+            {
+                var state = Load();
+                if (state.DisplayedNotificationIds.Add(message.Id)) Save(_path, state);
+            }
+        }
         internal bool MarkMessageRead(ClientNoticeMessage message)
         {
             if (message == null || !message.Validate(out _)) throw new ArgumentException("Invalid message.", nameof(message));
@@ -174,6 +190,7 @@ namespace DeepSeekHarnessLauncher
                 : new ClientNoticeState();
             if (state == null || state.ReadAnnouncementIds == null) throw new InvalidDataException("Invalid notice state.");
             if (state.ReadNotificationIds == null) state.ReadNotificationIds = new HashSet<string>(StringComparer.Ordinal);
+            if (state.DisplayedNotificationIds == null) state.DisplayedNotificationIds = new HashSet<string>(StringComparer.Ordinal);
             if (state.FeedbackReplySeen == null) state.FeedbackReplySeen = new Dictionary<string, string>(StringComparer.Ordinal);
             return state;
         }

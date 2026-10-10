@@ -23,9 +23,9 @@
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <DefineConstants>DISABLE_XAML_GENERATED_MAIN</DefineConstants>
-    <Version>1.7.2</Version>
-    <AssemblyVersion>1.7.2.0</AssemblyVersion>
-    <FileVersion>1.7.2.0</FileVersion>
+    <Version>1.7.3</Version>
+    <AssemblyVersion>1.7.3.0</AssemblyVersion>
+    <FileVersion>1.7.3.0</FileVersion>
     <Product>Dafeiyu-Go</Product>
     <Title>Dafeiyu-Go</Title>
     <AssemblyTitle>Dafeiyu-Go</AssemblyTitle>
@@ -56,10 +56,12 @@
     <Content Include="assets\DeepSeek-icon.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="assets\donate-alipay.jpg" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="assets\donate-wechat.png" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="assets\SettingsNavIcons\*.svg" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\donate-alipay-qr.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\donate-wechat-qr.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\SettingsNavIconsWin11\*.svg" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\SettingsNavIconsWin11\ATTRIBUTION.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\SettingsNavIconsWin11\LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="assets\plugin-placeholder.svg" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="assets\SettingsNavIconsWin10\*.svg" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="assets\SettingsNavIconsWin10Dark\*.svg" CopyToOutputDirectory="PreserveNewest" />
 
     <!-- 自带的用量统计插件：随包发出去，一键安装就是把它复制到 <dshRoot>\plugins\ -->
     <Content Include="assets\dsh-token-stats\**" CopyToOutputDirectory="PreserveNewest" />
@@ -73,6 +75,8 @@
     <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" Version="8.2.251219" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260804001" />
     <PackageReference Include="Markdig" Version="0.37.0" />
+    <PackageReference Include="TinyPinyin.Net" Version="1.0.2" />
+    <PackageReference Include="YamlDotNet" Version="16.3.0" />
   </ItemGroup>
   <Target Name="PublishInfoHost" AfterTargets="Publish">
     <MSBuild Projects="InfoHost\Dafeiyu-Go.Info.csproj" Targets="Publish"

@@ -66,6 +66,12 @@ namespace DeepSeekHarnessLauncher
             /// <summary>这一轮自动改了哪些 allowBuilds 键（给日志和界面用）。</summary>
             public List<string> AllowBuildsKeys { get; set; } = new List<string>();
 
+            /// <summary>安装被构建脚本策略拦截时，等待用户明确授权的精确 pnpm 键。</summary>
+            public List<string> PendingBuildScriptKeys { get; set; } = new List<string>();
+
+            /// <summary>这次失败是否来自 pnpm 拦截依赖构建脚本。</summary>
+            public bool BuildScriptsBlocked { get; set; }
+
             /// <summary>实际拼出来的命令行，给日志和离线回归断言用。</summary>
             public string CommandLine { get; set; } = String.Empty;
 
@@ -601,7 +607,8 @@ namespace DeepSeekHarnessLauncher
             Action<string> output = null,
             bool acceptVersionRisk = false,
             Func<bool> cancelled = null,
-            Action<long> cacheProgress = null)
+            Action<long> cacheProgress = null,
+            Action<long, long, double> detailProgress = null)
         {
             return RunWithRecovery(
                 settings,
@@ -611,7 +618,8 @@ namespace DeepSeekHarnessLauncher
                 output,
                 acceptVersionRisk,
                 cancelled,
-                cacheProgress);
+                cacheProgress,
+                detailProgress);
         }
 
         internal static CliResult Remove(
@@ -660,7 +668,8 @@ namespace DeepSeekHarnessLauncher
             Action<string> log,
             Action<string> output = null,
             Func<bool> cancelled = null,
-            Action<long> cacheProgress = null)
+            Action<long> cacheProgress = null,
+            Action<long, long, double> detailProgress = null)
         {
             CliResult result = new CliResult();
             string dshRoot = settings == null ? null : settings.DshRoot;
@@ -674,10 +683,37 @@ namespace DeepSeekHarnessLauncher
 
             bool desktop = IsDesktopInstall(dshRoot);
             string profileName = ResolveProfileName(dshRoot);
+            string profileDirectory = Path.Combine(
+                ResolveDshHome(dshRoot), ProfilesDirectoryName, profileName);
             using var operation = PluginOperationSupport.Acquire(
-                Path.Combine(ResolveDshHome(dshRoot), ProfilesDirectoryName, profileName),
+                profileDirectory,
                 () => output?.Invoke("等待其他插件操作完成…"), cancelled);
-            using var transferProgress = new PluginTransferProgress(output, cacheProgress);
+            // Keep migration, package specifiers and child environment on one source
+            // even if the user switches the engine while its writer lock is busy.
+            var downloadSettings = new LauncherSettings
+            {
+                UpdateSource = settings?.UpdateSource,
+                MirrorSource = settings?.MirrorSource
+            };
+            bool backendDownload = BackendDownloadSource.IsSelected(downloadSettings);
+            using var transferProgress = new PluginTransferProgress(output, cacheProgress, detailProgress);
+            if (!backendDownload
+                && pluginArguments != null && pluginArguments.Count > 0
+                && (String.Equals(pluginArguments[0], "add", StringComparison.OrdinalIgnoreCase)
+                    || String.Equals(pluginArguments[0], "update", StringComparison.OrdinalIgnoreCase)))
+            {
+                ProfileDependencySourceMigration.Result migration = ProfileDependencySourceMigration.Canonicalize(
+                    profileDirectory, Math.Min(120000, Math.Max(0, timeoutMs)), cancelled,
+                    () => output?.Invoke("等待 DSH 释放插件 profile 写锁…"));
+                if (!migration.Success)
+                {
+                    result.Failed = true;
+                    result.Cancelled = migration.Cancelled;
+                    result.TimedOut = migration.TimedOut;
+                    result.Error = "无法在官方下载前迁移 profile 中的后端依赖：" + migration.Error;
+                    return result;
+                }
+            }
             if (pluginArguments != null && pluginArguments.Count > 1
                 && (String.Equals(pluginArguments[0], "add", StringComparison.OrdinalIgnoreCase)
                     || String.Equals(pluginArguments[0], "update", StringComparison.OrdinalIgnoreCase)))
@@ -685,7 +721,7 @@ namespace DeepSeekHarnessLauncher
                 var downloadArguments = new List<string>(pluginArguments);
                 for (int index = 1; index < downloadArguments.Count; index++)
                     downloadArguments[index] = PackageDownloadEnvironment.ResolvePackageSpecifier(
-                        downloadArguments[index], BackendDownloadSource.IsSelected(settings));
+                        downloadArguments[index], backendDownload);
                 downloadArguments.RemoveAll(argument => argument.StartsWith("--reporter=", StringComparison.OrdinalIgnoreCase));
                 downloadArguments.Add("--reporter=ndjson");
                 downloadArguments.Add("--config.fetch-retries=2");
@@ -731,7 +767,7 @@ namespace DeepSeekHarnessLauncher
 
             result.CommandLine = startInfo.FileName + " " + startInfo.Arguments;
             ProxySupport.ApplyProcessEnvironment(startInfo);
-            try { PackageDownloadEnvironment.Apply(startInfo, settings); }
+            try { PackageDownloadEnvironment.Apply(startInfo, downloadSettings); }
             catch (Exception exception)
             {
                 result.Failed = true;
@@ -970,7 +1006,8 @@ namespace DeepSeekHarnessLauncher
             Action<string> output,
             bool acceptVersionRisk,
             Func<bool> cancelled = null,
-            Action<long> cacheProgress = null)
+            Action<long> cacheProgress = null,
+            Action<long, long, double> detailProgress = null)
         {
             string profileDirectory = TryResolveProfileDirectory(settings);
             using var operation = PluginOperationSupport.Acquire(profileDirectory ?? Path.Combine(
@@ -978,7 +1015,7 @@ namespace DeepSeekHarnessLauncher
                 () => output?.Invoke("等待其他插件操作完成…"), cancelled);
             CleanupBrokenSymlinks(profileDirectory, log);
 
-            CliResult first = Run(settings, pluginArguments, timeoutMs, log, output, cancelled, cacheProgress);
+            CliResult first = Run(settings, pluginArguments, timeoutMs, log, output, cancelled, cacheProgress, detailProgress);
             if (first.Cancelled || first.TimedOut) return first;
             if (first.Unsupported || !first.Started)
             {
@@ -989,7 +1026,7 @@ namespace DeepSeekHarnessLauncher
             string targetKey = ResolveInstalledDependencyKey(specifier, null,
                 ReadProfileDependencySpecifiers(settings), settings.DshRoot, profileDirectory);
             string text = SelectInstallCompatibilityOutput(first.Output, targetKey, first.Failed);
-            List<string> allowBuildKeys = CollectAllowBuildKeys(first.Output);
+            List<string> allowBuildKeys = ParseBuildScriptAuthorizationKeys(first.Output);
             bool parsedExemption = TryParseVersionExemption(
                 text,
                 out string exemptionPackage,
@@ -1001,7 +1038,7 @@ namespace DeepSeekHarnessLauncher
             bool exemptionGranted = false;
 
             if (allowBuildKeys.Count > 0 && log != null)
-                log("插件依赖需要构建脚本授权。请在 DSH 插件管理器中明确批准；启动器不会依据命令输出自动添加 allowBuilds。");
+                log("插件依赖需要构建脚本授权；等待用户在启动器确认后才会修改 profile 的 allowBuilds。");
 
             if (peerIncompatible)
             {
@@ -1058,7 +1095,7 @@ namespace DeepSeekHarnessLauncher
                         + DescribeKeys(changedKeys));
                 }
 
-                final = Run(settings, pluginArguments, timeoutMs, log, output, cancelled, cacheProgress);
+                final = Run(settings, pluginArguments, timeoutMs, log, output, cancelled, cacheProgress, detailProgress);
                 final.AllowBuildsKeys = changedKeys;
                 targetKey = ResolveInstalledDependencyKey(specifier, null,
                     ReadProfileDependencySpecifiers(settings), settings.DshRoot, profileDirectory);
@@ -1114,6 +1151,12 @@ namespace DeepSeekHarnessLauncher
                 {
                     log(noteText);
                 }
+            }
+
+            if (final.Failed)
+            {
+                final.BuildScriptsBlocked = IsBuildScriptAuthorizationFailure(final.Output);
+                final.PendingBuildScriptKeys = ParseBuildScriptAuthorizationKeys(final.Output);
             }
 
             return final;
@@ -1230,8 +1273,13 @@ namespace DeepSeekHarnessLauncher
                 return packages;
             }
 
-            const string markerText = "Ignored build scripts:";
+            string markerText = "Ignored build scripts:";
             int marker = output.IndexOf(markerText, StringComparison.OrdinalIgnoreCase);
+            if (marker < 0)
+            {
+                markerText = "Blocked build scripts:";
+                marker = output.IndexOf(markerText, StringComparison.OrdinalIgnoreCase);
+            }
             if (marker < 0)
             {
                 return packages;
@@ -1379,10 +1427,10 @@ namespace DeepSeekHarnessLauncher
             return at > 0 ? text.Substring(0, at).Trim() : text;
         }
 
-        private static List<string> CollectAllowBuildKeys(string output)
+        internal static List<string> ParseBuildScriptAuthorizationKeys(string output)
         {
             List<string> keys = new List<string>();
-            if (String.IsNullOrWhiteSpace(output))
+            if (!IsBuildScriptAuthorizationFailure(output))
             {
                 return keys;
             }
@@ -1390,6 +1438,17 @@ namespace DeepSeekHarnessLauncher
             AddKeys(keys, ParseGitPrepareAllowBuilds(output));
             AddKeys(keys, ParseIgnoredBuildPackages(output));
             return keys;
+        }
+
+        internal static bool IsBuildScriptAuthorizationFailure(string output)
+        {
+            return !String.IsNullOrWhiteSpace(output)
+                && !PluginOperationSupport.HasTransportFailure(output)
+                && (output.IndexOf("ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED", StringComparison.OrdinalIgnoreCase) >= 0
+                    || output.IndexOf("ERR_PNPM_IGNORED_BUILDS", StringComparison.OrdinalIgnoreCase) >= 0
+                    || output.IndexOf("Ignored build scripts:", StringComparison.OrdinalIgnoreCase) >= 0
+                    || output.IndexOf("Blocked build scripts:", StringComparison.OrdinalIgnoreCase) >= 0
+                    || output.IndexOf("needs to execute build scripts but is not in the", StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
         private static List<string> ExtractBracedKeys(string text)
@@ -1570,6 +1629,26 @@ namespace DeepSeekHarnessLauncher
             out List<string> applied,
             out string error)
         {
+            return ApplyAllowBuildsToWorkspace(settings, keys, false, out applied, out error);
+        }
+
+        /// <summary>只在用户确认放行构建脚本后调用；此时允许把精确依赖的 false 改成 true。</summary>
+        internal static bool ApplyApprovedBuildsToWorkspace(
+            LauncherSettings settings,
+            IList<string> keys,
+            out List<string> applied,
+            out string error)
+        {
+            return ApplyAllowBuildsToWorkspace(settings, keys, true, out applied, out error);
+        }
+
+        private static bool ApplyAllowBuildsToWorkspace(
+            LauncherSettings settings,
+            IList<string> keys,
+            bool userApproved,
+            out List<string> applied,
+            out string error)
+        {
             applied = new List<string>();
             string path = ResolveWorkspaceFilePath(settings == null ? null : settings.DshRoot);
             if (String.IsNullOrWhiteSpace(path))
@@ -1578,7 +1657,7 @@ namespace DeepSeekHarnessLauncher
                 return false;
             }
 
-            return ApplyAllowBuilds(path, keys, out applied, out error);
+            return ApplyAllowBuilds(path, keys, userApproved, out applied, out error);
         }
 
         /// <summary>
@@ -1588,6 +1667,16 @@ namespace DeepSeekHarnessLauncher
         internal static bool ApplyAllowBuilds(
             string workspacePath,
             IList<string> keys,
+            out List<string> applied,
+            out string error)
+        {
+            return ApplyAllowBuilds(workspacePath, keys, false, out applied, out error);
+        }
+
+        private static bool ApplyAllowBuilds(
+            string workspacePath,
+            IList<string> keys,
+            bool userApproved,
             out List<string> applied,
             out string error)
         {
@@ -1615,7 +1704,7 @@ namespace DeepSeekHarnessLauncher
 
             string updated;
             List<string> changed;
-            if (!TryMergeAllowBuilds(yamlText, keys, out updated, out changed, out error))
+            if (!TryMergeAllowBuilds(yamlText, keys, userApproved, out updated, out changed, out error))
             {
                 return false;
             }
@@ -1653,6 +1742,17 @@ namespace DeepSeekHarnessLauncher
         internal static bool TryMergeAllowBuilds(
             string yamlText,
             IList<string> keys,
+            out string updated,
+            out List<string> changed,
+            out string error)
+        {
+            return TryMergeAllowBuilds(yamlText, keys, false, out updated, out changed, out error);
+        }
+
+        internal static bool TryMergeAllowBuilds(
+            string yamlText,
+            IList<string> keys,
+            bool userApproved,
             out string updated,
             out List<string> changed,
             out string error)
@@ -1815,8 +1915,12 @@ namespace DeepSeekHarnessLauncher
                 if (String.Equals(valueToken, "true", StringComparison.OrdinalIgnoreCase)
                     || String.Equals(valueToken, "false", StringComparison.OrdinalIgnoreCase))
                 {
-                    // 已有布尔值：保持原值（false 是用户/别人的明确拒绝，不覆盖）。
-                    continue;
+                    if (!String.Equals(valueToken, "false", StringComparison.OrdinalIgnoreCase)
+                        || !userApproved)
+                    {
+                        // 无用户确认时尊重已有 false；专用批准方法只由显式确认按钮触发。
+                        continue;
+                    }
                 }
 
                 int colon = lines[matchIndex].LastIndexOf(':');

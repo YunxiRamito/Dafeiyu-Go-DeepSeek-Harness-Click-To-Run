@@ -411,72 +411,80 @@ namespace DeepSeekHarnessLauncher
             string target = Path.Combine(componentsRoot, "pnpm");
             Directory.CreateDirectory(target);
             string pnpmExe = Path.Combine(target, "pnpm.exe");
-            string staging = Path.Combine(Path.GetTempPath(), "DSHComponents");
+            string stagingParent = Path.Combine(Path.GetTempPath(), "DSHComponents");
+            string staging = Path.Combine(stagingParent, "pnpm-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(staging);
-
-            List<string> urls = new List<string>();
-            if (china)
-            {
-                urls.Add("https://registry.npmmirror.com/@pnpm/win-x64/-/win-x64-"
-                    + PnpmVersion + ".tgz");
-            }
-
-            urls.Add("https://github.com/pnpm/pnpm/releases/download/v"
-                + PnpmVersion + "/pnpm-win-x64.exe");
-
             string archive = Path.Combine(staging, "pnpm-win-x64-" + PnpmVersion + ".tgz");
-            if (!Download(urls, archive, settings, progress, 5, 75, log, out error))
-            {
-                return false;
-            }
+            string extractRoot = Path.Combine(staging, "extract");
 
-            // 下下来可能是 tar.gz（npmmirror），也可能已经是 exe（GitHub）。
-            byte[] header = new byte[2];
             try
             {
-                using (FileStream stream = File.OpenRead(archive))
+                List<string> urls = new List<string>();
+                if (china)
                 {
-                    stream.Read(header, 0, 2);
+                    urls.Add("https://registry.npmmirror.com/@pnpm/win-x64/-/win-x64-"
+                        + PnpmVersion + ".tgz");
                 }
-            }
-            catch
-            {
-            }
 
-            if (header[0] == 0x1F && header[1] == 0x8B)
-            {
-                string extractRoot = Path.Combine(staging, "pnpm-extract");
-                if (!ExtractTarGzWithStrip(archive, extractRoot, true, out error))
+                urls.Add("https://github.com/pnpm/pnpm/releases/download/v"
+                    + PnpmVersion + "/pnpm-win-x64.exe");
+
+                if (!Download(urls, archive, settings, progress, 5, 75, log, out error))
                 {
                     return false;
                 }
 
-                string extracted = Path.Combine(extractRoot, "pnpm.exe");
-                if (!File.Exists(extracted))
+                // 下下来可能是 tar.gz（npmmirror），也可能已经是 exe（GitHub）。
+                byte[] header = new byte[2];
+                try
                 {
-                    extracted = FindFile(extractRoot, "pnpm.exe");
+                    using (FileStream stream = File.OpenRead(archive))
+                    {
+                        stream.Read(header, 0, 2);
+                    }
+                }
+                catch
+                {
                 }
 
-                if (extracted == null)
+                if (header[0] == 0x1F && header[1] == 0x8B)
                 {
-                    error = "解压后没找到 pnpm.exe。";
-                    return false;
+                    if (!ExtractTarGzWithStrip(archive, extractRoot, true, out error))
+                    {
+                        return false;
+                    }
+
+                    string extracted = Path.Combine(extractRoot, "pnpm.exe");
+                    if (!File.Exists(extracted))
+                    {
+                        extracted = FindFile(extractRoot, "pnpm.exe");
+                    }
+
+                    if (extracted == null)
+                    {
+                        error = "解压后没找到 pnpm.exe。";
+                        return false;
+                    }
+
+                    File.Copy(extracted, pnpmExe, true);
+                }
+                else
+                {
+                    File.Copy(archive, pnpmExe, true);
                 }
 
-                File.Copy(extracted, pnpmExe, true);
-            }
-            else
-            {
-                File.Copy(archive, pnpmExe, true);
-            }
+                Report(progress, "完成", 100);
+                if (log != null)
+                {
+                    log("pnpm 已就位：" + pnpmExe);
+                }
 
-            Report(progress, "完成", 100);
-            if (log != null)
-            {
-                log("pnpm 已就位：" + pnpmExe);
+                return File.Exists(pnpmExe);
             }
-
-            return File.Exists(pnpmExe);
+            finally
+            {
+                DownloadSupport.TryDeleteOwnedDirectory(staging, stagingParent, "pnpm-", log);
+            }
         }
 
         private static bool InstallPython(
@@ -607,7 +615,7 @@ namespace DeepSeekHarnessLauncher
             return true;
         }
 
-        private static bool ExtractZipWithStrip(
+        internal static bool ExtractZipWithStrip(
             string archive,
             string targetDirectory,
             bool stripTopDirectory,
@@ -616,10 +624,11 @@ namespace DeepSeekHarnessLauncher
             out string error)
         {
             error = null;
+            string staging = null;
             try
             {
                 Report(progress, "安装中 · 正在解压", 80);
-                string staging = Path.Combine(
+                staging = Path.Combine(
                     Path.GetTempPath(),
                     "DSHComponents",
                     "extract-" + Guid.NewGuid().ToString("N"));
@@ -644,8 +653,6 @@ namespace DeepSeekHarnessLauncher
 
                 Directory.CreateDirectory(Path.GetDirectoryName(targetDirectory));
                 Directory.Move(source, targetDirectory);
-                TryDeleteDirectory(staging);
-                TryDelete(archive);
                 Report(progress, "完成", 100);
                 return true;
             }
@@ -653,6 +660,12 @@ namespace DeepSeekHarnessLauncher
             {
                 error = "解压失败：" + exception.Message;
                 return false;
+            }
+            finally
+            {
+                DownloadSupport.TryDeleteOwnedDirectory(staging,
+                    Path.Combine(Path.GetTempPath(), "DSHComponents"), "extract-", log);
+                TryDelete(archive);
             }
         }
 

@@ -27,6 +27,7 @@ for (int index = 1; index <= 2; index++)
         PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
     using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
     Task firstReceipt = actions.WaitForConnectionAsync(timeout.Token);
+    IntPtr foregroundBeforeNotice = Native.GetForegroundWindow();
     var start = new ProcessStartInfo(Path.Combine(helperRoot, "DafeiyuGo.Info.exe"), session + " " + Environment.ProcessId)
     {
         WorkingDirectory = helperRoot, UseShellExecute = false, CreateNoWindow = true,
@@ -45,6 +46,8 @@ for (int index = 1; index <= 2; index++)
             Theme = "Dark", Material = "Mica", WindowStyle = "System", Muted = true, IsLocal = local
         }));
         await firstReceipt;
+        Check(Native.GetForegroundWindow() == foregroundBeforeNotice,
+            "showing the topmost notice leaves the foreground window unchanged");
         using (var reader = new StreamReader(actions, Encoding.UTF8, false, 1024, true))
         {
             string receipt = await reader.ReadLineAsync(timeout.Token);
@@ -100,6 +103,7 @@ internal static class Native
 {
     [StructLayout(LayoutKind.Sequential)] internal struct Rect { internal int Left, Top, Right, Bottom; }
     [DllImport("user32.dll")] internal static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
+    [DllImport("user32.dll")] internal static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] internal static extern bool PrintWindow(IntPtr hwnd, IntPtr dc, uint flags);
     [DllImport("user32.dll")] internal static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] internal static extern bool SetProcessDpiAwarenessContext(IntPtr context);

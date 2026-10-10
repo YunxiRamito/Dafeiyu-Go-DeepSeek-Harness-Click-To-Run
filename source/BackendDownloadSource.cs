@@ -34,10 +34,38 @@ namespace DeepSeekHarnessLauncher
         }
         internal static string OfficialUrl(string url)
         {
+            if (String.IsNullOrWhiteSpace(url)) return url;
             foreach (var prefix in new[] { "https://ghproxy.net/", "https://gh-proxy.com/", "https://ghfast.top/" })
                 if (url.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return url.Substring(prefix.Length);
             if (url.StartsWith("https://registry.npmmirror.com/", StringComparison.OrdinalIgnoreCase) && !url.Contains("/-/binary/", StringComparison.Ordinal))
                 return "https://registry.npmjs.org/" + url.Substring("https://registry.npmmirror.com/".Length);
+            return url;
+        }
+
+        /// <summary>
+        /// Remove a URL wrapper created by this backend. Candidate lists can be
+        /// prepared before a user changes the online engine, so the download
+        /// boundary must be able to re-resolve them against the current setting.
+        /// Only unwrap an authenticated backend endpoint and an absolute HTTPS
+        /// target; arbitrary query URLs are left untouched.
+        /// </summary>
+        internal static string Unwrap(string url)
+        {
+            if (!IsBackendUrl(url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri)) return url;
+            if (uri.AbsolutePath != "/api/download" && uri.AbsolutePath != "/api/fetch") return url;
+            string[] parameters = uri.Query.TrimStart('?').Split('&');
+            foreach (string parameter in parameters)
+            {
+                int separator = parameter.IndexOf('=');
+                if (separator <= 0 || !String.Equals(parameter.Substring(0, separator), "url", StringComparison.OrdinalIgnoreCase)) continue;
+                string encoded = parameter.Substring(separator + 1);
+                string decoded;
+                try { decoded = Uri.UnescapeDataString(encoded); }
+                catch { return url; }
+                return Uri.TryCreate(decoded, UriKind.Absolute, out var target) && target.Scheme == Uri.UriSchemeHttps
+                    ? target.AbsoluteUri
+                    : url;
+            }
             return url;
         }
         internal static string WrapMetadata(string url)

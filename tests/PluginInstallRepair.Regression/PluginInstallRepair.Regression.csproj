@@ -7,6 +7,8 @@
     <NoWarn>SYSLIB0014</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="YamlDotNet" Version="16.3.0" />
+    <Compile Include="../../source/ProfileDependencySourceMigration.cs" Link="ProfileDependencySourceMigration.cs" />
     <Compile Include="../../source/DshPluginCliService.cs" Link="DshPluginCliService.cs" />
     <Compile Include="../../source/PluginOperationSupport.cs" Link="PluginOperationSupport.cs" />
   </ItemGroup>

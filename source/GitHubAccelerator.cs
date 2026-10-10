@@ -11,8 +11,8 @@ namespace DeepSeekHarnessLauncher
     /// - 自动（默认）：启动时给每个源测一次延迟，候选按**实测最快的排前面**；
     /// - 自选：用户点了哪个源就把它排第一个，**不再做任何自动重排**，其余源只当兜底。
     ///
-    /// GitHub API 不套第三方 CDN 前缀；匿名元数据请求在加速档位下经自有后端代理，
-    /// 官方档位和带 Token 的请求则保持直连。
+    /// GitHub API 不套第三方 CDN 前缀；只有明确选择「后端服务器加速」时，
+    /// 匿名元数据请求才经自有后端代理。大陆 CDN、自选镜像和官方源都直连各自地址。
     ///
     /// 候选顺序不是拍脑袋来的，见 HANDOVER「加速候选顺序」那张实测表。
     /// </summary>
@@ -54,10 +54,12 @@ namespace DeepSeekHarnessLauncher
             }
         };
 
-        /// <summary>自动模式的默认顺序（没测到延迟时用它）：虚拟机实测 ghproxy 最快、ghfast 总超时。</summary>
+        /// <summary>
+        /// 大陆 CDN 自动模式的候选顺序；后端是独立引擎，只有显式选择时才会使用，
+        /// 因此不能混入 CDN 镜像的自动回退链。
+        /// </summary>
         internal static readonly string[] DefaultSourceOrder = new string[]
         {
-            "backend",
             "ghproxy",
             "gh-proxy",
             "ghfast",
@@ -84,7 +86,8 @@ namespace DeepSeekHarnessLauncher
             List<string> prefixes = new List<string>();
             for (int index = 0; index < Sources.Length; index++)
             {
-                if (!String.IsNullOrWhiteSpace(Sources[index].Prefix))
+                if (Sources[index].Id != BackendDownloadSource.SourceId
+                    && !String.IsNullOrWhiteSpace(Sources[index].Prefix))
                 {
                     prefixes.Add(Sources[index].Prefix);
                 }
@@ -130,11 +133,17 @@ namespace DeepSeekHarnessLauncher
         internal static List<string> OrderedSourceIds(LauncherSettings settings)
         {
             List<string> ordered = new List<string>();
+            if (!IsEnabled(settings)) return ordered;
             string selected = SelectedSourceId(settings);
 
             if (!String.Equals(selected, AutoSource, StringComparison.OrdinalIgnoreCase))
             {
                 ordered.Add(selected);
+                if (String.Equals(selected, BackendDownloadSource.SourceId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return ordered;
+                }
+
                 for (int index = 0; index < DefaultSourceOrder.Length; index++)
                 {
                     if (!String.Equals(
@@ -235,15 +244,16 @@ namespace DeepSeekHarnessLauncher
         }
 
         /// <summary>
-        /// 在大陆加速档位下，GitHub API 元数据也先走自有后端代理；官方源和带 Token
-        /// 的请求保持直连，避免把用户凭据转交给代理服务器。
+        /// 只有明确选择后端引擎时，匿名 GitHub API 元数据才走自有后端代理。
+        /// 大陆 CDN、自选镜像、官方源和带 Token 的请求都保持 GitHub 直连，避免
+        /// 把用户凭据转交给代理服务器。
         /// </summary>
         internal static string MetadataProxyUrl(
             string url,
             LauncherSettings settings,
             bool hasGitHubToken)
         {
-            return IsEnabled(settings)
+            return BackendDownloadSource.IsSelected(settings)
                 && !hasGitHubToken
                 && url != null
                 && url.StartsWith("https://api.github.com/", StringComparison.OrdinalIgnoreCase)
@@ -276,13 +286,15 @@ namespace DeepSeekHarnessLauncher
         internal static List<string> Candidates(string url, LauncherSettings settings)
         {
             List<string> urls = new List<string>();
+            url = OriginalDownloadUrl(url);
             if (String.IsNullOrWhiteSpace(url))
             {
                 return urls;
             }
 
             if (BackendDownloadSource.IsSelected(settings))
-            { urls.Add(BackendDownloadSource.Wrap(url)); urls.Add(url); return urls; }
+            { urls.Add(BackendDownloadSource.Wrap(url)); return urls; }
+            if (BackendDownloadSource.IsBackendUrl(url)) return urls;
 
             if (IsEnabled(settings) && CanAccelerate(url))
             {
@@ -313,6 +325,93 @@ namespace DeepSeekHarnessLauncher
         }
 
         /// <summary>
+        /// Resolve transfer candidates using the online engine selected when a
+        /// new download starts. Callers may hand us candidates cached by a view
+        /// or created before a settings change; unwrap old backend/CDN URLs first
+        /// so a fresh task never inherits the previous engine's route.
+        /// </summary>
+        internal static List<string> DownloadCandidates(IEnumerable<string> urls, LauncherSettings settings)
+        {
+            List<string> resolved = new List<string>();
+            if (urls == null) return resolved;
+
+            foreach (string candidate in urls)
+            {
+                if (String.IsNullOrWhiteSpace(candidate)) continue;
+                string source = OriginalDownloadUrl(candidate);
+
+                if (BackendDownloadSource.IsSelected(settings))
+                {
+                    resolved.Add(BackendDownloadSource.Wrap(source));
+                }
+                else if (BackendDownloadSource.IsBackendUrl(source))
+                {
+                    // An endpoint without an upstream URL cannot be safely
+                    // reused after switching away from the backend engine.
+                    continue;
+                }
+                else if (IsEnabled(settings) && CanAccelerate(source))
+                {
+                    resolved.AddRange(Candidates(source, settings));
+                }
+                else
+                {
+                    resolved.Add(source);
+                }
+            }
+
+            return Dedupe(resolved);
+        }
+
+        private static string OriginalDownloadUrl(string url)
+        {
+            for (int depth = 0; depth < 8; depth++)
+            {
+                string original = BackendDownloadSource.Unwrap(url);
+                if (IsGitHubMirrorUrl(original)) original = BackendDownloadSource.OfficialUrl(original);
+                original = JsDelivrToRawGitHub(original);
+                if (String.Equals(original, url, StringComparison.Ordinal)) break;
+                url = original;
+            }
+            return url;
+        }
+
+        private static bool IsGitHubMirrorUrl(string url)
+        {
+            return url != null
+                && (url.StartsWith("https://ghproxy.net/", StringComparison.OrdinalIgnoreCase)
+                    || url.StartsWith("https://gh-proxy.com/", StringComparison.OrdinalIgnoreCase)
+                    || url.StartsWith("https://ghfast.top/", StringComparison.OrdinalIgnoreCase)
+                    || url.StartsWith("https://cdn.jsdelivr.net/gh/", StringComparison.OrdinalIgnoreCase)
+                    || url.StartsWith("https://fastly.jsdelivr.net/gh/", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static string JsDelivrToRawGitHub(string url)
+        {
+            const string cdnPrefix = "https://cdn.jsdelivr.net/gh/";
+            const string fastlyPrefix = "https://fastly.jsdelivr.net/gh/";
+            string prefix = url != null && url.StartsWith(cdnPrefix, StringComparison.OrdinalIgnoreCase)
+                ? cdnPrefix
+                : url != null && url.StartsWith(fastlyPrefix, StringComparison.OrdinalIgnoreCase)
+                    ? fastlyPrefix
+                    : null;
+            if (prefix == null) return url;
+
+            string path = url.Substring(prefix.Length);
+            int ownerSeparator = path.IndexOf('/');
+            int referenceSeparator = ownerSeparator < 0 ? -1 : path.IndexOf('/', ownerSeparator + 1);
+            if (referenceSeparator < 0) return url;
+            string repositoryReference = path.Substring(0, referenceSeparator);
+            int at = repositoryReference.LastIndexOf('@');
+            if (at <= 0 || at == repositoryReference.Length - 1) return url;
+            string repository = repositoryReference.Substring(0, at);
+            string branch = repositoryReference.Substring(at + 1);
+            string file = path.Substring(referenceSeparator + 1);
+            return file.Length == 0 ? url
+                : "https://raw.githubusercontent.com/" + repository + "/" + branch + "/" + file;
+        }
+
+        /// <summary>
         /// 仓库里一个 raw 文件的候选地址。jsDelivr 有专门的地址形式，排它自己的位置；
         /// 官方档位只给 raw 一条。
         /// </summary>
@@ -328,6 +427,12 @@ namespace DeepSeekHarnessLauncher
             if (!IsEnabled(settings))
             {
                 urls.Add(raw);
+                return urls;
+            }
+
+            if (BackendDownloadSource.IsSelected(settings))
+            {
+                urls.Add(BackendDownloadSource.WrapMetadata(raw));
                 return urls;
             }
 
@@ -383,7 +488,7 @@ namespace DeepSeekHarnessLauncher
                 + "/tar.gz/" + reference2;
 
             if (BackendDownloadSource.IsSelected(settings))
-            { urls.Add(BackendDownloadSource.Wrap(codeload)); urls.Add(codeload); urls.Add(github); return Dedupe(urls); }
+            { urls.Add(BackendDownloadSource.Wrap(codeload)); return urls; }
 
             string selected = SelectedSourceId(settings);
             bool manual = IsEnabled(settings)
@@ -445,6 +550,11 @@ namespace DeepSeekHarnessLauncher
                 urls.Add(source.Id == "backend" ? BackendDownloadSource.Wrap(github) : source.Prefix + github);
             }
         }
+
+        internal static bool ShouldProbeSource(AcceleratorSource source, LauncherSettings settings)
+            => source != null && IsEnabled(settings)
+                && (String.Equals(source.Id, BackendDownloadSource.SourceId, StringComparison.OrdinalIgnoreCase)
+                    == BackendDownloadSource.IsSelected(settings));
 
         /// <summary>测速用的地址：拿本仓库的 CHANGELOG.md 当靶子，小、稳、每个源都能取。</summary>
         internal static string ProbeUrlFor(AcceleratorSource source)
