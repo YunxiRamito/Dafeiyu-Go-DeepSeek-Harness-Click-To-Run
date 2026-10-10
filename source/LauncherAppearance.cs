@@ -5,6 +5,7 @@ using Microsoft.UI.Composition;
 using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
+using Windows.Foundation;
 using Windows.UI.ViewManagement;
 using WinRT;
 using WinRT.Interop;
@@ -38,6 +39,7 @@ namespace DeepSeekHarnessLauncher
             public MicaController MicaController;
             public DesktopAcrylicController AcrylicController;
             public SystemBackdropConfiguration Configuration;
+            public TypedEventHandler<object, WindowEventArgs> ClosedHandler;
         }
 
         private static readonly List<WindowRegistration> Registrations =
@@ -77,6 +79,8 @@ namespace DeepSeekHarnessLauncher
                     BackgroundSetter = backgroundSetter
                 };
                 Registrations.Add(registration);
+                registration.ClosedHandler = delegate { Unregister(window); };
+                window.Closed += registration.ClosedHandler;
             }
             else
             {
@@ -101,6 +105,8 @@ namespace DeepSeekHarnessLauncher
             }
 
             DisposeControllers(registration);
+            registration.Window.Closed -= registration.ClosedHandler;
+            registration.Configuration = null;
             Registrations.Remove(registration);
         }
 
@@ -112,12 +118,14 @@ namespace DeepSeekHarnessLauncher
 
         internal static void SetTheme(ElementTheme theme)
         {
+            if (_theme == theme) return;
             _theme = theme;
             ApplyAll();
         }
 
         internal static void SetMaterial(LauncherMaterialKind material)
         {
+            if (_material == material) return;
             _material = material;
             ApplyAll();
         }
@@ -191,19 +199,18 @@ namespace DeepSeekHarnessLauncher
             {
             }
 
-            DisposeControllers(registration);
-            registration.Window.SystemBackdrop = null;
+            if (registration.Window.SystemBackdrop != null)
+                registration.Window.SystemBackdrop = null;
 
             if (_material == LauncherMaterialKind.Solid || IsHighContrast())
             {
+                DisposeControllers(registration);
                 ApplySolid(registration);
                 return;
             }
 
             try
             {
-                ICompositionSupportsSystemBackdrop target =
-                    registration.Window.As<ICompositionSupportsSystemBackdrop>();
                 registration.Configuration ??= new SystemBackdropConfiguration
                 {
                     IsInputActive = true
@@ -215,13 +222,24 @@ namespace DeepSeekHarnessLauncher
                 {
                     if (MicaController.IsSupported())
                     {
+                        MicaKind kind = _material == LauncherMaterialKind.MicaAlt
+                            ? MicaKind.BaseAlt : MicaKind.Base;
+                        // Theme changes update the existing composition resources.
+                        if (registration.MicaController != null)
+                        {
+                            if (registration.MicaController.Kind != kind)
+                                registration.MicaController.Kind = kind;
+                            SetTransparent(registration);
+                            return;
+                        }
+
+                        DisposeControllers(registration);
                         registration.MicaController = new MicaController
                         {
-                            Kind = _material == LauncherMaterialKind.MicaAlt
-                                ? MicaKind.BaseAlt
-                                : MicaKind.Base
+                            Kind = kind
                         };
-                        if (registration.MicaController.AddSystemBackdropTarget(target))
+                        if (registration.MicaController.AddSystemBackdropTarget(
+                            registration.Window.As<ICompositionSupportsSystemBackdrop>()))
                         {
                             registration.MicaController.SetSystemBackdropConfiguration(
                                 registration.Configuration);
@@ -233,16 +251,25 @@ namespace DeepSeekHarnessLauncher
                     }
                 }
 
-                if (registration.AcrylicController == null
-                    && DesktopAcrylicController.IsSupported())
+                if (DesktopAcrylicController.IsSupported())
                 {
+                    DesktopAcrylicKind kind = _material == LauncherMaterialKind.AcrylicThin
+                        ? DesktopAcrylicKind.Thin : DesktopAcrylicKind.Base;
+                    if (registration.AcrylicController != null)
+                    {
+                        if (registration.AcrylicController.Kind != kind)
+                            registration.AcrylicController.Kind = kind;
+                        SetTransparent(registration);
+                        return;
+                    }
+
+                    DisposeControllers(registration);
                     registration.AcrylicController = new DesktopAcrylicController
                     {
-                        Kind = _material == LauncherMaterialKind.AcrylicThin
-                            ? DesktopAcrylicKind.Thin
-                            : DesktopAcrylicKind.Base
+                        Kind = kind
                     };
-                    if (registration.AcrylicController.AddSystemBackdropTarget(target))
+                    if (registration.AcrylicController.AddSystemBackdropTarget(
+                        registration.Window.As<ICompositionSupportsSystemBackdrop>()))
                     {
                         registration.AcrylicController.SetSystemBackdropConfiguration(
                             registration.Configuration);
@@ -307,30 +334,32 @@ namespace DeepSeekHarnessLauncher
 
             if (registration.MicaController != null)
             {
+                MicaController controller = registration.MicaController;
+                registration.MicaController = null;
                 try
                 {
-                    registration.MicaController.RemoveAllSystemBackdropTargets();
-                    registration.MicaController.Dispose();
+                    controller.RemoveAllSystemBackdropTargets();
                 }
                 catch
                 {
                 }
 
-                registration.MicaController = null;
+                try { controller.Dispose(); } catch { }
             }
 
             if (registration.AcrylicController != null)
             {
+                DesktopAcrylicController controller = registration.AcrylicController;
+                registration.AcrylicController = null;
                 try
                 {
-                    registration.AcrylicController.RemoveAllSystemBackdropTargets();
-                    registration.AcrylicController.Dispose();
+                    controller.RemoveAllSystemBackdropTargets();
                 }
                 catch
                 {
                 }
 
-                registration.AcrylicController = null;
+                try { controller.Dispose(); } catch { }
             }
         }
 

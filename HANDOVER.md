@@ -1,5 +1,20 @@
 # 交接：大肥鱼Go / Dafeiyu-Go Launcher
 
+## 2026-10-10 本地修复版 1.7.4
+
+用户要求本次 DWM 修复版改为 1.7.4，已同步程序显示版本、核心/引导/信息窗口版本及三份清单，重编译和 verify 通过。新包 `../Temp_SetupandLauncher/IntegrationAcceptance-20261010/Dafeiyu-Go-Launcher-1.7.4.zip`，23,972,337 字节，SHA256 `8934FEC20E083C0FF46D151A520000B023E6B25D8E6E0FC5E0C7C540115AECCD`；引导与核心 FileVersion 1.7.4.0，198 输入/121 ZIP 文件校验一致。与已验收 DWM 快照仅七个版本信息文件不同，四轮测量沿用下方记录，未再次测量。安装器独立版本不变，未发布、未推送、未更新线上清单。
+
+## 2026-10-10 DWM 内存修复续做（未发布）
+
+最终主源码构建及本地 ZIP 已完成：`../Temp_SetupandLauncher/IntegrationAcceptance-20261010/Dafeiyu-Go-Launcher-1.7.3-dwm-fix-20261010.zip`，23,972,346 字节，SHA256 `C10D09730CE04C6E751C5505B68FD31333D086271AE4AE11A81470340180D2CE`，版本仍 1.7.3.0；198 输入/121 ZIP 文件哈希一致。最终正式 host 四轮同 HWND 7799388、150%最大化、动画开启：关窗 +30 秒 DWM 提交内存 527.89/514.45/514.60/514.37 MiB，私有工作集 262.02/248.45/248.78/248.68；启动就绪 499.27/226.21，退出 +15 秒 500.00/194.84。没有逐轮增加；仍有一次性原生窗口缓存。12 项 UI 生命周期冒烟、托盘3次开关、外观18项回归、build/verify/diffcheck通过。模型 RPC 编辑/UAC/Explorer壳图标本次未验收；隔离假服务接管和最后一轮服务停止的限制已完整记录在 MEASUREMENT-REPORT.md。未正式发布。
+
+- 用户实测正式 1.7.3 在 150% 缩放、云母 Alt、设置最大化时 DWM 内存增长，关设置不完全下降，退出主进程才释放。按用户要求以普通启动、真实 LauncherContext/SettingsWindowHost 验收，不以设置预览作修复证明。
+- 旧版正式路径每次关设置后约增加 55 MiB DWM 提交内存；空 WinUI 窗口及 Solid/默认标题栏也复现约 40 MiB。禁切页动画、标题栏 Reset、计时器解绑没有消除增长。关闭前缩小只降到约 13 MiB/轮，未作为完整修复搬入生产。
+- 实施窗口复用：新增 source/SettingsWindow.Lifetime.cs，原生 Closing 与代码 Close 都隐藏并卸载内容；重开同一个 HWND、恢复主题/材质/轮询并重置公告通知自动获取标记。预览模式仍按原有销毁行为处理。动态页 generation 与余额/更新日志会话 generation 阻止迟到结果跨重开更新。
+- 临时正式 host 候选四轮同 HWND、144 DPI、2582×1390、每轮 30 次导航：关窗 +30 秒 DWM 提交内存 492.02/492.09/492.02/472.95 MiB（就绪 477.80，第四轮桌面基线下降）；私有工作集 204.56/204.57/189.81/171.20 MiB。显示稳定平台，没有原先每轮约 55 MiB 增长。该结果为候选，最终主源码构建还在单独冒烟验收。
+- 构建 Launcher-DwmReuseFinal-20261010 已通过 build 和 verify；所有临时源码、日志、截图与成品在 ../Temp_SetupandLauncher。详细有效/无效对照、Shell 图标注册/UAC限制和隔离网络说明：../Temp_SetupandLauncher/DwmAudit-20261010/MEASUREMENT-REPORT.md。
+- 未提交、未推送、未修改线上 release/manifest。保留所有已经发布的 1.7.3 记录。
+
 ## 2026-10-10 12:40 v1.7.3 已发布（本节优先）
 
 - Release：`https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/tag/v1.7.3`（id `408645592`，tag v1.7.3 → `b150b95`）。

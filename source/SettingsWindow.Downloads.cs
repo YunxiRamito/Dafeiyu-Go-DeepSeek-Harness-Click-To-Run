@@ -24,7 +24,7 @@ namespace DeepSeekHarnessLauncher
                 // The task count still keeps the navigation entry current while the
                 // page is hidden; only build/update row controls at the active rate.
                 _downloadCenterTimer.Interval = TimeSpan.FromSeconds(2);
-                _downloadCenterTimer.Tick += delegate { RefreshDownloadCenter(); };
+                _downloadCenterTimer.Tick += DownloadCenterTimer_Tick;
                 _downloadCenterTimer.Start();
                 RefreshDownloadCenter();
             }
@@ -32,6 +32,19 @@ namespace DeepSeekHarnessLauncher
             {
                 LogDownloadCenterFailure(exception);
             }
+        }
+
+        private void DownloadCenterTimer_Tick(DispatcherQueueTimer sender, object args)
+        {
+            if (!_settingsClosed) RefreshDownloadCenter();
+        }
+
+        private void ReleaseDownloadCenterTimer()
+        {
+            if (_downloadCenterTimer == null) return;
+            _downloadCenterTimer.Stop();
+            _downloadCenterTimer.Tick -= DownloadCenterTimer_Tick;
+            _downloadCenterTimer = null;
         }
 
         private void DeactivateDownloadCenter()

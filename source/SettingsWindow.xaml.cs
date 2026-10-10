@@ -116,15 +116,15 @@ namespace DeepSeekHarnessLauncher
             _serverMetricsTimer = DispatcherQueue.CreateTimer();
             _serverMetricsTimer.Interval = TimeSpan.FromSeconds(2);
             _serverMetricsTimer.IsRepeating = true;
-            _serverMetricsTimer.Tick += async delegate { await RefreshServerMetricsAsync(); };
+            _serverMetricsTimer.Tick += ServerMetricsTimer_Tick;
             _presenceRefreshTimer = DispatcherQueue.CreateTimer();
             _presenceRefreshTimer.Interval = TimeSpan.FromSeconds(5);
             _presenceRefreshTimer.IsRepeating = true;
-            _presenceRefreshTimer.Tick += delegate { RefreshNoticePresence(); };
+            _presenceRefreshTimer.Tick += PresenceRefreshTimer_Tick;
             _presenceHistoryTimer = DispatcherQueue.CreateTimer();
             _presenceHistoryTimer.Interval = TimeSpan.FromSeconds(5);
             _presenceHistoryTimer.IsRepeating = true;
-            _presenceHistoryTimer.Tick += async delegate { await RefreshPresenceHistoryAsync(); };
+            _presenceHistoryTimer.Tick += PresenceHistoryTimer_Tick;
             _host = host ?? CreatePreviewHost();
             try
             {
@@ -134,10 +134,7 @@ namespace DeepSeekHarnessLauncher
             {
                 _host.Log("反馈服务设置读取失败，将在需要时重试：" + exception.Message);
             }
-            _host.BalanceChanged += delegate
-            {
-                DispatcherQueue.TryEnqueue(RefreshModelBalance);
-            };
+            _host.BalanceChanged += Host_BalanceChanged;
             _settings = _host.Settings ?? new LauncherSettings();
             _host.SetPresencePollingEnabled(true);
             _presenceRefreshTimer.Start();
@@ -187,6 +184,7 @@ namespace DeepSeekHarnessLauncher
             SettingsRoot.SizeChanged += SettingsRoot_SizeChanged;
             SettingsRoot.ActualThemeChanged += SettingsRoot_ActualThemeChanged;
             Closed += SettingsWindow_Closed;
+            _appWindow.Closing += SettingsAppWindow_Closing;
 
             _initializing = false;
             SettingsNavigationView.SelectedItem = HomeNavItem;
@@ -903,15 +901,17 @@ namespace DeepSeekHarnessLauncher
                 _settingsSearchTimer = DispatcherQueue.CreateTimer();
                 _settingsSearchTimer.Interval = TimeSpan.FromMilliseconds(180);
                 _settingsSearchTimer.IsRepeating = false;
-                _settingsSearchTimer.Tick += delegate
-                {
-                    _settingsSearchTimer.Stop();
-                    RunSettingsSearch(SettingsSearchBox.Text);
-                };
+                _settingsSearchTimer.Tick += SettingsSearchTimer_Tick;
             }
 
             _settingsSearchTimer.Stop();
             _settingsSearchTimer.Start();
+        }
+
+        private void SettingsSearchTimer_Tick(DispatcherQueueTimer sender, object args)
+        {
+            sender.Stop();
+            if (!_settingsClosed) RunSettingsSearch(SettingsSearchBox.Text);
         }
 
         private void SettingsSearchBox_SuggestionChosen(
@@ -1179,18 +1179,36 @@ namespace DeepSeekHarnessLauncher
             DispatcherQueueTimer timer = DispatcherQueue.CreateTimer();
             timer.Interval = TimeSpan.FromMilliseconds(1400);
             timer.IsRepeating = false;
-            timer.Tick += delegate
-            {
-                timer.Stop();
-                panel.Background = original;
-            };
+            var highlight = new SearchAnchorHighlight(new WeakReference<Panel>(panel), original);
+            timer.Tick += highlight.Restore;
             timer.Start();
+        }
+
+        private sealed class SearchAnchorHighlight
+        {
+            private readonly WeakReference<Panel> _panel;
+            private Brush _original;
+
+            internal SearchAnchorHighlight(WeakReference<Panel> panel, Brush original)
+            {
+                _panel = panel;
+                _original = original;
+            }
+
+            internal void Restore(DispatcherQueueTimer sender, object args)
+            {
+                sender.Stop();
+                sender.Tick -= Restore;
+                if (_panel.TryGetTarget(out Panel panel)) panel.Background = _original;
+                _original = null;
+            }
         }
 
         private void SettingsRoot_ActualThemeChanged(
             FrameworkElement sender,
             object args)
         {
+            if (_settingsClosed) return;
             // 图用的是主题资源画笔，切主题要重画一遍（不然会停在上一套配色）
             DrawHomeUsageChart();
             RenderServerUploadChart();
@@ -1589,6 +1607,7 @@ namespace DeepSeekHarnessLauncher
 
         private void RefreshNoticePresence()
         {
+            if (_settingsClosed) return;
             ClientNoticePresence presence = _host.GetNoticePresence();
             bool online = presence != null;
             NoticePresenceText.Text = online ? presence.OnlineCount.ToString("N0") + " 人在线" : "在线状态未连接";
@@ -1688,6 +1707,7 @@ namespace DeepSeekHarnessLauncher
 
         private void RenderServerPresenceChart()
         {
+            if (_settingsClosed || _activeMemoryPageKey != "ServerMetrics") return;
             if (ServerPresenceChart == null || _host == null) return;
             double width = ServerPresenceChart.ActualWidth;
             if (width <= 100) return;
@@ -1763,7 +1783,7 @@ namespace DeepSeekHarnessLauncher
 
         private void RenderServerUploadChart()
         {
-            if (ServerUploadChart == null) return;
+            if (_settingsClosed || _activeMemoryPageKey != "ServerMetrics" || ServerUploadChart == null) return;
             double width = ServerUploadChart.ActualWidth;
             if (width <= 60) return;
             ServerUploadChart.Children.Clear();
@@ -1846,7 +1866,7 @@ namespace DeepSeekHarnessLauncher
 
         private void RenderServerVersionChart()
         {
-            if (ServerVersionChart == null) return;
+            if (_settingsClosed || _activeMemoryPageKey != "ServerMetrics" || ServerVersionChart == null) return;
             double width = ServerVersionChart.ActualWidth;
             if (width <= 120) return;
             ServerVersionChart.Children.Clear();
@@ -2163,6 +2183,7 @@ namespace DeepSeekHarnessLauncher
 
         private void Host_UpdateStateChanged()
         {
+            if (_settingsClosed) return;
             RefreshUpdateStates();
             RefreshDshVersionManagementState();
 
@@ -2228,6 +2249,7 @@ namespace DeepSeekHarnessLauncher
 
         private void Host_ServiceStateChanged()
         {
+            if (_settingsClosed) return;
             RefreshServiceState();
             RefreshHomeSummary();
             RefreshDshDataControls();
@@ -5337,6 +5359,8 @@ namespace DeepSeekHarnessLauncher
 
         public void ShowWindow(string pageTag)
         {
+            if (_settingsDestroyed) return;
+            ResumeSettingsWindow();
             RefreshServiceState();
             RefreshUpdateStates();
             _ = RefreshApiBalanceAsync();
@@ -5401,6 +5425,8 @@ namespace DeepSeekHarnessLauncher
             // Pages with generated lists and charts release those transient objects as
             // soon as navigation leaves them; re-entering already goes through the
             // regular page loaders below and rebuilds the visible content.
+            bool pageChanged = !String.Equals(_activeMemoryPageKey,
+                CurrentMemoryPageKey(target, pluginTab, skillTab), StringComparison.Ordinal);
             ChangeMemoryPage(target, pluginTab, skillTab);
 
             HomePage.Visibility = navTag == "Home" ? Visibility.Visible : Visibility.Collapsed;
@@ -5480,7 +5506,7 @@ namespace DeepSeekHarnessLauncher
                 _suppressNavigation = false;
             }
 
-            AnimatePage(page);
+            if (pageChanged) AnimatePage(page);
             if (target == "Downloads") ReactivateDownloadCenter();
             if (target == "Home")
             {
@@ -5628,13 +5654,18 @@ namespace DeepSeekHarnessLauncher
 
         private void AnimatePage(FrameworkElement page)
         {
+            StopPageAnimation();
             if (page == null || SettingsRoot.XamlRoot == null)
             {
                 return;
             }
 
-            page.RenderTransform = new TranslateTransform { Y = 8 };
-            page.Opacity = 0;
+            // Animate the bounded viewport, not the entire scrolling page. At
+            // high DPI a tall page's opacity layer can allocate a much larger
+            // composition surface than the visible window.
+            page = SettingsScroller;
+            page.RenderTransform = new TranslateTransform();
+            page.Opacity = 1;
 
             DoubleAnimation opacity = new DoubleAnimation
             {
@@ -5664,14 +5695,52 @@ namespace DeepSeekHarnessLauncher
                 offset,
                 "(UIElement.RenderTransform).(TranslateTransform.Y)");
 
-            Storyboard storyboard = new Storyboard();
+            Storyboard storyboard = new Storyboard { FillBehavior = FillBehavior.Stop };
             storyboard.Children.Add(opacity);
             storyboard.Children.Add(offset);
+            _pageAnimation = storyboard;
+            _animatedPage = page;
+            storyboard.Completed += PageAnimation_Completed;
             storyboard.Begin();
 
             // 兜底：动画没跑起来时（例如窗口还没 Show，或元素刚建好就切页），
             // Opacity 会停在 0，整页看不见。动画在跑的话它会覆盖这个本地值。
             page.Opacity = 1;
+        }
+
+        private Storyboard _pageAnimation;
+        private FrameworkElement _animatedPage;
+
+        private void PageAnimation_Completed(object sender, object args)
+        {
+            if (ReferenceEquals(sender, _pageAnimation)) StopPageAnimation();
+        }
+
+        private void StopPageAnimation()
+        {
+            Storyboard animation = _pageAnimation;
+            FrameworkElement page = _animatedPage;
+            _pageAnimation = null;
+            _animatedPage = null;
+            if (animation != null)
+            {
+                animation.Completed -= PageAnimation_Completed;
+                animation.Stop();
+                animation.Children.Clear();
+            }
+            if (page != null)
+            {
+                page.Opacity = 1;
+                page.RenderTransform = null;
+            }
+        }
+
+        private void Host_BalanceChanged()
+        {
+            if (!_settingsClosed) DispatcherQueue.TryEnqueue(() =>
+            {
+                if (!_settingsClosed) RefreshModelBalance();
+            });
         }
 
         private void ConfigureWindow(WindowId windowId)
@@ -6293,6 +6362,8 @@ namespace DeepSeekHarnessLauncher
 
         private async System.Threading.Tasks.Task RefreshApiBalanceAsync()
         {
+            if (_settingsClosed) return;
+            int generation = _settingsUiGeneration;
             string apiKey = LauncherSettingsStore.ReadApiKey(_settings);
             if (String.IsNullOrWhiteSpace(apiKey))
             {
@@ -6305,6 +6376,7 @@ namespace DeepSeekHarnessLauncher
             BalanceUpdatedText.Text = "正在读取余额";
             BalanceResult result = await System.Threading.Tasks.Task.Run(
                 delegate { return DeepSeekBalanceClient.Fetch(apiKey); });
+            if (_settingsClosed || generation != _settingsUiGeneration) return;
             if (result.Ok)
             {
                 BalanceValueText.Text = result.Display;
@@ -7062,13 +7134,23 @@ namespace DeepSeekHarnessLauncher
 
         private void SettingsWindow_Closed(object sender, WindowEventArgs args)
         {
+            _settingsDestroyed = true;
+            _appWindow.Closing -= SettingsAppWindow_Closing;
+            Closed -= SettingsWindow_Closed;
             _settingsClosed = true;
+            StopPageAnimation();
+            StopChartAnimations();
             CancelPageMemoryTrim();
             _dshDataFindCancellation?.Cancel();
             _dshDataPreviewCancellation?.Cancel();
             _backupCancellation?.Cancel();
-            _settingsSearchTimer?.Stop();
-            _feedbackBanCountdown?.Stop();
+            if (_settingsSearchTimer != null)
+            {
+                _settingsSearchTimer.Stop();
+                _settingsSearchTimer.Tick -= SettingsSearchTimer_Tick;
+                _settingsSearchTimer = null;
+            }
+            ReleaseFeedbackBanCountdown();
             DeveloperFeedbackBans_Unloaded(null, null);
             CancelDetailTranslation();
             _dshDataCancellation?.Cancel();
@@ -7078,21 +7160,28 @@ namespace DeepSeekHarnessLauncher
             _developerFeedbackCancellation?.Cancel();
             _developerFeedbackCancellation?.Dispose();
             _developerFeedbackCancellation = null;
-            _remoteIconCancellation.Cancel();
+            ClearRemoteIconResources();
+            ReleasePublicAcknowledgementResources();
             StopServerMetrics();
+            _serverMetricsTimer.Tick -= ServerMetricsTimer_Tick;
+            _presenceHistoryTimer.Tick -= PresenceHistoryTimer_Tick;
             _presenceRefreshTimer.Stop();
+            _presenceRefreshTimer.Tick -= PresenceRefreshTimer_Tick;
             _host.SetPresencePollingEnabled(false);
             _serverMetricsClient.Dispose();
-            _downloadCenterTimer?.Stop();
+            ReleaseDownloadCenterTimer();
             SettingsRoot.SizeChanged -= SettingsRoot_SizeChanged;
+            SettingsRoot.ActualThemeChanged -= SettingsRoot_ActualThemeChanged;
             SettingsRoot.RemoveHandler(
                 UIElement.PointerPressedEvent,
                 new PointerEventHandler(SettingsRoot_PointerPressed));
             _host.UpdateStateChanged -= Host_UpdateStateChanged;
             _host.ServiceStateChanged -= Host_ServiceStateChanged;
             _host.NoticePresenceChanged -= RefreshNoticePresence;
+            _host.BalanceChanged -= Host_BalanceChanged;
             AcceleratorLatencyService.Changed -= AcceleratorLatency_Changed;
             LauncherAppearance.Unregister(this);
+            Content = null;
             Destroyed();
         }
 
@@ -7105,6 +7194,21 @@ namespace DeepSeekHarnessLauncher
             if (cancellation == null) return;
             cancellation.Cancel();
             cancellation.Dispose();
+        }
+
+        private async void ServerMetricsTimer_Tick(DispatcherQueueTimer sender, object args)
+        {
+            if (!_settingsClosed) await RefreshServerMetricsAsync();
+        }
+
+        private void PresenceRefreshTimer_Tick(DispatcherQueueTimer sender, object args)
+        {
+            if (!_settingsClosed) RefreshNoticePresence();
+        }
+
+        private async void PresenceHistoryTimer_Tick(DispatcherQueueTimer sender, object args)
+        {
+            if (!_settingsClosed) await RefreshPresenceHistoryAsync();
         }
 
         private void SettingsRoot_PointerPressed(
@@ -9889,8 +9993,10 @@ namespace DeepSeekHarnessLauncher
         /// <summary>后台测速（启动时或网络变化时）跑完会叫一声，把界面上的延迟刷新掉。</summary>
         private void AcceleratorLatency_Changed()
         {
+            if (_settingsClosed) return;
             DispatcherQueue.TryEnqueue(delegate
             {
+                if (_settingsClosed) return;
                 if (_acceleratorLatencyBusy)
                 {
                     _acceleratorLatencyBusy = false;
@@ -10169,6 +10275,7 @@ namespace DeepSeekHarnessLauncher
         /// <summary>关于页的更新日志。先吃缓存，刷不动就报原因，不挡着页面显示。</summary>
         private void LoadChangelog(bool forceRefresh)
         {
+            if (_settingsClosed) return;
             if (!forceRefresh && _changelogLoaded)
             {
                 return;
@@ -10180,15 +10287,22 @@ namespace DeepSeekHarnessLauncher
                 ChangelogVersionText.Text = "正在刷新…";
             }
 
+            var window = new WeakReference<SettingsWindow>(this);
+            int generation = _settingsUiGeneration;
+            LauncherSettings settings = _settings;
+            Action<string> log = _host.Log;
+            var dispatcher = DispatcherQueue;
             _ = System.Threading.Tasks.Task.Run(delegate
             {
                 ChangelogResult result = ChangelogService.Load(
-                    _settings,
+                    settings,
                     forceRefresh,
-                    _host.Log);
-                DispatcherQueue.TryEnqueue(delegate
+                    log);
+                dispatcher.TryEnqueue(delegate
                 {
-                    ApplyChangelog(result);
+                    if (window.TryGetTarget(out SettingsWindow target) && !target._settingsClosed
+                        && generation == target._settingsUiGeneration)
+                        target.ApplyChangelog(result);
                 });
             });
         }
@@ -10489,7 +10603,9 @@ namespace DeepSeekHarnessLauncher
         /// </summary>
         private void DrawHomeUsageChart()
         {
+            StopChartAnimations();
             HomeUsageChart.Children.Clear();
+            if (_settingsClosed || _activeMemoryPageKey != "Home") return;
 
             bool animate = _homeUsageChartAnimate;
             _homeUsageChartAnimate = false;
@@ -10845,7 +10961,7 @@ namespace DeepSeekHarnessLauncher
                 // Translation 会被后续布局/重绘打断，动画停在半途时整排柱子看着就是错位的，
                 // 而"鼠标一悬停（重绘、不带动画）立刻正常"—— 正是这个症状。
                 // RenderTransform 归 XAML 管，谁也抢不走。
-                TranslateTransform transform = new TranslateTransform { Y = height };
+                TranslateTransform transform = new TranslateTransform();
                 element.RenderTransform = transform;
 
                 DoubleAnimation rise = new DoubleAnimation
@@ -10864,8 +10980,10 @@ namespace DeepSeekHarnessLauncher
                 Storyboard.SetTarget(rise, transform);
                 Storyboard.SetTargetProperty(rise, "Y");
 
-                Storyboard storyboard = new Storyboard();
+                Storyboard storyboard = new Storyboard { FillBehavior = FillBehavior.Stop };
                 storyboard.Children.Add(rise);
+                _chartAnimations.Add(storyboard);
+                storyboard.Completed += ChartAnimation_Completed;
                 storyboard.Begin();
             }
             catch
@@ -10889,11 +11007,13 @@ namespace DeepSeekHarnessLauncher
                     Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(element);
                 Microsoft.UI.Composition.Compositor compositor = visual.Compositor;
 
-                visual.Opacity = 0f;
+                visual.Opacity = 1f;
 
-                Microsoft.UI.Composition.ScalarKeyFrameAnimation fade =
+                using Microsoft.UI.Composition.ScalarKeyFrameAnimation fade =
                     compositor.CreateScalarKeyFrameAnimation();
+                fade.InsertKeyFrame(0f, 0f);
                 fade.InsertKeyFrame(1f, 1f);
+                fade.StopBehavior = Microsoft.UI.Composition.AnimationStopBehavior.SetToFinalValue;
                 fade.Duration = TimeSpan.FromMilliseconds(durationMs);
                 if (delayMs > 0)
                 {
@@ -10901,10 +11021,42 @@ namespace DeepSeekHarnessLauncher
                 }
 
                 visual.StartAnimation("Opacity", fade);
+                _chartFadeVisuals.Add(visual);
             }
             catch
             {
             }
+        }
+
+        private readonly List<Storyboard> _chartAnimations = new List<Storyboard>();
+        private readonly List<Microsoft.UI.Composition.Visual> _chartFadeVisuals = new List<Microsoft.UI.Composition.Visual>();
+
+        private void ChartAnimation_Completed(object sender, object args)
+        {
+            if (sender is Storyboard animation)
+            {
+                animation.Completed -= ChartAnimation_Completed;
+                animation.Stop();
+                animation.Children.Clear();
+                _chartAnimations.Remove(animation);
+            }
+        }
+
+        private void StopChartAnimations()
+        {
+            foreach (Storyboard animation in _chartAnimations)
+            {
+                animation.Completed -= ChartAnimation_Completed;
+                animation.Stop();
+                animation.Children.Clear();
+            }
+            _chartAnimations.Clear();
+            foreach (var visual in _chartFadeVisuals)
+            {
+                visual.StopAnimation("Opacity");
+                visual.Opacity = 1f;
+            }
+            _chartFadeVisuals.Clear();
         }
 
         private void HomeUsageChart_SizeChanged(object sender, SizeChangedEventArgs args)

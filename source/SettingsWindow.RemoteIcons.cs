@@ -12,29 +12,46 @@ namespace DeepSeekHarnessLauncher
 {
     internal sealed partial class SettingsWindow
     {
-        private readonly CancellationTokenSource _remoteIconCancellation = new CancellationTokenSource();
+        private CancellationTokenSource _remoteIconCancellation = new CancellationTokenSource();
+        private int _remoteIconGeneration;
         private readonly SemaphoreSlim _remoteIconSlots = new SemaphoreSlim(4);
         private readonly Dictionary<string, ImageSource> _remoteIcons = new Dictionary<string, ImageSource>();
 
         private ImageSource RemoteIcon(string url)
         {
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != "https") return null;
+            if (_settingsClosed || !Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != "https") return null;
             if (_remoteIcons.TryGetValue(url, out var cached)) return cached;
+            _remoteIconCancellation ??= new CancellationTokenSource();
             ImageSource icon = uri.AbsolutePath.EndsWith(".svg", StringComparison.OrdinalIgnoreCase)
-                ? (ImageSource)new SvgImageSource() : new BitmapImage();
+                ? (ImageSource)new SvgImageSource { RasterizePixelWidth = 128, RasterizePixelHeight = 128 }
+                : new BitmapImage();
             _remoteIcons[url] = icon;
-            _ = LoadRemoteIconAsync(url, icon);
+            _ = LoadRemoteIconAsync(url, icon, _remoteIconGeneration, _remoteIconCancellation.Token);
             return icon;
         }
 
-        private async Task LoadRemoteIconAsync(string url, ImageSource icon)
+        private void ClearRemoteIconResources()
         {
-            var cancellation = _remoteIconCancellation.Token;
+            _remoteIconGeneration++;
+            var cancellation = _remoteIconCancellation;
+            _remoteIconCancellation = null;
+            cancellation?.Cancel();
+            cancellation?.Dispose();
+            _remoteIcons.Clear();
+        }
+
+        private bool IsRemoteIconLoadCurrent(int generation, CancellationToken cancellation)
+            => !_settingsClosed && generation == _remoteIconGeneration && !cancellation.IsCancellationRequested;
+
+        private async Task LoadRemoteIconAsync(string url, ImageSource icon,
+            int generation, CancellationToken cancellation)
+        {
             bool entered = false;
             try
             {
                 await _remoteIconSlots.WaitAsync(cancellation);
                 entered = true;
+                if (!IsRemoteIconLoadCurrent(generation, cancellation)) return;
                 using var handler = new HttpClientHandler { AllowAutoRedirect = true, MaxAutomaticRedirections = 5 };
                 ProxySupport.Apply(handler);
                 using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
@@ -42,6 +59,7 @@ namespace DeepSeekHarnessLauncher
                 Exception lastError = null;
                 foreach (string candidate in RemoteImageSource.Candidates(url, _settings))
                 {
+                    if (!IsRemoteIconLoadCurrent(generation, cancellation)) return;
                     try
                     {
                         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
@@ -67,12 +85,13 @@ namespace DeepSeekHarnessLauncher
                             await writer.StoreAsync();
                             writer.DetachStream();
                         }
-                        cancellation.ThrowIfCancellationRequested();
+                        if (!IsRemoteIconLoadCurrent(generation, cancellation)) return;
                         stream.Seek(0);
                         if (icon is SvgImageSource svg) await svg.SetSourceAsync(stream);
                         else
                         {
                             var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream);
+                            if (!IsRemoteIconLoadCurrent(generation, cancellation)) return;
                             var bitmap = (BitmapImage)icon;
                             const int maximumEdge = 128;
                             if (decoder.PixelWidth >= decoder.PixelHeight)
@@ -81,15 +100,21 @@ namespace DeepSeekHarnessLauncher
                             stream.Seek(0);
                             await bitmap.SetSourceAsync(stream);
                         }
+                        if (!IsRemoteIconLoadCurrent(generation, cancellation)) return;
                         return;
                     }
                     catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { throw; }
                     catch (Exception exception) { lastError = exception; }
                 }
-                if (lastError != null) _host.Log("仓库图标读取失败：" + lastError.Message);
+                if (lastError != null && IsRemoteIconLoadCurrent(generation, cancellation))
+                    _host.Log("仓库图标读取失败：" + lastError.Message);
             }
             catch (OperationCanceledException) { }
-            catch (Exception exception) { _host.Log("仓库图标读取失败：" + exception.Message); }
+            catch (Exception exception)
+            {
+                if (IsRemoteIconLoadCurrent(generation, cancellation))
+                    _host.Log("仓库图标读取失败：" + exception.Message);
+            }
             finally { if (entered) _remoteIconSlots.Release(); }
         }
     }

@@ -20,6 +20,9 @@ namespace DeepSeekHarnessLauncher
         private readonly AcknowledgementsClient _acknowledgementsClient = new AcknowledgementsClient();
         private readonly List<AcknowledgementModel> _acknowledgements = new List<AcknowledgementModel>();
         private readonly SemaphoreSlim _acknowledgementAvatarSlots = new SemaphoreSlim(4);
+        private readonly List<Image> _publicAcknowledgementAvatars = new List<Image>();
+        private CancellationTokenSource _publicAcknowledgementCancellation;
+        private int _publicAcknowledgementGeneration;
         private bool _publicAcknowledgementsBusy;
         private bool _adminAcknowledgementsBusy;
 
@@ -28,28 +31,56 @@ namespace DeepSeekHarnessLauncher
 
         private async Task LoadPublicAcknowledgementsAsync()
         {
-            if (_publicAcknowledgementsBusy) return;
+            if (_publicAcknowledgementsBusy || _settingsClosed) return;
+            ReleasePublicAcknowledgementResources();
+            var cancellation = new CancellationTokenSource();
+            _publicAcknowledgementCancellation = cancellation;
+            CancellationToken token = cancellation.Token;
+            int generation = _publicAcknowledgementGeneration;
             _publicAcknowledgementsBusy = true;
             PublicAcknowledgementsInfoBar.IsOpen = false;
             try
             {
                 List<AcknowledgementModel> items = await _acknowledgementsClient.ListPublicAsync(
-                    _settings.DeveloperCenterBaseUrl, CancellationToken.None);
-                PublicAcknowledgementRows.Children.Clear();
-                AddPublicAcknowledgementCategory("感谢机构", "Organization", items);
-                AddPublicAcknowledgementCategory("感谢个人", "Person", items);
+                    _settings.DeveloperCenterBaseUrl, token);
+                if (!IsPublicAcknowledgementLoadCurrent(generation, token)) return;
+                AddPublicAcknowledgementCategory("感谢机构", "Organization", items, generation, token);
+                AddPublicAcknowledgementCategory("感谢个人", "Person", items, generation, token);
                 if (items.Count == 0)
                     ReportPublicAcknowledgements(InfoBarSeverity.Informational, "鸣谢名单暂时为空，等候真实记录。", "");
             }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { }
             catch (Exception error)
             {
+                if (!IsPublicAcknowledgementLoadCurrent(generation, token)) return;
                 ReportPublicAcknowledgements(InfoBarSeverity.Warning, "鸣谢名单暂时无法读取", SafeAcknowledgementError(error));
                 _host.Log("鸣谢名单公开读取失败: " + error.Message);
             }
-            finally { _publicAcknowledgementsBusy = false; }
+            finally
+            {
+                if (generation == _publicAcknowledgementGeneration)
+                    _publicAcknowledgementsBusy = false;
+            }
         }
 
-        private void AddPublicAcknowledgementCategory(string title, string category, List<AcknowledgementModel> items)
+        private bool IsPublicAcknowledgementLoadCurrent(int generation, CancellationToken token)
+            => !_settingsClosed && generation == _publicAcknowledgementGeneration && !token.IsCancellationRequested;
+
+        private void ReleasePublicAcknowledgementResources()
+        {
+            _publicAcknowledgementGeneration++;
+            var cancellation = _publicAcknowledgementCancellation;
+            _publicAcknowledgementCancellation = null;
+            cancellation?.Cancel();
+            cancellation?.Dispose();
+            _publicAcknowledgementsBusy = false;
+            foreach (Image image in _publicAcknowledgementAvatars) image.Source = null;
+            _publicAcknowledgementAvatars.Clear();
+            PublicAcknowledgementRows?.Children.Clear();
+        }
+
+        private void AddPublicAcknowledgementCategory(string title, string category, List<AcknowledgementModel> items,
+            int generation, CancellationToken token)
         {
             List<AcknowledgementModel> rows = items.Where(item => item.Category == category)
                 .OrderBy(item => item.SortOrder).ThenBy(item => item.Id, StringComparer.Ordinal).ToList();
@@ -105,6 +136,7 @@ namespace DeepSeekHarnessLauncher
                     Stretch = Stretch.UniformToFill,
                     Clip = new RectangleGeometry { Rect = new Windows.Foundation.Rect(0, 0, 48, 48) }
                 };
+                _publicAcknowledgementAvatars.Add(avatar);
                 avatarGrid.Children.Add(avatar);
                 if (!String.IsNullOrWhiteSpace(item.Link))
                 {
@@ -150,19 +182,24 @@ namespace DeepSeekHarnessLauncher
                 Grid.SetRow(card, captured / 4);
                 Grid.SetColumn(card, captured % 4);
                 grid.Children.Add(card);
-                if (!String.IsNullOrWhiteSpace(item.AvatarUrl)) _ = LoadAcknowledgementAvatarAsync(item, avatar);
+                if (!String.IsNullOrWhiteSpace(item.AvatarUrl))
+                    _ = LoadAcknowledgementAvatarAsync(item, avatar, generation, token);
             }
             section.Children.Add(grid);
             PublicAcknowledgementRows.Children.Add(section);
         }
 
-        private async Task LoadAcknowledgementAvatarAsync(AcknowledgementModel item, Image image)
+        private async Task LoadAcknowledgementAvatarAsync(AcknowledgementModel item, Image image,
+            int generation, CancellationToken token)
         {
-            await _acknowledgementAvatarSlots.WaitAsync();
+            bool entered = false;
             try
             {
-                byte[] bytes = await _acknowledgementsClient.DownloadAvatarAsync(_settings.DeveloperCenterBaseUrl, item, CancellationToken.None);
-                if (bytes == null) return;
+                await _acknowledgementAvatarSlots.WaitAsync(token);
+                entered = true;
+                if (!IsPublicAcknowledgementLoadCurrent(generation, token)) return;
+                byte[] bytes = await _acknowledgementsClient.DownloadAvatarAsync(_settings.DeveloperCenterBaseUrl, item, token);
+                if (bytes == null || !IsPublicAcknowledgementLoadCurrent(generation, token)) return;
                 using var stream = new InMemoryRandomAccessStream();
                 using (var writer = new DataWriter(stream.GetOutputStreamAt(0)))
                 {
@@ -171,13 +208,27 @@ namespace DeepSeekHarnessLauncher
                     await writer.FlushAsync();
                     writer.DetachStream();
                 }
+                if (!IsPublicAcknowledgementLoadCurrent(generation, token)) return;
                 stream.Seek(0);
+                var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream);
+                if (!IsPublicAcknowledgementLoadCurrent(generation, token)) return;
                 var bitmap = new BitmapImage();
+                const int maximumEdge = 128;
+                if (decoder.PixelWidth >= decoder.PixelHeight)
+                    bitmap.DecodePixelWidth = (int)Math.Min(decoder.PixelWidth, maximumEdge);
+                else bitmap.DecodePixelHeight = (int)Math.Min(decoder.PixelHeight, maximumEdge);
+                stream.Seek(0);
                 await bitmap.SetSourceAsync(stream);
+                if (!IsPublicAcknowledgementLoadCurrent(generation, token)) return;
                 image.Source = bitmap;
             }
-            catch (Exception error) { _host.Log("鸣谢头像读取失败: " + error.Message); }
-            finally { _acknowledgementAvatarSlots.Release(); }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+            catch (Exception error)
+            {
+                if (IsPublicAcknowledgementLoadCurrent(generation, token))
+                    _host.Log("鸣谢头像读取失败: " + error.Message);
+            }
+            finally { if (entered) _acknowledgementAvatarSlots.Release(); }
         }
 
         private void AcknowledgementLink_Click(object sender, RoutedEventArgs args)

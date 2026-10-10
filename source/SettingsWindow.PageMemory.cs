@@ -104,6 +104,7 @@ namespace DeepSeekHarnessLauncher
             {
                 case "Home":
                     _homePageLoadGeneration++;
+                    StopChartAnimations();
                     HomeAnnouncementRepeater.ItemsSource = null;
                     HomeNotificationMarkdownHost.Content = null;
                     HomeNotificationButtonsHost.Children.Clear();
@@ -127,7 +128,7 @@ namespace DeepSeekHarnessLauncher
                     _pluginInstallationState = null;
                     _catalogFromMarket = false;
                     _pluginCardsLoaded = false;
-                    _remoteIcons.Clear();
+                    ClearRemoteIconResources();
                     return true;
 
                 case "Skills":
@@ -145,7 +146,7 @@ namespace DeepSeekHarnessLauncher
                     _skillsLoaded = false;
                     _featuredSkillsLoaded = false;
                     _skillMarketLoading = false;
-                    _remoteIcons.Clear();
+                    ClearRemoteIconResources();
                     return true;
 
                 case "Downloads":
@@ -167,6 +168,7 @@ namespace DeepSeekHarnessLauncher
 
                 case "About":
                     _aboutPageLoadGeneration++;
+                    ReleasePublicAcknowledgementResources();
                     _authorAvatarLoading = false;
                     AuthorAvatarImage.Source = null;
                     return true;

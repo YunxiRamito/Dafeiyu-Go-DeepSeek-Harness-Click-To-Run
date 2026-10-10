@@ -43,7 +43,7 @@ namespace DeepSeekHarnessLauncher
     {
         public const string Title = "Dafeiyu-Go";
         public const string EnglishTitle = "Dafeiyu-Go";
-        public const string Version = "1.7.3";
+        public const string Version = "1.7.4";
         public const string Repository = "YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run";
         public const string LegacyRepository = "YunxiRamito/DSH-Launcher";
         public const string UserAgent = "Dafeiyu-Go/" + Version;
@@ -7051,6 +7051,8 @@ namespace DeepSeekHarnessLauncher
         private bool _menuOpen;
         private int _animationSerial;
 
+        private int _openAnimationSerial = -1;
+
         public WinUICompositionTrayMenu()
         {
             _foregroundChanged = OnForegroundChanged;
@@ -7146,17 +7148,10 @@ namespace DeepSeekHarnessLauncher
                 Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
                 Child = _itemsPanel
             };
-            _window.Content = _surface;
-            LauncherAppearance.Register(
-                _window,
-                _surface,
-                delegate(Microsoft.UI.Xaml.Media.Brush brush)
-                {
-                    _surface.Background = brush;
-                });
-            _window.AppWindow.Show();
-            MoveOffscreen();
-            SetSurfaceHidden();
+            _surface.Loaded += TraySurface_Loaded;
+            // Keep the HWND for tray callbacks without keeping a shown XAML
+            // composition target and backdrop alive while the menu is closed.
+            _window.AppWindow.Hide();
         }
 
         public event Action BalanceClicked = delegate { };
@@ -7225,6 +7220,7 @@ namespace DeepSeekHarnessLauncher
             _menuOpen = true;
             int serial = ++_animationSerial;
             ConfigureNativeWindow(_hostHandle);
+            _window.AppWindow.Show(false);
             NativeMethods.SetWindowPos(
                 _hostHandle,
                 NativeMethods.HWND_TOPMOST,
@@ -7238,6 +7234,7 @@ namespace DeepSeekHarnessLauncher
                     | NativeMethods.SWP_SHOWWINDOW);
             StartInteractionHooks();
             PlayOpenAnimation(serial);
+            _surface.DispatcherQueue.TryEnqueue(delegate { PlayOpenAnimation(serial); });
         }
 
         public void SetBalance(string text, string tooltip)
@@ -7283,7 +7280,9 @@ namespace DeepSeekHarnessLauncher
             _animationSerial++;
             StopInteractionHooks();
             SetSurfaceHidden();
-            MoveOffscreen();
+            _window.AppWindow.Hide();
+            LauncherAppearance.Unregister(_window);
+            _window.Content = null;
         }
 
         private void PrepareForOpen()
@@ -7291,6 +7290,17 @@ namespace DeepSeekHarnessLauncher
             _menuOpen = false;
             _animationSerial++;
             StopInteractionHooks();
+            if (_window.Content == null)
+            {
+                _window.Content = _surface;
+                LauncherAppearance.Register(
+                    _window,
+                    _surface,
+                    delegate(Microsoft.UI.Xaml.Media.Brush brush)
+                    {
+                        _surface.Background = brush;
+                    });
+            }
             SetSurfaceHidden();
             ApplyThemeStates();
         }
@@ -7347,50 +7357,64 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        private void MoveOffscreen()
+        private void TraySurface_Loaded(object sender, RoutedEventArgs args)
         {
-            try
+            if (_menuOpen)
             {
-                _window.AppWindow.MoveAndResize(new RectInt32(-32000, -32000, 1, 1));
-            }
-            catch
-            {
+                int serial = _animationSerial;
+                _surface.DispatcherQueue.TryEnqueue(delegate
+                {
+                    PlayOpenAnimation(serial);
+                });
             }
         }
 
         private void PlayOpenAnimation(int serial)
         {
-            if (!_menuOpen || serial != _animationSerial || _surface.XamlRoot == null)
+            if (!_menuOpen || serial != _animationSerial || serial == _openAnimationSerial
+                || _surface.XamlRoot == null)
             {
                 return;
             }
 
+            _openAnimationSerial = serial;
             Visual visual = ElementCompositionPreview.GetElementVisual(_surface);
             visual.StopAnimation("Offset");
             visual.StopAnimation("Opacity");
+            _surface.Opacity = 1;
 
-            Vector3 end = Vector3.Zero;
-            Vector3 start = new Vector3(0, AnimationOffset, 0);
-            visual.Offset = start;
-            visual.Opacity = 0;
+            try
+            {
+                Vector3 end = Vector3.Zero;
+                Vector3 start = new Vector3(0, AnimationOffset, 0);
+                visual.Offset = start;
+                visual.Opacity = 0;
 
-            Compositor compositor = visual.Compositor;
-            CubicBezierEasingFunction easing = compositor.CreateCubicBezierEasingFunction(
-                new Vector2(0.16f, 1.0f),
-                new Vector2(0.30f, 1.0f));
+                Compositor compositor = visual.Compositor;
+                using CubicBezierEasingFunction easing = compositor.CreateCubicBezierEasingFunction(
+                    new Vector2(0.16f, 1.0f),
+                    new Vector2(0.30f, 1.0f));
 
-            Vector3KeyFrameAnimation slide = compositor.CreateVector3KeyFrameAnimation();
-            slide.InsertKeyFrame(0, start);
-            slide.InsertKeyFrame(1, end, easing);
-            slide.Duration = TimeSpan.FromMilliseconds(AnimationMilliseconds);
+                using Vector3KeyFrameAnimation slide = compositor.CreateVector3KeyFrameAnimation();
+                slide.InsertKeyFrame(0, start);
+                slide.InsertKeyFrame(1, end, easing);
+                slide.Duration = TimeSpan.FromMilliseconds(AnimationMilliseconds);
 
-            ScalarKeyFrameAnimation fade = compositor.CreateScalarKeyFrameAnimation();
-            fade.InsertKeyFrame(0, 0);
-            fade.InsertKeyFrame(1, 1, easing);
-            fade.Duration = TimeSpan.FromMilliseconds(AnimationMilliseconds - 20);
+                using ScalarKeyFrameAnimation fade = compositor.CreateScalarKeyFrameAnimation();
+                fade.InsertKeyFrame(0, 0);
+                fade.InsertKeyFrame(1, 1, easing);
+                fade.Duration = TimeSpan.FromMilliseconds(AnimationMilliseconds - 20);
 
-            visual.StartAnimation("Offset", slide);
-            visual.StartAnimation("Opacity", fade);
+                visual.StartAnimation("Offset", slide);
+                visual.StartAnimation("Opacity", fade);
+            }
+            catch
+            {
+                visual.StopAnimation("Offset");
+                visual.StopAnimation("Opacity");
+                visual.Offset = Vector3.Zero;
+                visual.Opacity = 1;
+            }
         }
 
         private void SetSurfaceHidden()

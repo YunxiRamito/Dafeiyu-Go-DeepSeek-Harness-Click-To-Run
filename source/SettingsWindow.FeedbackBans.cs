@@ -29,19 +29,31 @@ namespace DeepSeekHarnessLauncher
 
         private void FeedbackBanText_Loaded(object sender, RoutedEventArgs args)
         {
+            if (_settingsClosed) return;
             if (_feedbackBanCountdown == null)
             {
                 _feedbackBanCountdown = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
-                _feedbackBanCountdown.Tick += delegate
-                {
-                    bool expired = _feedbackBanStatus.Banned && !_feedbackBanStatus.IsActive(DateTimeOffset.UtcNow);
-                    ApplyFeedbackBanStatus(null);
-                    if (expired) { _feedbackBanStatus = new FeedbackBanStatus(); RenderFeedbackRows(); }
-                };
+                _feedbackBanCountdown.Tick += FeedbackBanCountdown_Tick;
             }
             _feedbackBanCountdown.Start();
         }
         private void FeedbackBanText_Unloaded(object sender, RoutedEventArgs args) => _feedbackBanCountdown?.Stop();
+
+        private void FeedbackBanCountdown_Tick(object sender, object args)
+        {
+            if (_settingsClosed) return;
+            bool expired = _feedbackBanStatus.Banned && !_feedbackBanStatus.IsActive(DateTimeOffset.UtcNow);
+            ApplyFeedbackBanStatus(null);
+            if (expired) { _feedbackBanStatus = new FeedbackBanStatus(); RenderFeedbackRows(); }
+        }
+
+        private void ReleaseFeedbackBanCountdown()
+        {
+            if (_feedbackBanCountdown == null) return;
+            _feedbackBanCountdown.Stop();
+            _feedbackBanCountdown.Tick -= FeedbackBanCountdown_Tick;
+            _feedbackBanCountdown = null;
+        }
 
         private async Task<bool> CheckFeedbackBanBeforeSendingAsync()
         {
