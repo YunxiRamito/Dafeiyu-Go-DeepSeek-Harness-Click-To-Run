@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "name": "dafeiyu-mobile-ui",
+  "version": "0.1.6",
+  "file_name": "dafeiyu-mobile-ui-0.1.6.tgz",
+  "size_bytes": 108166,
+  "sha256": "bbf352c83c4da7e6d6f1fd5b975dd91735e0c41cefaed7a1bd440053ec4ff2a3",
+  "files": [
+    {
+      "path": "package/LICENSE",
+      "size_bytes": 1080,
+      "sha256": "5ed8121ab5c2bbf972b5dbc9b8d941391296edf78fb045aa1e299bf314fb1ac0"
+    },
+    {
+      "path": "package/client/styles.css",
+      "size_bytes": 99404,
+      "sha256": "052dc9daefd085084a3a55d117259119f3e194e9223f3da39593f20bf47a847a"
+    },
+    {
+      "path": "package/client/client.js",
+      "size_bytes": 244635,
+      "sha256": "3fb142d746211207a933600b4f2745ae2f3964aa5d0b16dd5ce262db584ae2ab"
+    },
+    {
+      "path": "package/client/context.js",
+      "size_bytes": 109027,
+      "sha256": "fc3a5bac24a45264348d0a6ff114e4d051ee5d131198a102fca8c82eee62ba7c"
+    },
+    {
+      "path": "package/client/host-footer.js",
+      "size_bytes": 15144,
+      "sha256": "b55f572c176156a29a815578c6ecb93d7ab9f391fffeb7bcd63ea6aa97b77ea7"
+    },
+    {
+      "path": "package/client/index.js",
+      "size_bytes": 756,
+      "sha256": "731e02a47d9736287cd1239ba49af4e75dd6a9c2c2a9fa91d717f595c6dab047"
+    },
+    {
+      "path": "package/lib/index.js",
+      "size_bytes": 183,
+      "sha256": "98677f0798599a8e32ca96b0e56d76235672b2693574d5a744e58c377cc2f65e"
+    },
+    {
+      "path": "package/client/startup.js",
+      "size_bytes": 15446,
+      "sha256": "0ffd068f9759d2068686cbd7e966f0deb08fc1dbabc0d33e568ae74fa680ccbb"
+    },
+    {
+      "path": "package/package.json",
+      "size_bytes": 868,
+      "sha256": "998b160fee1679447d2908c0185ad192e389a2c8f94fb06e52be77f122435ab5"
+    },
+    {
+      "path": "package/README.md",
+      "size_bytes": 15754,
+      "sha256": "f855550450edfb857694315024ef4620de363851c23ccd65c88e7c648f6876db"
+    },
+    {
+      "path": "package/THIRD_PARTY_NOTICES.md",
+      "size_bytes": 4250,
+      "sha256": "80483a19fb8a1ffee5d5a31bb013069d0f9e16f49c3d8091ec2a040ab59afa05"
+    },
+    {
+      "path": "package/cordis.patch.yml",
+      "size_bytes": 294,
+      "sha256": "1a18b211266d30ffe7eed6e75fb427752e0fad0b57c1c8901915a47560ee08df"
+    }
+  ]
+}

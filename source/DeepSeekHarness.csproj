@@ -68,6 +68,11 @@
 
     <!-- 自带的用量统计插件：随包发出去，一键安装就是把它复制到 <dshRoot>\plugins\ -->
     <Content Include="assets\dsh-token-stats\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Frozen mobile DSH web UI package and its integrity manifest. The service
+         resolves the versioned archive name from manifest.json and validates every
+         byte before invoking the official SDK operation under its native lock. -->
+    <Content Include="assets\dafeiyu-mobile-ui\**" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="MobileUiPluginOperation.mjs" LogicalName="DeepSeekHarnessLauncher.MobileUiPluginOperation.mjs" />
     <Content Include="assets\sounds\notify_F4_F5_v2.mp3" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

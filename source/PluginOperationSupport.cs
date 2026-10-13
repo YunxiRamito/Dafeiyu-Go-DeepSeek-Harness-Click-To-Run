@@ -16,34 +16,72 @@ namespace DeepSeekHarnessLauncher
         // live or unknown native locks remain owned by DSH.
         [ThreadStatic] private static Dictionary<string, OperationLease> held;
 
-        internal static IDisposable Acquire(string profile, Action waiting = null, Func<bool> cancelled = null)
+        /// <summary>
+        /// Acquires the launcher-side lease for a profile.  <paramref name="temporaryRoot"/>
+        /// is an optional caller-owned root for routes which must keep all temporary
+        /// state on a specific volume. A named mutex keeps the canonical profile serialized across temporary
+        /// roots. Existing callers retain their historical file lease directory.
+        /// </summary>
+        internal static IDisposable Acquire(
+            string profile,
+            Action waiting = null,
+            Func<bool> cancelled = null,
+            string temporaryRoot = null)
         {
             string key = Path.GetFullPath(profile).TrimEnd(Path.DirectorySeparatorChar).ToUpperInvariant();
             held ??= new Dictionary<string, OperationLease>(StringComparer.Ordinal);
             if (held.TryGetValue(key, out var nested)) { nested.Depth++; return new Release(nested); }
-            string directory = Path.Combine(Path.GetTempPath(), "Dafeiyu-Go", "plugin-operation-locks");
-            Directory.CreateDirectory(directory);
-            string path = Path.Combine(directory, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key))) + ".lock");
+            string hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)));
+            var mutex = new Mutex(false, "Dafeiyu-Go.PluginOperation." + hash);
+            bool mutexHeld = false;
             bool notified = false;
-            while (true)
+            try
             {
-                if (cancelled?.Invoke() == true) throw new OperationCanceledException("插件操作已取消。");
-                try
+                while (!mutexHeld)
                 {
-                    var stream = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-                    var lease = new OperationLease { Key = key, Stream = stream, Depth = 1 };
-                    held.Add(key, lease);
-                    return new Release(lease);
+                    if (cancelled?.Invoke() == true) throw new OperationCanceledException("插件操作已取消。");
+                    try { mutexHeld = mutex.WaitOne(100); }
+                    catch (AbandonedMutexException) { mutexHeld = true; }
+                    if (!mutexHeld && !notified) { notified = true; waiting?.Invoke(); }
                 }
-                catch (IOException)
+                string root = String.IsNullOrWhiteSpace(temporaryRoot)
+                    ? Path.GetTempPath()
+                    : Path.GetFullPath(temporaryRoot.Trim());
+                string directory = Path.Combine(root, "Dafeiyu-Go", "plugin-operation-locks");
+                Directory.CreateDirectory(directory);
+                string path = Path.Combine(directory, hash + ".lock");
+                while (true)
                 {
-                    if (!notified) { notified = true; waiting?.Invoke(); }
-                    Thread.Sleep(100);
+                    if (cancelled?.Invoke() == true) throw new OperationCanceledException("插件操作已取消。");
+                    try
+                    {
+                        var stream = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                        var lease = new OperationLease { Key = key, Stream = stream, Depth = 1, Mutex = mutex };
+                        held.Add(key, lease);
+                        return new Release(lease);
+                    }
+                    catch (IOException)
+                    {
+                        if (!notified) { notified = true; waiting?.Invoke(); }
+                        Thread.Sleep(100);
+                    }
                 }
+            }
+            catch
+            {
+                if (mutexHeld) mutex.ReleaseMutex();
+                mutex.Dispose();
+                throw;
             }
         }
 
-        private sealed class OperationLease { internal string Key; internal FileStream Stream; internal int Depth; }
+        private sealed class OperationLease
+        {
+            internal string Key;
+            internal FileStream Stream;
+            internal int Depth;
+            internal Mutex Mutex;
+        }
         private sealed class Release : IDisposable
         {
             private OperationLease lease;
@@ -53,7 +91,12 @@ namespace DeepSeekHarnessLauncher
                 var value = Interlocked.Exchange(ref lease, null);
                 if (value == null || --value.Depth != 0) return;
                 held.Remove(value.Key);
-                value.Stream.Dispose();
+                try { value.Stream.Dispose(); }
+                finally
+                {
+                    value.Mutex.ReleaseMutex();
+                    value.Mutex.Dispose();
+                }
             }
         }
 

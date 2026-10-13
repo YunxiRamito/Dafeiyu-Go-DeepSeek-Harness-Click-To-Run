@@ -5031,6 +5031,7 @@ namespace DeepSeekHarnessLauncher
             {
                 WriteLog("服务已经在跑,直接接管,不再新建 node 进程。");
                 _serviceStartedByUs = false;
+                InspectRunningMobileUi();
                 FinishSuccessfulStartup(true);
                 return;
             }
@@ -5045,6 +5046,7 @@ namespace DeepSeekHarnessLauncher
                 if (WaitForServiceReady(out waitMessage))
                 {
                     _serviceStartedByUs = false;
+                    InspectRunningMobileUi();
                     FinishSuccessfulStartup(true);
                     return;
                 }
@@ -5188,6 +5190,47 @@ namespace DeepSeekHarnessLauncher
             return false;
         }
 
+        private void InspectRunningMobileUi()
+        {
+            // An HTTP response does not attest which DSH_HOME/profile the existing
+            // service loaded. Never install, upgrade or restart it on adoption.
+            WriteLog("已有 DSH 保持运行；未确认其 web profile，手机网页插件准备留到安全重启。");
+        }
+
+        private bool PrepareMobileUiForOwnedLaunch(out string failureMessage)
+        {
+            failureMessage = null;
+            string diagnostic;
+            try
+            {
+                MobileUiPluginService.ResolveShippedAssets(AppContext.BaseDirectory,
+                    out string archive, out string manifest);
+                UpdateServiceWindow("正在验证手机网页插件");
+                var prepared = MobileUiPluginService.Prepare(_settings, archive, manifest, "web",
+                    Path.Combine(_settings.DshRoot, ".launcher-mobile-ui", "operations"),
+                    timeoutMs: 120000, log: WriteLog,
+                    serviceRunning: () => IsServicePortListening(_port),
+                    profileAttested: true, allowInstallation: true);
+                if (prepared.Status == MobileUiPluginService.PreparationStatus.Ready
+                    || prepared.Status == MobileUiPluginService.PreparationStatus.Disabled)
+                    return true;
+                diagnostic = prepared.Error ?? "SDK 未返回可验证结果。";
+            }
+            catch (Exception exception) when (exception is IOException
+                || exception is UnauthorizedAccessException || exception is InvalidOperationException
+                || exception is ArgumentException || exception is System.Text.Json.JsonException
+                || exception is System.Net.Http.HttpRequestException || exception is OperationCanceledException)
+            {
+                diagnostic = exception.Message;
+            }
+            // This skin is optional for ordinary PC use. A failed attestation
+            // never enables phone web capabilities and must not disable the
+            // user's normal desktop service (e.g. after a newer upstream SDK).
+            WriteLog(RedactServiceDiagnosticSecrets("手机网页插件未就绪："
+                + diagnostic + "；普通 PC 服务继续，手机网页可用性未确认。"));
+            return true;
+        }
+
         private bool StartService(out string failureMessage)
         {
             failureMessage = null;
@@ -5208,6 +5251,10 @@ namespace DeepSeekHarnessLauncher
             }
 
             if (!TryPrepareServicePort(false, out failureMessage)) return false;
+            if (!PrepareMobileUiForOwnedLaunch(out failureMessage)) return false;
+            // Recheck after package preparation; another process may have claimed
+            // the configured port while the SDK/profile lease was busy.
+            if (!TryPrepareServicePort(false, out failureMessage)) return false;
 
             ProcessStartInfo startInfo = new ProcessStartInfo();
             startInfo.FileName = _nodePath;
@@ -5223,7 +5270,7 @@ namespace DeepSeekHarnessLauncher
             startInfo.RedirectStandardError = true;
             startInfo.StandardOutputEncoding = Encoding.UTF8;
             startInfo.StandardErrorEncoding = Encoding.UTF8;
-            startInfo.EnvironmentVariables["DSH_HOME"] = Path.Combine(_root, ".dsh");
+            startInfo.EnvironmentVariables["DSH_HOME"] = DshPluginCliService.ResolveDshHome(_settings.DshRoot);
             // 只有用户打开「对 DSH 服务生效」时才写代理环境变量，默认不接管。
             ProxySupport.ApplyDshProcessEnvironment(startInfo, _settings);
 

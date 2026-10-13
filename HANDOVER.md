@@ -1,5 +1,15 @@
 # 交接：大肥鱼Go / Dafeiyu-Go Launcher
 
+## 2026-10-14 Android 主题链路对应的手机网页包 0.1.6
+
+手机主题接续任务将 canonical 及 PC `assets/dafeiyu-mobile-ui` 更新为 `dafeiyu-mobile-ui@0.1.6`，108,166 bytes，SHA-256 `bbf352c83c4da7e6d6f1fd5b975dd91735e0c41cefaed7a1bd440053ec4ff2a3`；和 Android 正式 0.1.28 内嵌包／manifest 字节一致。普通 PC 页面不启用手机主题，Android 明确宿主上下文才接收受限外观数据；Connect 冻结包、真实权限和任务协议未改变。
+
+本轮隔离完整 Release build 在 `../Temp_SetupandLauncher/qa/theme-ui-final-20261014/pc-release-build.log` 成功，37.45s、40 既有 warnings、0 errors。实际新 `DeepSeek Harness.Core.dll` SHA-256 `07f27923d6b58b20cfa4add6633af54e697ef1464db116747e6f5c9764bdcdaa` 的 ResolveShippedAssets／ValidatePackage 成功；实际输出0.1.6 manifest SHA-256 `ebc508b822ecfa7f8a6a37213fde551a4f11e0b1af80b67b653fb2875d5241f5`，嵌入 helper SHA-256 `2c26a01906804e92748da98709623e230b46a81537a019194eb85640b768146e`，与来源一致，证据 `final-pc-compiled-receipt.json`。构建没有操作用户8787／8791服务或profile，也没有制作／发布新的PC 1.8.0版本。
+
+随后补齐可选皮肤的离线启动边界：准备已校验、零依赖的本地归档时使用 offline 包管理环境，不同步请求 backend CA；资源或缓存缺失返回未就绪，普通 PC 启动继续，不开放未经验证的手机网页能力。以 `17360ce` 为基线的 HEAD＋7 文件最小候选独立完整 Release 构建成功（34.22s、40既有warnings、0errors），DLL SHA-256 `c6b637d0721b4005daa6b4970ba8c215db2770144d6fe1de694c46570aa141ed`。实际新DLL专项42/42、真实固定SDK/helper专项10/10、原样service与提取host边界的缺资源专项11/11通过；最后一项环境依赖为测试替身，不能代替真实WinUI启动。证据在 `selective-candidate-r2/final-evidence.json`，缓存／临时文件均G盘，测试网络尝试为0；保留用户profile、未知配置和禁用选择。最小代码提交仅包含 mobile-ui、耦合lease和本段交接，不纳入其他任务的未提交窗口／安装器／反馈／连接改动。
+
+Android真实硬件WebView的浅／暗主题、恢复默认、设置往返、stop/resume和原数据保护共11项通过；正式Palette→正式Android主题页实际交接通过，详情以Android HANDOVER为准。该证据不替代PC真实窗口启动或Aries在线网页端到端测试，远程web/files/archive gate仍false。当前PC工作树有其他任务未提交文件；手机主题源码发布须选择性保留，不得把其他任务一并提交。
+
 ## 2026-10-10 23:30 v1.7.5 已发布（本节优先）
 
 - Release：`https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/tag/v1.7.5`（id `409031013`，tag v1.7.5 → `f411046`）。
