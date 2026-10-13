@@ -1,19 +1,25 @@
 # 交接：大肥鱼Go / Dafeiyu-Go Launcher
 
-## 2026-10-13 启动器 1.7.6 小修发布准备
+## 2026-10-13 启动器 1.7.6 小修已发布
 
 用户明确要求先发布 1.7.6，连接和安卓版制作中；1.8.0 保留至连接完成再发布。隔离工作区从稳定 `origin/main` 的 `17360ce` 建立，未带入原工作区未提交的 1.8.0 连接/同步/归档功能。稳定基线无 Connections 导航、搜索注册、页面路由或 Aries 启动集成，故无需在 1.8.0 源码中删掉功能。
 
 - 本次修复启动外层及组件页对用户自行安装的 Windows App Runtime 1.8 的漏检，统一读取全局/当前用户包注册，保留最低版本和 x64 架构要求；组件页不再依赖枚举权限受限的 WindowsApps。
 - 本次启动器版本为 1.7.6 / 1.7.6.0，包含信息窗口与启动外层的版本资源；保留原鲸鱼图案并压缩图标资源。
 - 用户指定日志仅三行，见 CHANGELOG 1.7.6；Release 和公开更新清单必须保持相同文案。
-- 发布使用正式 tag CI 产物；本地包只验收，不替代正式 CI 资产。CI 另外执行编译后外层检测回归。
+- 用户后续明确取消 GitHub CI、改为本机验收发布；该指令覆盖旧文档的 CI 产物限制。run `38352071647` 已确认取消；本次发布使用已验收本机包。后续流程为本机回归、构建、校验、npm/镜像校验、GitHub 下载校验及清单最后更新，CI 仅保留手动验证。
 - 稳定分支原 UpdateIntegrity 回归桩缺少 production Download 的 optional retries/stateChanged 参数；仅同步测试桩签名，13 组既有 CI 回归共 1197 项通过，未更改下载器生产行为。
 - 用户后续明确要求将环境检测修复也合并到原 1.8.0 源码；只合并检测与对应构建/测试接线，保留 1.8.0 版本及连接功能，不发布 1.8.0 启动器。
 
 发布前验收：本地 Release/verify 通过（两条既有提醒）；真实 WinUI 6 项导航/路由/搜索检查及两张截图通过，未公开连接。编译后的 production 外层检测 122 项、production 组件检测 47 项及 verify 检测 smoke 通过，本机识别 `8000.994.2142.0`；更新所有权 6 项通过。真实用户故障机器未复测，未执行浏览器运行库安装、真实 UAC、DSH 服务启动或用户配置变更。
 
-当前状态：本地验收通过，正式 tag CI/发布待执行。证据与独立发布工作区位于 `Temp_SetupandLauncher/Launcher-1.7.6-20261013/`（相对 Dafeiyu-Go 父项目）；后续发布结果以此节更新为准。
+正式发布：`https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/tag/v1.7.6`，Release id `411324734`，资产 id `636039366`；tag 保留指向源码提交 `65cdc52eadc5c8c40186bb08bde09bca5ea57142`，没有移动。资产 `DeepSeekHarness-1.7.6.zip`，24,486,857 字节，SHA-256 `129C63666D3A53E42C574E7F4658A871EF84B5456650571B3DC46D3930679354`。121 个 ZIP 文件与已验收构建逐项一致；GitHub 下载摘要及 API digest 均一致。
+
+`@yunxiramito/dsh-launcher@1.7.6` 已公开，npm 和 npmmirror tarball 均完整下载并验证内嵌 ZIP 与 GitHub 一致，tgz SHA-256 均为 `B555BDF8DAEE0AEC7CE25E25FAD4A0805B2F772E3095895E76E52FBE5B87EAC5`。国内地址：`https://registry.npmmirror.com/@yunxiramito/dsh-launcher/-/dsh-launcher-1.7.6.tgz`。`manifest.json` / `manifest-1.7.6.json` 在镜像验证后更新并推送，提交 `ce5657d`；Release 和清单使用用户指定三行日志。npm 发布受理后曾延迟约五分钟公开，不可将命令成功或镜像同步任务 success 当成新版本可下载。
+
+证据与独立发布工作区位于 `Temp_SetupandLauncher/Launcher-1.7.6-20261013/`（相对 Dafeiyu-Go 父项目），见 `REPORT.md` 及 `Github-Verified` / `Npm-Verified` / `Npmmirror-Verified`。原 1.8.0 完整构建位于 `Original180-RuntimeFix-Verify/`，仅验证、不发布。
+
+本地发版流程已改造，见 `docs/LOCAL-RELEASE.md`：`release.ps1` 默认本机完整验收，`-Publish` 显式发布；已有验收使用 `publish-release.ps1 -ReceiptPath` 续跑。只构建已提交快照，14 组回归、更新所有权、编译后的运行库检测及 verify 均为必跑；依赖优先复用非 C 盘已有缓存。npm processing 有持久化发布记录，完整验证 npm/镜像/GitHub 内容后才生成清单；标签和不同哈希资产不可覆盖，不自动 stage/rebase/force。GitHub workflow 仅保留手动验证，移除 tag 触发和发布步骤。脚本语法、离线流程边界 smoke（全部外部操作为替身）及真实已下载 tgz 校验通过，证据 `local-release-smoke.log`。流程改造未改产品源码，不为新脚本重复执行整套真实产品回归或二次发布同版本。
 
 ## 2026-10-10 23:30 v1.7.5 已发布（本节优先）
 

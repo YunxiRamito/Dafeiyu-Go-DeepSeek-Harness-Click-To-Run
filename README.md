@@ -299,21 +299,22 @@ DSH 根目录依次从 `DSH_ROOT`、程序同目录的 `launcher.json`、已记�
 
 ### 构建与检查
 
-需要 Windows、.NET 8 SDK，以及 Windows 自带的 .NET Framework C# 编译器。WinUI 依赖通过 NuGet 还原。
+需要 Windows、PowerShell 7.4+、.NET 8 SDK、Git、tar、Node/npm，以及 Windows 自带的 .NET Framework C# 编译器。WinUI 依赖通过 NuGet 还原。先显式提交源码与发版脚本；验收只使用当前 commit 的源码快照。
 
 在仓库根目录执行：
 
 ```powershell
-# 编译主程序与引导程序、打包 ZIP；不改发布清单
+# 完整本机回归、统一构建入口、产物检查和 ZIP；不访问发布服务、不改清单
 .\release.ps1 -NoManifest
 
-# 静态检查产物，不启动 GUI
-.\verify.ps1
+# 本机验收通过后，发布 npm、验证镜像和 GitHub 下载，最后写两份清单
+# 此命令会执行外部发布；只在正式发版时使用
+.\release.ps1 -Publish
 ```
 
-`release.ps1` 优先使用本机便携 SDK，否则查找 `dotnet`；不带 `-NoManifest` 会更新 `manifest.json`，应在对应发布资产就绪后再更新清单。`source/build-winui.ps1` 含本机 SDK 与代理路径，其他机器使用前需检查这些设置。
+`release.ps1` 默认只做本机验收，始终执行 14 套回归、StartupUpdateOwnership、已编译 RuntimeBootstrap 验证及 `verify.ps1`，通过 `source/build-winui.ps1` 构建主程序、InfoHost 和运行库检测器。可指定 `-DotnetPath`、`-WorkRoot`、`-NuGetCache` 和 `-Proxy`；临时目录、构建和 npm 缓存默认位于项目 `Temp_SetupandLauncher`，环境在结束时恢复。
 
-发布背景见 [发布指南](RELEASE.md)，当前工作交接见 [HANDOVER.md](HANDOVER.md)。历史版本示例不应直接当作当前发布命令。
+正式发版使用 [本机发版流程与参数](docs/LOCAL-RELEASE.md)。GitHub workflow 仅可手动验证和上传 artifact，推送标签不会触发 CI 发版。脚本不自动提交、不移动标签、不覆盖资产；两份清单最后生成，并打印仅暂存清单的命令。发布背景见 [发布指南](RELEASE.md)，当前工作交接见 [HANDOVER.md](HANDOVER.md)。历史版本示例不应直接当作当前发布命令。
 
 </details>
 
