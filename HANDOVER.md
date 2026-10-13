@@ -1396,3 +1396,19 @@ Steam 运行时占用 127.0.0.1:8080 曾被启动器误认成 DSH。当前未编
 - 新图标已覆盖启动器 EXE、核心进程、托盘、设置页和信息窗进程；用户指定的白色留白完整保留，不裁切、不透明化。
 - 最终本地包：`Temp_SetupandLauncher/StartupFix-1.7.5-AllIcons-20261010/Dafeiyu-Go-Launcher-1.7.5-all-process-icons-test-20261010.zip`，34,014,500 字节，SHA-256 `EEE58663D0ED196E53DB239C0152C5B8AF68E8A1B70309F49528EA431883CD38`；`verify.ps1` 通过，121 个 ZIP 文件校验通过。
 - 旧启动器进程和 Windows 图标缓存可能让第一次观察仍显示旧图标；测试前请退出旧启动器并从新包目录启动。真实 UAC、真实用户 DSH 启动和安装/自更新仍需手测。
+
+## 2026-10-13 Android / PC 跨端 `.dym` 源码接续
+
+本轮补齐 PC 启动器的真实 7z `.dym` 跨端数据适配：`.dafeiyu` 白名单元数据包含各平台独立偏好、提供商、可移植 API Key 和兼容历史；保留另一平台原始内容。设备私钥、配对身份、节点 pin 与推送 token 不导出。备份界面明确提示包含凭据；无效偏好分组继续导入其他组，结束后黄色提示部分失败。导入只应用已确认的偏好字段，使用导入前快照避免覆盖期间的新修改，凭据在 Windows 重新 DPAPI 保存并读回校验；不迁移设备路径或开机启动设置，不启动 DSH。
+
+新增 `source/Backup/DymLauncherBackupContext.cs`、`DymPortableData.cs` 和三个 `dym-*.mjs`，并接线 `BackupFlow`、`UserDataBackup`、真实备份导入/导出入口及三条 EmbeddedResource。存储适配固定 DSH `0.2.1-alpha.1`、pi-ai `0.87.1`；只操作真实配置、凭据和 v4 持久化，不提交模型提示或重放工具。兼容手机历史可在真实 DSH 持久化中读回；归档的手机记录保留原始数据并提示尚未转换为活动会话，不把源 DSH artifact 和转换后的手机 artifact 当成重复会话。
+
+实际 Android 设备 r16 使用合成夹具，ContentResolver 导出 6/6 通过（file URI，不代表完整 SAF 文档提供商授权验收）。输出 `../Temp_Android/qa/dym-cross-platform-smoke-0.1.25-r16/dym-parity-device-output.dym`，5521 bytes，SHA-256 `D31DF7459BF58049C424F011AFF93028CA24F5AE21D4D2A6E19F1FA298DFBF3B`。该包进入真实 PC `BackupFlow` / `UserDataBackup` / 7zr / Windows DPAPI 恢复流程，18 PASS、exit 0；读取固定第一方持久化模块证实一个转换后的手机 artifact，正文精确匹配夹具，openTurns=0、toolEvents=0、paidModelCalls=0。证据：`../Temp_Android/qa/dym-pc-parity/android-device-export-r16b/device-export-pc-restore-report.json`、`pc-history-readback.json`。
+
+PC 再导出 `../Temp_Android/qa/dym-pc-parity/android-device-export-r16b/reexport/Dafeiyu-Go-备份-20261013-0846.dym`，4220 bytes，SHA-256 `DD742DAFB1D798658313FBE768E8FE62612CFAD1A7B19C6728B42CC1C863D970`。真 7z list/extract exit 0；Android 偏好与工作区元数据逐字节保留，提供商/模型/Key 保留，未含设备身份或推送路径。原坏 PC 外观组作为元数据保留，有效偏好另行保存；导出时新捕获的本平台偏好替换 retained 快照。
+
+既有检查：PC 核心/上下文编译 0 warning/0 error，合成恢复 18 PASS；`../Temp_Android/qa/pc-winui-full-0.1.25-r1/result.json` 为完整共享工作树 Release win-x64 WinUI/XAML Build（非 Publish），0 errors / 40 既有 warnings。本轮另外导出仅含授权 11 路径的 index 快照，完整 Release win-x64 WinUI/XAML Build 通过，0 errors / 40 既有 warnings，39.10 秒；没有纳入连接/UI 其他改动、没有 Publish 或替换 Windows dist。证据在 `../Temp_Android/qa/pc-dym-selective-commit-20261013/staged-build.log`、`staged-build-result.json`。
+
+选择性暂存初次保留完整 diff 的新行位移，在重复上下文处错位；提交前已重算仅本批 hunks 的位移，核对 `ExportDymAsync`、`ImportDymAsync`、偏好刷新及两个按钮方法与原工作树逐字一致。生产工作树保持原样，Apply 只在 import await 后、`EndDshDataTransfer` 前；Export 不 Apply，错误提示分别匹配方向。实际 UI 方法 Roslyn AST 边界检查 24 PASS，检查器 strict 编译 0 warning/0 error；记录为静态验证，不冒充实际 WinUI 按钮操作。证据 `boundary-result.json`、`stage-review.json`；58 个原工作文件除授权 HANDOVER 新段外字节保留。真实用户界面导入、安装与用户验收待完成。
+
+跨仓库同步：Setup 共享核心加入同一 portable 白名单，识别并原样保留跨端元数据，不宣称 Setup 已应用 Launcher 偏好；真实 7zr 专项 16 PASS、双核心旧格式/插件回归 67 PASS，证据在 `../Temp_Android/qa/dym-setup-parity/`。Setup 已在 main 提交推送 `8f51c85`。Android 与 PC 本轮改动、正式 APK 和设备交付状态统一以移动端 HANDOVER 最新记录为准。

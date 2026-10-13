@@ -12731,6 +12731,7 @@ namespace DeepSeekHarnessLauncher
             BackupResult result;
             try
             {
+                DymPortableContext portable = DymLauncherBackupContext.Create(_settings);
                 result = await System.Threading.Tasks.Task.Run(delegate
                 {
                     return BackupFlow.Export(
@@ -12747,8 +12748,13 @@ namespace DeepSeekHarnessLauncher
                     }),
                     _host.Log,
                         cancellation.Token,
-                        dshHome);
+                        dshHome,
+                        portable);
                 });
+            }
+            catch
+            {
+                result = new BackupResult { Error = "无法读取导出所需的配置，原数据已保留。" };
             }
             finally
             {
@@ -12768,8 +12774,10 @@ namespace DeepSeekHarnessLauncher
             if (result.Ok)
             {
                 BackupExportProgress.Value = 100;
-                BackupExportDetail.Text = result.Summary + (_backupOperationDialog == null ? "\n" + result.ArchivePath : String.Empty);
-                ShowBackupInfo(InfoBarSeverity.Success, result.Summary + "\n" + result.ArchivePath);
+                string warnings = result.Partial ? "\n" + String.Join("\n", result.Warnings) : String.Empty;
+                BackupExportDetail.Text = result.Summary + warnings + (_backupOperationDialog == null ? "\n" + result.ArchivePath : String.Empty);
+                ShowBackupInfo(result.Partial ? InfoBarSeverity.Warning : InfoBarSeverity.Success,
+                    result.Summary + warnings + "\n" + result.ArchivePath);
                 ReportBackupOperationProgress("导出 DYM 完成。", 100);
                 return;
             }
@@ -12950,6 +12958,7 @@ namespace DeepSeekHarnessLauncher
             BackupResult result;
             try
             {
+                DymPortableContext portable = DymLauncherBackupContext.Create(_settings);
                 result = await System.Threading.Tasks.Task.Run(delegate
                 {
                     return BackupFlow.Import(
@@ -12972,8 +12981,14 @@ namespace DeepSeekHarnessLauncher
                     }),
                     _host.Log,
                         cancellation.Token,
-                        dshHome);
+                        dshHome,
+                        portable);
                 });
+                DymLauncherBackupContext.Apply(_settings, portable, result);
+            }
+            catch
+            {
+                result = new BackupResult { Error = "备份导入未完成，请检查数据和可用空间；已经恢复的文件已保留。" };
             }
             finally
             {
@@ -12996,11 +13011,13 @@ namespace DeepSeekHarnessLauncher
                 _backupExportGroups.Clear();
                 if (_skillsLoaded) LoadLocalSkills();
                 if (_pluginCardsLoaded) LoadLocalPlugins();
-                BackupImportDetail.Text = result.Summary;
+                if (result.PortableSettingsApplied) RefreshDymPortableSettings();
+                string warnings = result.Partial ? "\n" + String.Join("\n", result.Warnings) : String.Empty;
+                BackupImportDetail.Text = result.Summary + warnings;
                 ReportBackupOperationProgress("导入 DYM 完成。", 100);
                 ShowBackupInfo(
-                    InfoBarSeverity.Success,
-                    result.Summary + "\n启动 DSH 后生效。");
+                    result.Partial ? InfoBarSeverity.Warning : InfoBarSeverity.Success,
+                    result.Summary + warnings + "\n启动 DSH 后生效。");
                 return;
             }
 
@@ -13013,6 +13030,69 @@ namespace DeepSeekHarnessLauncher
 
             BackupImportDetail.Text = result.Error;
             ShowBackupInfo(InfoBarSeverity.Error, "导入失败：\n" + result.Error);
+        }
+
+        private void RefreshDymPortableSettings()
+        {
+            // Refresh only portable fields. Import must not toggle startup,
+            // replace device paths, relock developer controls or start DSH.
+            bool previousInitializing = _initializing;
+            _initializing = true;
+            try
+            {
+                FixedPortBox.Value = _settings.FixedPort;
+                RandomPortRadio.IsChecked = _settings.PortMode == "Random";
+                FixedPortRadio.IsChecked = _settings.PortMode == "Fixed";
+                DefaultPortRadio.IsChecked = _settings.PortMode == "Default";
+                SelectTaggedItem(SilentStartComboBox, _settings.SilentStart);
+                SelectTaggedItem(ThemeComboBox, _settings.Theme);
+                SelectTaggedItem(WindowStyleComboBox, _settings.WindowStyle);
+                SelectTaggedItem(AccentSourceComboBox, _settings.AccentSource);
+                AccentColorPicker.Color = ParseColor(_settings.AccentColor);
+                AccentColorSwatch.Background = new SolidColorBrush(AccentColorPicker.Color);
+                SelectTaggedItem(MaterialComboBox, _settings.Material);
+                SelectTaggedItem(UpdateSourceComboBox, _settings.UpdateSource);
+                RebuildPluginSourceOptions();
+                SelectTaggedItem(LauncherUpdateModeComboBox, _settings.LauncherUpdateMode);
+                SelectTaggedItem(InstallerUpdateModeComboBox, _settings.InstallerUpdateMode);
+                SelectTaggedItem(DshUpdateModeComboBox, _settings.DshUpdateMode);
+                SelectTaggedItem(PluginUpdateModeComboBox, _settings.PluginUpdateMode);
+                SelectTaggedItem(PatchUpdateModeComboBox, _settings.PatchUpdateMode);
+                SelectTaggedItem(UpdateIntervalComboBox, _settings.UpdateInterval);
+                SelectTaggedItem(LauncherChannelComboBox, _settings.LauncherChannel);
+                SelectTaggedItem(DshChannelComboBox, _settings.DshChannel);
+                NotificationMutedToggle.IsOn = _settings.NotificationMuted;
+                UpdateReminderToggle.IsOn = _settings.UpdateReminder;
+                PluginUpdateReminderToggle.IsOn = _settings.PluginUpdateReminder;
+                RechargeReminderToggle.IsOn = _settings.RechargeReminder;
+                Spend5CheckBox.IsChecked = _settings.SpendAlert5;
+                Spend10CheckBox.IsChecked = _settings.SpendAlert10;
+                Spend20CheckBox.IsChecked = _settings.SpendAlert20;
+                Spend50CheckBox.IsChecked = _settings.SpendAlert50;
+                SpendCustomCheckBox.IsChecked = _settings.SpendAlertCustom;
+                SpendCustomBox.Value = (double)_settings.SpendCustomAmount;
+                Balance20CheckBox.IsChecked = _settings.BalanceAlert20;
+                Balance10CheckBox.IsChecked = _settings.BalanceAlert10;
+                Balance5CheckBox.IsChecked = _settings.BalanceAlert5;
+                Balance1CheckBox.IsChecked = _settings.BalanceAlert1;
+                BalanceCustomCheckBox.IsChecked = _settings.BalanceAlertCustom;
+                BalanceCustomBox.Value = (double)_settings.BalanceCustomAmount;
+                ApiKeyBox.Password = LauncherSettingsStore.ReadApiKey(_settings);
+                LoadModelProviderOrder();
+                if (_modelInitialized) RenderModelProviders();
+                TranslationModelBox.Text = TranslationService.ResolveModel(_settings);
+                TranslationBaseUrlBox.Text = TranslationService.NormalizeBaseUrl(_settings.TranslationBaseUrl);
+                UpdateCustomThresholdStates();
+                SyncAcceleratorControls();
+                ApplyTheme();
+                ApplyWindowStyle();
+                ApplyAccent();
+                LauncherAppearance.SetMaterial(ResolveMaterial(_settings.Material));
+            }
+            finally
+            {
+                _initializing = previousInitializing;
+            }
         }
 
         private void BackupCancel_Click(object sender, RoutedEventArgs args)

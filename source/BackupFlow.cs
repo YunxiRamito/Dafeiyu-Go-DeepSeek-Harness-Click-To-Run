@@ -21,6 +21,11 @@ namespace DeepSeekHarnessLauncher
 
         /// <summary>这次用的备份包路径。</summary>
         public string ArchivePath { get; set; }
+
+        public List<string> Warnings { get; } = new List<string>();
+        public bool Partial => Warnings.Count > 0;
+        public DymPortableRestorePlan PortableRestore { get; set; }
+        public bool PortableSettingsApplied { get; set; }
     }
 
     /// <summary>
@@ -81,6 +86,8 @@ namespace DeepSeekHarnessLauncher
             string dshHome = null)
         {
             List<BackupGroup> groups = UserDataBackup.Describe(dshRoot, dshHome);
+            if (!String.IsNullOrWhiteSpace(dshRoot) && !groups.Exists(group => group.Id == UserDataBackup.GroupPortable))
+                groups.Add(UserDataBackup.PortableGroup());
             if (log != null)
             {
                 log("数据备份:可导出 "
@@ -166,7 +173,8 @@ namespace DeepSeekHarnessLauncher
             Action<string, double> progress,
             Action<string> log,
             CancellationToken token,
-            string dshHome = null)
+            string dshHome = null,
+            DymPortableContext portable = null)
         {
             BackupResult result = new BackupResult();
 
@@ -210,6 +218,8 @@ namespace DeepSeekHarnessLauncher
 
             try
             {
+                var metadata = chosen.ExistsGroup(UserDataBackup.GroupPortable)
+                    ? DymPortableData.Capture(portable, dshRoot, dshHome, result.Warnings, token) : null;
                 result.Ok = UserDataBackup.Export(
                     dshRoot,
                     chosen,
@@ -221,7 +231,7 @@ namespace DeepSeekHarnessLauncher
                     },
                     sink,
                     token,
-                    dshHome);
+                    dshHome, metadata);
             }
             catch (OperationCanceledException)
             {
@@ -281,7 +291,8 @@ namespace DeepSeekHarnessLauncher
             Action<string, double> progress,
             Action<string> log,
             CancellationToken token,
-            string dshHome = null)
+            string dshHome = null,
+            DymPortableContext portable = null)
         {
             BackupResult result = new BackupResult { ArchivePath = archive };
 
@@ -338,7 +349,8 @@ namespace DeepSeekHarnessLauncher
                     sink,
                     token,
                     out error,
-                    dshHome);
+                    dshHome, (staging, cancellation) => result.PortableRestore =
+                        DymPortableData.PrepareRestore(portable, dshRoot, dshHome, staging, result.Warnings, cancellation));
             }
             catch (OperationCanceledException)
             {
@@ -371,7 +383,15 @@ namespace DeepSeekHarnessLauncher
             result.Summary = String.IsNullOrWhiteSpace(summary)
                 ? "恢复完成。"
                 : "恢复完成:" + summary;
+            if (result.PortableRestore?.HistoryRestored > 0)
+                result.Summary += "；已转换 " + result.PortableRestore.HistoryRestored + " 条手机兼容会话（未执行旧工具）";
             return result;
+        }
+
+        private static bool ExistsGroup(this IList<BackupGroup> groups, string id)
+        {
+            foreach (var group in groups) if (group?.Id == id) return true;
+            return false;
         }
 
         /// <summary>

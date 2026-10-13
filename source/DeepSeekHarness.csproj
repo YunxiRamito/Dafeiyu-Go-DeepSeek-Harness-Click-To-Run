@@ -51,6 +51,9 @@
 
     <!-- .dym 备份包用的是真 7z 格式,所以带上一个 7zr(588 KB,单文件、公开领域) -->
     <EmbeddedResource Include="Backup\7zr.exe" />
+    <EmbeddedResource Include="Backup\dym-portable.mjs" LogicalName="DeepSeekHarnessLauncher.Backup.dym-portable.mjs" />
+    <EmbeddedResource Include="Backup\dym-persistence.mjs" LogicalName="DeepSeekHarnessLauncher.Backup.dym-persistence.mjs" />
+    <EmbeddedResource Include="Backup\dym-configuration.mjs" LogicalName="DeepSeekHarnessLauncher.Backup.dym-configuration.mjs" />
     <Content Include="DeepSeekHarness.ico" CopyToOutputDirectory="PreserveNewest" />
     <EmbeddedResource Include="assets\DeepSeek-icon.png" LogicalName="AppIcon.png" />
     <Content Include="assets\DeepSeek-icon.png" CopyToOutputDirectory="PreserveNewest" />

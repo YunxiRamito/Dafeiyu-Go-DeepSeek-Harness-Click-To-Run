@@ -80,6 +80,8 @@ namespace DeepSeekHarnessLauncher.Backup
 
         public const string GroupSessions = "sessions";
 
+        public const string GroupPortable = "portable";
+
         /// <summary>组定义的唯一出处:哪些目录算用户数据、包内前缀是什么、默认勾不勾。</summary>
         private sealed class GroupTemplate
         {
@@ -94,6 +96,16 @@ namespace DeepSeekHarnessLauncher.Backup
 
         private static readonly GroupTemplate[] Templates =
         {
+            new GroupTemplate
+            {
+                Id = GroupPortable,
+                NameZh = "跨端偏好、提供商与兼容历史（含凭据）",
+                NameEn = "Portable preferences, providers and history (includes credentials)",
+                RelativePath = ".dafeiyu",
+                ArchivePrefix = ".dafeiyu",
+                AdditionalPrefixes = Array.Empty<string>(),
+                ByDefault = true,
+            },
             new GroupTemplate
             {
                 Id = GroupProfiles,
@@ -255,7 +267,8 @@ namespace DeepSeekHarnessLauncher.Backup
             Action<string, double> report,
             Action<string> log,
             CancellationToken token,
-            string dshHome = null)
+            string dshHome = null,
+            IReadOnlyDictionary<string, string> portableFiles = null)
         {
             if (String.IsNullOrWhiteSpace(dshRoot)
                 || chosen == null
@@ -293,6 +306,27 @@ namespace DeepSeekHarnessLauncher.Backup
             }
             if (chosen.Any(group => group?.Id == GroupPlugins))
                 CollectProfilePlugins(dshRoot, dshHome, exportItems, seenSourceFiles, ref totalBytes, log, token);
+
+            if (chosen.Any(group => group?.Id == GroupPortable) && portableFiles != null)
+            {
+                foreach (var entry in portableFiles)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (!IsPortableMetadataPath(entry.Key) || entry.Value == null
+                        || System.Text.Encoding.UTF8.GetByteCount(entry.Value) > 8 * 1024 * 1024)
+                        throw new IOException("跨端备份元数据无效。");
+                    // A fresh capture takes precedence over a retained older platform snapshot.
+                    var previous = exportItems.FirstOrDefault(item => String.Equals(item.Relative, entry.Key, StringComparison.OrdinalIgnoreCase));
+                    if (previous != null)
+                    {
+                        totalBytes -= previous.Content == null ? new FileInfo(previous.Source).Length
+                            : System.Text.Encoding.UTF8.GetByteCount(previous.Content);
+                        exportItems.Remove(previous);
+                    }
+                    exportItems.Add(new ExportItem { Relative = entry.Key, Content = entry.Value });
+                    totalBytes += System.Text.Encoding.UTF8.GetByteCount(entry.Value);
+                }
+            }
 
             if (exportItems.Count == 0)
             {
@@ -527,6 +561,7 @@ namespace DeepSeekHarnessLauncher.Backup
             foreach (string directory in Directory.GetDirectories(root))
             {
                 token.ThrowIfCancellationRequested();
+                if (ExcludedDataName(Path.GetFileName(directory))) continue;
                 if (archiveRoot.StartsWith(".dsh/profiles", StringComparison.OrdinalIgnoreCase)
                     || archiveRoot.StartsWith("profiles", StringComparison.OrdinalIgnoreCase))
                 {
@@ -553,6 +588,8 @@ namespace DeepSeekHarnessLauncher.Backup
                 }
                 var info = new FileInfo(file);
                 string relative = archiveRoot + "/" + Path.GetFileName(file);
+                if (ExcludedDataName(info.Name) || relative.StartsWith(".dafeiyu/", StringComparison.OrdinalIgnoreCase)
+                    && !IsPortableMetadataPath(relative)) continue;
                 if (seen.Add(relative))
                 {
                     files.Add(new ExportItem { Source = file, Relative = relative });
@@ -593,7 +630,8 @@ namespace DeepSeekHarnessLauncher.Backup
             Action<string> log,
             CancellationToken token,
             out string error,
-            string dshHome = null)
+            string dshHome = null,
+            Action<string, CancellationToken> restorePortable = null)
         {
             error = null;
 
@@ -654,7 +692,10 @@ namespace DeepSeekHarnessLauncher.Backup
                     return false;
                 }
 
-                return MergeStaging(staging, dshRoot, chosen, policy, ask, report, log, token, out error, dshHome);
+                bool merged = MergeStaging(staging, dshRoot, chosen, policy, ask, report, log, token, out error, dshHome);
+                if (merged && (chosen == null || chosen.Count == 0 || chosen.Any(group => group?.Id == GroupPortable)))
+                    restorePortable?.Invoke(staging, token);
+                return merged;
             }
             finally
             {
@@ -723,6 +764,9 @@ namespace DeepSeekHarnessLauncher.Backup
 
                 for (int fileIndex = 0; fileIndex < files.Count; fileIndex++)
                 {
+                    string relative = Path.GetRelativePath(staging, files[fileIndex]).Replace('\\', '/');
+                    if (relative.Split('/').Any(ExcludedDataName)
+                        || group.Id == GroupPortable && !IsPortableMetadataPath(relative)) continue;
                     items.Add(new RestoreItem
                     {
                         Group = group,
@@ -854,6 +898,23 @@ namespace DeepSeekHarnessLauncher.Backup
 
         private static List<BackupGroup> DescribeFromArchiveDefinitions()
             => Templates.Select(template => ToGroup(template, null)).ToList();
+
+        public static BackupGroup PortableGroup() => ToGroup(Templates.Single(item => item.Id == GroupPortable), null);
+
+        internal static bool IsPortableMetadataPath(string path)
+        {
+            if (path is null || path.Contains('\\') || path.Contains(':') || path.Split('/').Any(part => part.Length == 0 || part == "." || part == "..")) return false;
+            return path is ".dafeiyu/preferences/pc.json" or ".dafeiyu/preferences/android.json"
+                or ".dafeiyu/config/providers.json" or ".dafeiyu/config/credentials.json"
+                or ".dafeiyu/android/workspace.json"
+                || path.StartsWith(".dafeiyu/android/model-history/", StringComparison.Ordinal)
+                    && path.EndsWith(".json", StringComparison.Ordinal);
+        }
+
+        private static bool ExcludedDataName(string name) => new[] { ".git", ".cache", "aries", "aries-identity",
+            "aries-groups", "connection-identity", "connection-cache", "push-tokens", "identity.json",
+            "device-identity.json", "pairing.json", "node-pin.json", "private-key.json", "private_key.pem",
+            "id_ed25519", "id_rsa", "aries-identity.dpapi" }.Contains(name, StringComparer.OrdinalIgnoreCase);
 
         private static bool IsProfileModulePath(string path) => (path.StartsWith(".dsh/profiles/", StringComparison.OrdinalIgnoreCase)
             || path.StartsWith("profiles/", StringComparison.OrdinalIgnoreCase)) && path.Contains("/node_modules/", StringComparison.OrdinalIgnoreCase);
