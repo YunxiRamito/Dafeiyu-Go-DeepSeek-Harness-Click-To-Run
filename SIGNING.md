@@ -16,11 +16,11 @@ Foundation was declined, so releases carry no Authenticode signature. SmartScree
 will warn on first run; that is expected for unsigned software. Verify the file
 against the SHA256 in the release notes before running if you prefer.
 
-## CI 现在的行为
+## 当前本机发版流程（2026-10-13）
 
-- 仓库里没配 `SIGNPATH_*` 变量 → `SIGNING_ENABLED=false` → tag 构建走**未签名**路径:
-  照常出包、照常发 Release(照常发 npm),这不是失败。
-- 工作流里那套 SignPath 步骤**保留着** —— 将来接上任何可用的签名服务,配好变量就能启用。
+- 用户要求启动器改为本机回归、构建与发布；GitHub workflow 只保留手动验证，不再由 tag 自动发 npm / Release，也不执行 SignPath。
+- 当前本机包仍未签名。ZIP 和下载哈希校验确认分发内容一致，不代表 Authenticode 签名。
+- 下方 SignPath 配置仅为历史参考，不能仅配置变量就声称本机包已签名；重新接入签名服务时需明确实现签名及验证步骤。
 
 ## 将来要签名的话
 

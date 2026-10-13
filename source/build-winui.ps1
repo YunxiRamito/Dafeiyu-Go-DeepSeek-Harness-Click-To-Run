@@ -11,6 +11,7 @@ $sourceImage = Join-Path $PSScriptRoot 'assets\DeepSeek-icon.png'
 $iconPath = Join-Path $PSScriptRoot 'DeepSeekHarness.ico'
 $nugetConfig = Join-Path $PSScriptRoot 'NuGet.config'
 $bootstrapSource = Join-Path $PSScriptRoot 'RuntimeBootstrap.cs'
+$runtimeDetectorSource = Join-Path $PSScriptRoot 'WindowsAppRuntimeDetector.cs'
 $bootstrapManifest = Join-Path $PSScriptRoot 'RuntimeBootstrap.manifest'
 $frameworkCompiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 
@@ -81,7 +82,8 @@ $bootstrapPath = Join-Path $OutputDirectory 'DeepSeek Harness.exe'
     "/win32icon:$iconPath" `
     "/win32manifest:$bootstrapManifest" `
     "/out:$bootstrapPath" `
-    $bootstrapSource
+    $bootstrapSource `
+    $runtimeDetectorSource
 
 if ($LASTEXITCODE -ne 0) {
     throw "运行库引导程序编译失败，退出代码：$LASTEXITCODE"

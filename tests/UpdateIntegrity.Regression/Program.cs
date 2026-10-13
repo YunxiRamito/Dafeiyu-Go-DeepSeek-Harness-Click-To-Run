@@ -191,7 +191,9 @@ namespace DeepSeekHarnessLauncher
             Action<DownloadProgressInfo> progress,
             Action<string> log,
             out string usedUrl,
-            out string error)
+            out string error,
+            int automaticRetries = 0,
+            Action<string> stateChanged = null)
         {
             throw new Exception("Unexpected network I/O");
         }

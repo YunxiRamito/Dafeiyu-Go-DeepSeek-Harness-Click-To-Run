@@ -34,6 +34,16 @@ function Fail ([string]$m) { Write-Host "  [FAIL] $m" -ForegroundColor Red; $scr
 function Warn ([string]$m) { Write-Host "  [WARN] $m" -ForegroundColor Yellow; $script:Warnings++ }
 function Head ([string]$m) { Write-Host ''; Write-Host $m -ForegroundColor Cyan }
 
+function Test-WindowsAppRuntime ([string]$BootstrapPath) {
+    # Use the shipped detector so verification follows its package/version/architecture rules.
+    $assembly = [Reflection.Assembly]::Load([IO.File]::ReadAllBytes($BootstrapPath))
+    $program = $assembly.GetType('DeepSeekHarnessBootstrap.Program', $true)
+    $method = $program.GetMethod('HasWindowsAppRuntime',
+        [Reflection.BindingFlags]'NonPublic,Static', $null, [Type]::EmptyTypes, $null)
+    if ($null -eq $method) { throw 'Bootstrap runtime detector was not found.' }
+    return [bool]$method.Invoke($null, $null)
+}
+
 Write-Host ''
 Write-Host '============================================'
 Write-Host "  大肥鱼Go启动器 产物自检   v$Version"
@@ -57,11 +67,8 @@ foreach ($name in 'DeepSeek Harness.exe', 'DeepSeek Harness.Core.exe', 'DeepSeek
 Head '[2] 运行库依赖(目标机必须已装)'
 $winAppRuntime = $false
 try {
-    $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Applications'
-    if (Test-Path $key) {
-        $winAppRuntime = [bool]((Get-Item $key).GetSubKeyNames() | Where-Object { $_ -like 'MicrosoftCorporationII.WinAppRuntime.Main.1.8_*' })
-    }
-} catch { }
+    $winAppRuntime = Test-WindowsAppRuntime (Join-Path $Dist 'DeepSeek Harness.exe')
+} catch { Warn "Windows App Runtime 检测失败: $($_.Exception.Message)" }
 if ($winAppRuntime) { Pass 'Windows App Runtime 1.8(本机已装,目标机需要)' } else { Warn '本机没装 Windows App Runtime 1.8 —— 目标机必须有,否则启动器起不来' }
 
 $dotnet8 = $false

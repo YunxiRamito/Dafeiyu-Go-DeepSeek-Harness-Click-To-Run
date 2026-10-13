@@ -1,296 +1,37 @@
-name: release
+name: manual-release-validation
 
-# 打 tag 就自动出包、发 npm、建 Release。
-#
-# 用法:
-#   # 1) 先改 source\DeepSeekHarness.csproj 里的 <Version> 并提交
-#   # 2) 再打 tag —— 顺序反了会被下面的校验拦下
-#   git tag v1.3.22
-#   git push origin v1.3.22
-#
-# 手动试跑(workflow_dispatch)只编译 + 存构建产物,**不发 npm、不建 Release** ——
-# 想验证 CI 通不通就用它,不会留下垃圾 Release。
-#
-# npmmirror 同步好之前别更新 manifest.json,原因见发 Release 那步的说明。
-
+# Releases are accepted and published locally. Tags/pushes never start this workflow.
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
 
 permissions:
-  actions: read
-  contents: write
+  contents: read
 
 jobs:
-  build:
+  validate:
     runs-on: windows-latest
-
-    env:
-      # 配好 SignPath 仓库变量才走签名;没配就出未签名包,而不是让 tag 构建直接失败。
-      SIGNING_ENABLED: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG != '' }}
-
     steps:
-      - name: 检出
+      - name: Checkout
         uses: actions/checkout@v7
 
-      - name: 装 .NET 8 SDK
+      - name: Install .NET 8 SDK
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '8.0.x'
 
-      - name: 读版本并校验 tag
-        id: meta
+      - name: Local acceptance pipeline (verification only)
         shell: pwsh
         run: |
-          $projectVersion = ([regex]::Match((Get-Content source\DeepSeekHarness.csproj -Raw), '<Version>([^<]+)</Version>')).Groups[1].Value.Trim()
-          $tag = '${{ github.ref_name }}'
-          Write-Host "csproj=$projectVersion  tag=$tag"
+          # Runner workspace is on D:. No npm/Release publication, tag or manifest writes.
+          $work = Join-Path $env:GITHUB_WORKSPACE 'Temp_SetupandLauncher/ManualValidation'
+          ./release.ps1 -NoManifest -WorkRoot $work -DotnetPath (Get-Command dotnet).Source -Proxy ''
 
-          # 手动试跑没有 tag,跳过这项校验
-          if ($tag -like 'v*' -and $tag -ne "v$projectVersion") {
-            throw "tag($tag) 和 csproj 里的 <Version>(v$projectVersion) 对不上。先改版本号并提交,再打 tag —— 顺序反了就会这样(这个坑踩过好几次)。"
-          }
-
-          "version=$projectVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "zip=DeepSeekHarness-$projectVersion.zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-
-          # npm 只认三段式 semver:1.4.9 行,1.4.9.1 会被拒(Invalid version)。
-          # 四段版本就跳过 npm/npmmirror,安装器会自己回退到 GitHub 那条路。
-          $npmOk = $projectVersion -match '^\d+\.\d+\.\d+$'
-          "npm-ok=$($npmOk.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          if (-not $npmOk) {
-            Write-Warning "版本 $projectVersion 不是三段式 semver,npm/npmmirror 分发跳过,国内走 GitHub 慢线路"
-          }
-
-      - name: 校验 SignPath 配置
-        if: startsWith(github.ref, 'refs/tags/v') && env.SIGNING_ENABLED == 'true'
-        shell: pwsh
-        env:
-          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
-          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
-          SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
-          SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
-        run: |
-          $required = [ordered]@{
-            SIGNPATH_API_TOKEN = $env:SIGNPATH_API_TOKEN
-            SIGNPATH_ORGANIZATION_ID = $env:SIGNPATH_ORGANIZATION_ID
-            SIGNPATH_PROJECT_SLUG = $env:SIGNPATH_PROJECT_SLUG
-            SIGNPATH_SIGNING_POLICY_SLUG = $env:SIGNPATH_SIGNING_POLICY_SLUG
-            SIGNPATH_ARTIFACT_CONFIGURATION_SLUG = $env:SIGNPATH_ARTIFACT_CONFIGURATION_SLUG
-          }
-          $missing = @($required.GetEnumerator() | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.Value) } | ForEach-Object { $_.Key })
-          if ($missing.Count -gt 0) {
-            throw "缺少 SignPath 配置: $($missing -join ', ')。请先按 SIGNING.md 完成仓库变量和 secret。"
-          }
-
-      - name: 发布门禁与离线回归
-        shell: pwsh
-        run: |
-          .\check-release-gate.ps1 -Version '${{ steps.meta.outputs.version }}'
-          foreach ($suite in @('PluginUpdateCompare', 'PluginInstallRepair', 'PatchSystem', 'SettingsSearch', 'ClientNotice', 'DeveloperNotice', 'InfoWindowClient', 'DshDataImport', 'DshDataExport', 'DshDataDiscovery', 'StartupBackgroundUpdates', 'UpdateMetadata', 'UpdateIntegrity')) {
-            dotnet run --project "tests\$suite.Regression\$suite.Regression.csproj" -c Release
-            if ($LASTEXITCODE -ne 0) { throw "$suite regression failed" }
-          }
-
-      - name: 编译主程序(WinUI3)
-        shell: pwsh
-        run: |
-          dotnet publish source\DeepSeekHarness.csproj `
-            --configuration Release `
-            --runtime win-x64 `
-            --self-contained false `
-            --output source\dist-release `
-            -p:AssemblyName='DeepSeek Harness.Core' `
-            -p:PublishSingleFile=false `
-            -p:IncludeNativeLibrariesForSelfExtract=false `
-            -p:WindowsAppSDKSelfContained=false `
-            -p:DebugType=None -p:DebugSymbols=false
-
-      - name: 编译外层引导程序
-        shell: pwsh
-        run: |
-          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          & $csc /nologo /target:winexe /platform:x64 /optimize+ /utf8output `
-            "/win32icon:source\DeepSeekHarness.ico" `
-            "/win32manifest:source\RuntimeBootstrap.manifest" `
-            "/out:source\dist-release\DeepSeek Harness.exe" `
-            "source\RuntimeBootstrap.cs"
-          if ($LASTEXITCODE -ne 0) { throw "引导程序编译失败" }
-
-      - name: 验证发布目录
-        shell: pwsh
-        run: |
-          .\verify.ps1 -Dist .\source\dist-release -Version '${{ steps.meta.outputs.version }}'
-          if ($LASTEXITCODE -ne 0) { throw 'Release artifacts invalid' }
-          dotnet run --project tests\StartupUpdateOwnership.Regression\StartupUpdateOwnership.Regression.csproj -c Release -- source\dist-release
-          if ($LASTEXITCODE -ne 0) { throw 'Update ownership regression failed' }
-
-      - name: 打包未签名 ZIP
-        shell: pwsh
-        run: |
-          Compress-Archive -Path 'source\dist-release\*' -DestinationPath '${{ steps.meta.outputs.zip }}' -CompressionLevel Optimal
-
-      - name: 上传未签名 ZIP 给 SignPath
-        if: startsWith(github.ref, 'refs/tags/v') && env.SIGNING_ENABLED == 'true'
-        id: upload_unsigned
+      - name: Upload verified ZIP and acceptance receipt
         uses: actions/upload-artifact@v7
         with:
-          name: Dafeiyu-Go-Launcher-Unsigned-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ steps.meta.outputs.zip }}
-          archive: false
+          name: Dafeiyu-Go-Manual-Validation-${{ github.run_id }}
+          path: |
+            Temp_SetupandLauncher/ManualValidation/*/DeepSeekHarness-*.zip
+            Temp_SetupandLauncher/ManualValidation/*/acceptance.json
           if-no-files-found: error
-          retention-days: 1
-
-      - name: SignPath 深度签名
-        if: startsWith(github.ref, 'refs/tags/v') && env.SIGNING_ENABLED == 'true'
-        uses: signpath/github-action-submit-signing-request@v3
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
-          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
-          github-artifact-id: ${{ steps.upload_unsigned.outputs.artifact-id }}
-          output-artifact-directory: signed
-          skip-decompress: true
-          wait-for-completion: true
-          # 不要传 parameters:工件配置里的 <parameters> 在当前订阅下不可用,
-          # 传了会被 SignPath 拒掉(参数未定义)。归档名用通配符匹配。
-
-      - name: 校验签名并算哈希
-        id: pack
-        shell: pwsh
-        run: |
-          $signedBuild = ('${{ github.ref }}' -like 'refs/tags/v*') -and ('${{ env.SIGNING_ENABLED }}' -eq 'true')
-          $zip = if ($signedBuild) {
-            Join-Path 'signed' '${{ steps.meta.outputs.zip }}'
-          } else {
-            '${{ steps.meta.outputs.zip }}'
-          }
-
-          if (-not (Test-Path -LiteralPath $zip)) {
-            throw "找不到待发布 ZIP: $zip"
-          }
-
-          if ($signedBuild) {
-            $verifyDir = 'signature-verify'
-            Remove-Item $verifyDir -Recurse -Force -ErrorAction SilentlyContinue
-            Expand-Archive -LiteralPath $zip -DestinationPath $verifyDir -Force
-
-            $required = @(
-              'DeepSeek Harness.exe',
-              'DeepSeek Harness.Core.exe',
-              'DeepSeek Harness.Core.dll',
-              'info-host/DafeiyuGo.Info.exe',
-              'info-host/DafeiyuGo.Info.dll',
-              'info-host/DafeiyuGo.Info.pri',
-              'info-host/App.xbf'
-            )
-            foreach ($name in $required) {
-              $path = Join-Path $verifyDir $name
-              if (-not (Test-Path -LiteralPath $path)) {
-                throw "签名 ZIP 缺少 $name"
-              }
-              $signature = Get-AuthenticodeSignature -LiteralPath $path
-              if ($signature.Status -ne 'Valid') {
-                throw "$name 签名无效: $($signature.Status)"
-              }
-              Write-Host "$name -> $($signature.SignerCertificate.Subject)"
-            }
-          }
-
-          $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLower()
-          Write-Host "SHA256: $hash"
-          Write-Host "ZIP: $zip"
-          "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "signed=$($signedBuild.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-
-      - name: 存未签名构建产物(手动试跑 / 未配置签名)
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') || env.SIGNING_ENABLED != 'true' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: Dafeiyu-Go-Launcher-Unsigned-${{ steps.meta.outputs.version }}
-          path: ${{ steps.pack.outputs.zip }}
-          if-no-files-found: error
-
-      - name: 存已签名构建产物
-        if: startsWith(github.ref, 'refs/tags/v') && env.SIGNING_ENABLED == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: Dafeiyu-Go-Launcher-Signed-${{ steps.meta.outputs.version }}
-          path: ${{ steps.pack.outputs.zip }}
-          if-no-files-found: error
-
-      # 本地发版脚本也会发 npm。若版本已经存在，重复 publish 必然失败，
-      # 而这里本来就不需要覆盖 npm —— 直接跳过，Release 仍然继续。
-      - name: 检查 npm 是否已有该版本
-        id: npm_state
-        if: startsWith(github.ref, 'refs/tags/v') && steps.meta.outputs.npm-ok == 'true'
-        shell: pwsh
-        run: |
-          $package = '@yunxiramito/dsh-launcher'
-          $version = '${{ steps.meta.outputs.version }}'
-          $encoded = [uri]::EscapeDataString($package)
-          $url = "https://registry.npmjs.org/$encoded/$version"
-
-          try {
-            $response = Invoke-WebRequest -Uri $url -Method Head -UseBasicParsing -TimeoutSec 30
-            if ($response.StatusCode -eq 200) {
-              Write-Host "$package@$version 已存在，跳过 npm 发布。"
-              "exists=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-              exit 0
-            }
-          }
-          catch {
-            $status = $_.Exception.Response.StatusCode.value__
-            if ($status -ne 404) { throw }
-          }
-
-          Write-Host "$package@$version 尚未发布，将继续走 npm 发布。"
-          "exists=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-
-      # 发到 npm —— 不是给谁 npm install,而是**借 npmmirror 的带宽**:
-      # 国内直连 GitHub 只有几十到一百多 KB/s(10 MB 要磨几分钟),
-      # npmmirror 实测 7,365 KB/s(1.4 秒)。安装器就认这条:
-      #   https://registry.npmmirror.com/@yunxiramito/dsh-launcher/-/dsh-launcher-<版本>.tgz
-      # 地址由版本号拼出来,所以安装器那边不用为每次发版做任何事。
-      #
-      # 需要仓库 secret NPM_TOKEN(带 bypass 2FA 的 npm token)。
-      # 只在打 tag 时发:手动试跑重复发同版本号会直接撞车。
-      #
-      # continue-on-error: npm 那边出任何岔子(版本已存在、token 过期、409)都**不能**
-      # 把后面的 Release 连累掉 —— 2026-09-29 的 v1.5.2 就吃过这个亏:
-      # 强推 tag 让工作流跑了第二遍,npm 报 "Cannot publish over previously staged version",
-      # 整个 job 变红、Release 那步被 skip(幸好第一遍已经建好了)。
-      # 启动器本体在 GitHub 上,Release 出不来才是真事故;npm 只是给国内加速的。
-      - name: 发到 npm(npmmirror 会自动镜像)
-        if: startsWith(github.ref, 'refs/tags/v') && steps.meta.outputs.npm-ok == 'true' && steps.npm_state.outputs.exists != 'true'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          npm config set //registry.npmjs.org/:_authToken '${{ secrets.NPM_TOKEN }}'
-          .\publish-npm.ps1 -Version '${{ steps.meta.outputs.version }}' -ZipPath '${{ steps.pack.outputs.zip }}' -NoWait
-          if ($LASTEXITCODE -ne 0) {
-            Write-Warning "npm 发布失败(退出码 $LASTEXITCODE) —— 不影响 Release,国内加速这条路暂时走 GitHub。"
-          }
-
-      - name: 发 Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v3
-        with:
-          files: ${{ steps.pack.outputs.zip }}
-          generate_release_notes: true
-          body: |
-            Dafeiyu-Go 启动器${{ env.SIGNING_ENABLED == 'true' && '已签名' || '未签名' }}自动构建产物 `${{ steps.meta.outputs.zip }}`
-
-            SHA256: `${{ steps.pack.outputs.sha256 }}`
-
-            ${{ env.SIGNING_ENABLED == 'true' && '> 本包已带数字签名,Windows 发布者显示为 SignPath Foundation。' || '> **关于代码签名**:本项目目前没有代码签名 —— SignPath Foundation 的免费签名申请未通过,官方构建就是未签名的。首次运行 Windows 会弹 SmartScreen,这是未签名软件的预期行为,不代表文件有害:点「更多信息」→「仍要运行」即可。想核对再运行,就比对上面的 SHA256。' }}
-
-            ${{ steps.meta.outputs.npm-ok == 'true' && format('同一份包也发到了 npm(`@yunxiramito/dsh-launcher@{0}`),安装器在加速线路下优先从 npmmirror 取 —— 国内大约 1.4 秒。', steps.meta.outputs.version) || '本版是四段式版本号,npm 拒收,没有发 npm/npmmirror;安装器会自动回退到 GitHub 下载,国内会慢一些。' }}
-
-            ${{ steps.meta.outputs.npm-ok == 'true' && '> **先别急着更新 `manifest.json`。** npmmirror 同步有延迟,而安装器认的版本号来自那份清单:清单先动了,正好卡在空窗期装的用户就只能落到 GitHub 那条慢路。等 npmmirror 上能下到这一版再更新清单。' || '> **这份清单要马上更新。** 本版没走 npm,不存在镜像同步延迟;但 `sha256` 必须换成 CI 实际产出的哈希,否则安装器会直接判“启动器包校验失败”。' }}
+          retention-days: 7

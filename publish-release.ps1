@@ -1,316 +1,236 @@
-# 用 GitHub API 建 Release 并上传资产
-#   .\publish-release.ps1                # 用 csproj 里的版本号
-#   .\publish-release.ps1 -Version 1.3.17
-#   .\publish-release.ps1 -Token 'ghp_...'   # 不给就读 .fix-lasso-state\github-token.txt
+#Requires -Version 7.4
+[CmdletBinding()]
 param(
-    [string]$Version,
-    [string]$Token,
+    [string]$ReceiptPath,
     [string]$Repository = 'YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run',
-    [switch]$SkipAsset,
-    [switch]$Commit   # 顺手把代码/manifest 提交并推 tag(推荐带上)
+    [string]$WorkRoot,
+    [string]$Proxy = 'http://127.0.0.1:7890',
+    [string]$Otp,
+    [switch]$PushCommit,
+    [switch]$FunctionsOnly
 )
 
-$ErrorActionPreference = 'Stop'
-throw 'This legacy publisher is disabled: it overwrites release assets and tags. Publish new tags through CI; never upload local verification ZIPs.'
-$OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8
-
-$Root = $PSScriptRoot
-$TokenFile = 'G:\DeepSeek DSH\DSH Works\.fix-lasso-state\github-token.txt'
-
-if (-not $Version) {
-    $projectText = Get-Content (Join-Path $Root 'source\DeepSeekHarness.csproj') -Raw -Encoding UTF8
-    $Version = ([regex]::Match($projectText, '<Version>([^<]+)</Version>')).Groups[1].Value.Trim()
-}
-
-if (-not $Token) {
-    if (Test-Path $TokenFile) {
-        $Token = (Get-Content $TokenFile -Raw).Trim()
-    } else {
-        throw "没有 token。给 -Token,或把它写进 $TokenFile"
+foreach ($file in @('release.ps1', 'publish-npm.ps1')) {
+    $libraryTokens = $null; $libraryErrors = $null
+    $library = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $file), [ref]$libraryTokens, [ref]$libraryErrors)
+    if ($libraryErrors.Count) { throw "$file syntax errors." }
+    foreach ($definition in $library.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.FunctionDefinitionAst] }) {
+        . ([scriptblock]::Create($definition.Extent.Text))
     }
 }
 
-$ZipPath = Join-Path $Root "DeepSeekHarness-$Version.zip"
-$Tag = "v$Version"
-$Headers = @{
-    Authorization          = "Bearer $Token"
-    Accept                 = 'application/vnd.github+json'
-    'User-Agent'           = 'Dafeiyu-Go-Release'
-    'X-GitHub-Api-Version' = '2022-11-28'
+function Get-LocalGitHubToken {
+    param([string]$Root)
+    foreach ($name in @('GH_TOKEN', 'GITHUB_TOKEN')) {
+        $value = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if ($value) { return $value }
+    }
+    if (Get-Command gh -ErrorAction SilentlyContinue) {
+        $value = & gh auth token --hostname github.com 2>$null
+        if ($LASTEXITCODE -eq 0 -and $value) { return ($value -join '').Trim() }
+    }
+    $credential = "protocol=https`nhost=github.com`n`n" | & git -C $Root credential fill 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        foreach ($line in $credential) {
+            if ($line.StartsWith('password=')) { return $line.Substring(9) }
+        }
+    }
+    throw 'GitHub authentication unavailable. Use existing gh auth, git credential manager or GH_TOKEN. Tokens are never written to disk.'
 }
 
-function Say  ([string]$m) { Write-Host $m }
-function Ok   ([string]$m) { Write-Host "  [OK]  $m" -ForegroundColor Green }
-function Warn ([string]$m) { Write-Host "  [!!]  $m" -ForegroundColor Yellow }
-function Step ([string]$m) { Write-Host "  [..]  $m" -ForegroundColor Cyan }
-
-# 把 "1.6.0.0" / "1.6" 这类版本串统一成 [version]。
-# 只取开头的数字主体,带前缀后缀的写法(1.6.0-beta)也能认。
-# 解析不了就返回 $null,调用方按“无法比较”处理,不要在这里抛错。
-function ConvertTo-GateVersion([string]$text) {
-    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
-    $head = ([regex]::Match($text.Trim(), '^\d+(\.\d+)*')).Value
-    if (-not $head) { return $null }
-    $parts = @($head.Split('.') | ForEach-Object { [int]$_ })
-    while ($parts.Count -lt 4) { $parts += 0 }
-    if ($parts.Count -gt 4) { $parts = $parts[0..3] }
-    try { return [version]::new($parts[0], $parts[1], $parts[2], $parts[3]) } catch { return $null }
+function Invoke-LocalGitHubApi {
+    param([string]$Repository, [string]$Path, [hashtable]$Headers, [string]$Proxy,
+        [string]$Method = 'GET', $Value)
+    $arguments = @{ Uri = "https://api.github.com/repos/$Repository/$Path"; Headers = $Headers; Proxy = $Proxy; Method = $Method }
+    if ($null -ne $Value) { $arguments.Body = $Value | ConvertTo-Json -Depth 10 -Compress }
+    $response = Invoke-ReleaseHttp @arguments
+    if ($response.Status -eq 404 -and $Method -eq 'GET') { return $null }
+    if ($response.Status -lt 200 -or $response.Status -ge 300) {
+        throw "GitHub $Method $Path failed (HTTP $($response.Status)). No overwrite or force retry is permitted."
+    }
+    if ($response.Body) { $response.Body | ConvertFrom-Json }
 }
 
-# 读 manifest.json 里当前已发布的版本号,读不到返回空串。
-function Get-ManifestPublishedVersion {
-    $path = Join-Path $Root 'manifest.json'
-    if (-not (Test-Path $path)) { return '' }
+function Assert-LocalReleaseTag {
+    param([string]$Repository, [string]$Tag, [string]$Commit, [hashtable]$Headers, [string]$Proxy)
+    $reference = Invoke-LocalGitHubApi $Repository "git/ref/tags/$Tag" $Headers $Proxy
+    if ($null -eq $reference) { return $false }
+    $object = $reference.object
+    for ($i = 0; $i -lt 8 -and $object.type -eq 'tag'; $i++) {
+        $annotated = Invoke-LocalGitHubApi $Repository "git/tags/$($object.sha)" $Headers $Proxy
+        $object = $annotated.object
+    }
+    if ($object.type -ne 'commit' -or $object.sha -cne $Commit) {
+        throw "Existing tag $Tag does not identify accepted commit $Commit. Tags are immutable."
+    }
+    return $true
+}
+
+function Get-LocalGitHubRelease {
+    param([string]$Repository, [string]$Tag, [hashtable]$Headers, [string]$Proxy)
+    $release = Invoke-LocalGitHubApi $Repository "releases/tags/$Tag" $Headers $Proxy
+    if ($release) { return $release }
+    # Some API/auth combinations omit drafts from the tag endpoint.
+    for ($page = 1; $page -le 20; $page++) {
+        $releases = @(Invoke-LocalGitHubApi $Repository "releases?per_page=100&page=$page" $Headers $Proxy)
+        $matches = @($releases | Where-Object tag_name -CEQ $Tag)
+        if ($matches.Count -gt 1) { throw 'Multiple releases identify the same tag.' }
+        if ($matches.Count -eq 1) { return $matches[0] }
+        if ($releases.Count -lt 100) { return $null }
+    }
+    throw 'Release listing exceeded 2000 entries; refusing to create a possible duplicate draft.'
+}
+
+function Test-GitHubReleaseAsset {
+    param([string]$Repository, $Release, $Receipt, [hashtable]$Headers, [string]$Proxy, [string]$Directory)
+    $name = "DeepSeekHarness-$($Receipt.version).zip"
+    $assets = @($Release.assets | Where-Object name -CEQ $name)
+    if ($assets.Count -gt 1) { throw 'Duplicate release assets are forbidden.' }
+    if (-not $assets.Count) { return $false }
+    $path = Join-Path $Directory ('github-' + [guid]::NewGuid().ToString('N') + '.zip')
     try {
-        $m = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
-        return [string]$m.version
+        $downloadHeaders = $Headers.Clone()
+        $downloadHeaders.Accept = 'application/octet-stream'
+        $response = Invoke-ReleaseHttp -Uri "https://api.github.com/repos/$Repository/releases/assets/$($assets[0].id)" -Headers $downloadHeaders -OutFile $path -Proxy $Proxy
+        if ($response.Status -ne 200 -or (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Receipt.sha256) {
+            throw 'Existing GitHub asset differs from accepted ZIP; it will not be overwritten.'
+        }
+        return $true
+    } finally { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force } }
+}
+
+function Get-LocalReleaseNotes {
+    param([string]$Root, [string]$Version)
+    $lines = Get-Content -LiteralPath (Join-Path $Root 'CHANGELOG.md') -Encoding utf8
+    $collect = $false; $notes = @()
+    foreach ($line in $lines) {
+        if ($line -match '^##\s+(.+?)\s*$') {
+            if ($collect) { break }
+            $collect = $Matches[1] -in @($Version, "v$Version")
+            continue
+        }
+        if ($collect) { $notes += $line }
+    }
+    if (-not $notes.Count) { throw "Missing CHANGELOG section for $Version. Commit release notes explicitly." }
+    ($notes -join "`n").Trim()
+}
+
+function Write-LocalReleaseManifests {
+    param([string]$Root, $Receipt, [string]$AssetUrl, [string]$Notes)
+    $paths = @((Join-Path $Root "manifest-$($Receipt.version).json"), (Join-Path $Root 'manifest.json'))
+    $manifest = [ordered]@{ version = $Receipt.version; sha256 = $Receipt.sha256; subDirectory = ''
+        assets = [ordered]@{ github = $AssetUrl; mirrors = @() }; notes = $Notes; releasedAt = [DateTime]::UtcNow.ToString('o') }
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($manifest | ConvertTo-Json -Depth 10))
+    # A versioned manifest is immutable too. The main feed is always the last write.
+    if (Test-Path -LiteralPath $paths[0]) {
+        $old = Get-Content -LiteralPath $paths[0] -Raw | ConvertFrom-Json
+        if ($old.version -cne $Receipt.version -or $old.sha256 -cne $Receipt.sha256 -or $old.assets.github -cne $AssetUrl) {
+            throw 'Existing versioned manifest conflicts with accepted release.'
+        }
+        $bytes = [IO.File]::ReadAllBytes($paths[0])
+    }
+    $saved = @{}
+    foreach ($path in $paths) { $saved[$path] = $(if (Test-Path -LiteralPath $path) { [IO.File]::ReadAllBytes($path) } else { $null }) }
+    try {
+        foreach ($path in $paths) { [IO.File]::WriteAllBytes($path, $bytes) }
     } catch {
-        Warn "manifest.json 解析失败,跳过补丁合入检查: $($_.Exception.Message)"
-        return ''
+        foreach ($path in $paths) {
+            if ($null -eq $saved[$path]) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force } }
+            else { [IO.File]::WriteAllBytes($path, $saved[$path]) }
+        }
+        throw
     }
+    Write-Host 'Both local manifests now describe fully downloaded and verified distribution bytes.'
+    Write-Host 'Review, stage ONLY the two manifests, then explicitly commit and push them:'
+    Write-Host "git add -- manifest.json manifest-$($Receipt.version).json"
+    Write-Host "git diff --cached -- manifest.json manifest-$($Receipt.version).json"
+    Write-Host "git commit --only -m 'release: manifests v$($Receipt.version)' -- manifest.json manifest-$($Receipt.version).json"
+    Write-Host 'git push origin HEAD'
 }
 
-# 读补丁清单的 patches 数组;没有 patches.json 就返回空数组。
-function Get-PatchFeedEntries([string]$path) {
-    if (-not (Test-Path $path)) { return @() }
+function Invoke-LocalGitHubPublish {
+    param([string]$Root, [string]$ReceiptPath, [string]$Repository, [string]$WorkRoot, [string]$Proxy, [string]$Otp, [bool]$PushCommit)
+    if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw 'Invalid GitHub repository.' }
+    $receipt = Assert-LocalReleaseReceipt $Root $ReceiptPath
+    $notes = Get-LocalReleaseNotes $Root $receipt.version
+    & (Join-Path $Root 'check-release-gate.ps1') -Version $receipt.version -Root $Root | Out-Host
+    $directory = Join-Path $WorkRoot ('github-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    $headers = @{}
     try {
-        $feed = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
-    } catch {
-        Warn "补丁清单解析失败,按无补丁处理: $path — $($_.Exception.Message)"
-        return @()
-    }
-    if (-not $feed.patches) { return @() }
-    return @($feed.patches)
-}
-
-# 发版门禁(SPEC 4):
-#   X 或 Y 变动 = 大版本,patches.json / patches-preview.json 里只要还有 mergedIn 为空
-#   或 mergedIn 晚于新版本的补丁,就 throw 中止;只变 Z 时仅提示一句,不阻断。
-#   没有补丁清单、或清单里没有补丁时安全跳过。
-function Assert-PatchMergeGate([string]$targetVersion) {
-    $published = Get-ManifestPublishedVersion
-    if (-not $published) {
-        Warn "manifest.json 里没有当前发布版本,跳过补丁合入检查"
-        return
-    }
-
-    $currentVersion = ConvertTo-GateVersion $published
-    $newVersion = ConvertTo-GateVersion $targetVersion
-    $isMajor = $false
-    if ($currentVersion -and $newVersion) {
-        $isMajor = ($currentVersion.Major -ne $newVersion.Major) -or ($currentVersion.Minor -ne $newVersion.Minor)
-    } else {
-        Warn "版本号无法解析(当前 $published → 新 $targetVersion),按大版本处理,继续检查补丁"
-        $isMajor = $true
-    }
-
-    if (-not $isMajor) {
-        Warn "当前发布 $published → 新版本 $targetVersion 只变修订号(X 与 Y 不变),不做补丁合入门禁"
-        return
-    }
-
-    Step "大版本发版($published → $targetVersion):检查补丁合入状态"
-    $pending = @()
-    foreach ($file in @('patches.json', 'patches-preview.json')) {
-        $path = Join-Path $Root $file
-        foreach ($patch in (Get-PatchFeedEntries $path)) {
-            $id = [string]$patch.id
-            $mergedIn = [string]$patch.mergedIn
-            $mergedVersion = ConvertTo-GateVersion $mergedIn
-            $mergedText = '(空)'
-            $isMergedEmpty = $true
-            if ($mergedIn -and $mergedIn.Trim()) {
-                $mergedText = $mergedIn
-                $isMergedEmpty = $false
+        $headers = @{ Authorization = 'Bearer ' + (Get-LocalGitHubToken $Root)
+            Accept = 'application/vnd.github+json'; 'User-Agent' = 'Dafeiyu-Go-LocalRelease'; 'X-GitHub-Api-Version' = '2022-11-28' }
+        $tag = "v$($receipt.version)"
+        $exists = Assert-LocalReleaseTag $Repository $tag $receipt.commit $headers $Proxy
+        $release = Get-LocalGitHubRelease $Repository $tag $headers $Proxy
+        if ($release -and -not $exists) { throw 'Release exists without the expected immutable tag.' }
+        $hasAsset = $false
+        if ($release) { $hasAsset = Test-GitHubReleaseAsset $Repository $release $receipt $headers $Proxy $directory }
+        if ($PushCommit) {
+            $origin = Get-ReleaseGit $Root @('remote', 'get-url', 'origin')
+            if ($origin -notmatch ('^(https://github\.com/|git@github\.com:)' + [regex]::Escape($Repository) + '(\.git)?/?$')) {
+                throw 'origin must match -Repository before pushing the existing commit.'
             }
-            $unmerged = $isMergedEmpty
-            if (-not $isMergedEmpty -and $mergedVersion -and $newVersion) {
-                $unmerged = ($mergedVersion -gt $newVersion)
-            }
-            if ($unmerged) {
-                $title = [string]$patch.title
-                if (-not $id) { $id = '(无 id)' }
-                if (-not $title) { $title = '(无标题)' }
-                $pending += [pscustomobject]@{
-                    Id       = $id
-                    Title    = $title
-                    MergedIn = $mergedText
-                    File     = $file
-                }
+            $branch = Get-ReleaseGit $Root @('symbolic-ref', '--quiet', '--short', 'HEAD')
+            if (-not $branch) { throw '-PushCommit requires an attached branch.' }
+            $null = Assert-LocalReleaseReceipt $Root $ReceiptPath
+            Invoke-ReleaseNative git @('-C', $Root, 'push', 'origin', "$($receipt.commit):refs/heads/$branch")
+        }
+        $remoteCommit = Invoke-LocalGitHubApi $Repository "commits/$($receipt.commit)" $headers $Proxy
+        if (-not $remoteCommit -or $remoteCommit.sha -cne $receipt.commit) {
+            throw 'Accepted source commit is not on GitHub. Push it explicitly or use -PushCommit.'
+        }
+        # No GitHub mutation until npm and the complete mirrored ZIP have passed.
+        $proofPath = Invoke-LocalNpmPublish $Root $ReceiptPath $WorkRoot '@yunxiramito/dsh-launcher' $Proxy $Otp $false $false 25
+        $proof = Get-Content -LiteralPath $proofPath -Raw | ConvertFrom-Json
+        if ($proof.sha256 -cne $receipt.sha256 -or $proof.version -cne $receipt.version -or
+            (Get-FileHash $proof.path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $proof.tarSha256) { throw 'Mirror proof changed.' }
+        Test-ReleaseTarball $proof.path $receipt.version '@yunxiramito/dsh-launcher' $receipt.sha256
+        $null = Assert-LocalReleaseReceipt $Root $ReceiptPath
+        $exists = Assert-LocalReleaseTag $Repository $tag $receipt.commit $headers $Proxy
+        if (-not $exists) {
+            $null = Invoke-LocalGitHubApi $Repository 'git/refs' $headers $Proxy 'POST' @{ ref = "refs/tags/$tag"; sha = $receipt.commit }
+        }
+        $null = Assert-LocalReleaseTag $Repository $tag $receipt.commit $headers $Proxy
+        $release = Get-LocalGitHubRelease $Repository $tag $headers $Proxy
+        if (-not $release) {
+            $release = Invoke-LocalGitHubApi $Repository 'releases' $headers $Proxy 'POST' @{
+                tag_name = $tag; target_commitish = $receipt.commit; name = $tag; draft = $true; prerelease = $false
+                body = $notes
             }
         }
-    }
-
-    if ($pending.Count -gt 0) {
-        Say ''
-        Say '  未合入补丁:'
-        foreach ($p in $pending) {
-            Say ("    - {0}  {1}  (mergedIn = {2}, 来自 {3})" -f $p.Id, $p.Title, $p.MergedIn, $p.File)
+        $hasAsset = Test-GitHubReleaseAsset $Repository $release $receipt $headers $Proxy $directory
+        $zipName = "DeepSeekHarness-$($receipt.version).zip"
+        if (-not $hasAsset) {
+            $upload = "https://uploads.github.com/repos/$Repository/releases/$($release.id)/assets?name=$([uri]::EscapeDataString($zipName))"
+            $response = Invoke-ReleaseHttp -Uri $upload -Method POST -Headers $headers -Proxy $Proxy -InFile $receipt.zipPath -ContentType 'application/zip'
+            if ($response.Status -ne 201) { throw "Asset upload failed (HTTP $($response.Status)); existing assets are never deleted." }
         }
-        Say ''
-        throw ("大版本发版中止: $published → $targetVersion 属于 X 或 Y 变动,以下补丁还没合入新版本。" +
-               "把它们的 mergedIn 写成 $targetVersion(或更早已实际合入的版本)、或从清单里移除,再发版。")
-    }
-
-    Ok "补丁合入检查通过:两个补丁清单里没有待合入的补丁"
-}
-
-Say ''
-Say '========================================'
-Say "  发布启动器 $Tag 到 $Repository"
-Say '========================================'
-
-# 发版门禁:大版本变动前必须把未合入补丁处理掉(SPEC 4)
-& (Join-Path $PSScriptRoot 'check-release-gate.ps1') -Version $Version
-
-# 0) token 自检
-Step '校验 token'
-try {
-    $me = Invoke-RestMethod -Uri 'https://api.github.com/user' -Headers $Headers -TimeoutSec 20
-    Ok ("身份: " + $me.login)
-} catch {
-    throw "token 校验失败: $($_.Exception.Message)"
-}
-
-# 1) 资产在不在
-if (-not $SkipAsset) {
-    if (-not (Test-Path $ZipPath)) { throw "找不到资产: $ZipPath(先跑 release.ps1)" }
-    $zipItem = Get-Item $ZipPath
-    Ok ("资产: {0}  {1:N1} MB" -f $zipItem.Name, ($zipItem.Length / 1MB))
-}
-
-# 2) 从 manifest.json 取更新日志当 Release 正文
-$ManifestPath = Join-Path $Root 'manifest.json'
-$releaseBody = $null
-if (Test-Path $ManifestPath) {
-    try {
-        $manifest = Get-Content $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($manifest.version -eq $Version -and $manifest.notes) {
-            $releaseBody = [string]$manifest.notes
+        $release = Invoke-LocalGitHubApi $Repository "releases/$($release.id)" $headers $Proxy
+        if (-not (Test-GitHubReleaseAsset $Repository $release $receipt $headers $Proxy $directory)) { throw 'Uploaded asset missing.' }
+        if ($release.draft) {
+            $release = Invoke-LocalGitHubApi $Repository "releases/$($release.id)" $headers $Proxy 'PATCH' @{ draft = $false }
         }
-    } catch { }
-}
-if ($releaseBody) {
-    Ok "更新日志: 从 manifest.json 取到 $($releaseBody.Length) 字符"
-} else {
-    Warn 'manifest.json 里没有对应版本的更新日志,Release 正文只能放最简说明'
-    $releaseBody = "大肥鱼Go启动器 v$Version"
-}
-
-# 3) release 在不在,不在就建
-Say ''
-Step "处理 Release $Tag"
-$release = $null
-try {
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/tags/$Tag" -Headers $Headers -TimeoutSec 20
-    Ok ("已存在: " + $release.html_url)
-
-    # 已存在也把正文刷新成最新日志,免得改过日志还要手工编辑
-    if ($release.body -ne $releaseBody) {
-        $patch = @{ body = $releaseBody } | ConvertTo-Json
-        $release = Invoke-RestMethod -Method Patch `
-            -Uri "https://api.github.com/repos/$Repository/releases/$($release.id)" `
-            -Headers $Headers -Body $patch -ContentType 'application/json' -TimeoutSec 30
-        Ok '正文已刷新为最新更新日志'
-    }
-} catch {
-    $body = @{
-        tag_name               = $Tag
-        name                   = $Tag
-        generate_release_notes = $false
-        body                   = $releaseBody
-    } | ConvertTo-Json
-    $release = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$Repository/releases" `
-        -Headers $Headers -Body $body -ContentType 'application/json' -TimeoutSec 30
-    Ok ("已创建: " + $release.html_url)
-}
-
-# 3) 传资产
-if (-not $SkipAsset) {
-    Say ''
-    Step '上传资产'
-    $existing = $release.assets | Where-Object { $_.name -eq (Split-Path $ZipPath -Leaf) }
-    if ($existing) {
-        Warn "同名资产已存在,先删掉旧的"
-        Invoke-RestMethod -Method Delete -Uri "https://api.github.com/repos/$Repository/releases/assets/$($existing.id)" -Headers $Headers -TimeoutSec 30 | Out-Null
-    }
-
-    $uploadUrl = "https://uploads.github.com/repos/$Repository/releases/$($release.id)/assets?name=$([uri]::EscapeDataString((Split-Path $ZipPath -Leaf)))"
-    $uploadHeaders = $Headers.Clone()
-    $uploadHeaders['Content-Type'] = 'application/zip'
-
-    # 用 -InFile 流式上传：-Body [byte[]] 在部分 PowerShell 版本上会少传末尾字节，
-    # 线上资产就和 manifest 的 sha256 对不上、客户端校验失败（v1.6.0 首次上传踩过）。
-    $localSha = (Get-FileHash $ZipPath -Algorithm SHA256).Hash.ToLower()
-    $asset = Invoke-RestMethod -Method Post -Uri $uploadUrl -Headers $uploadHeaders -InFile $ZipPath -TimeoutSec 900
-    Ok ("资产已上传: " + $asset.browser_download_url)
-    Ok ("大小: {0:N1} MB  状态: {1}" -f ($asset.size / 1MB), $asset.state)
-    if ($asset.digest -and $asset.digest -ne "sha256:$localSha") {
-        throw "线上资产摘要与本地不一致（线上 $($asset.digest) / 本地 sha256:$localSha），自更新会校验失败，请重传"
-    }
-    Ok ("摘要校验: sha256:$localSha")
-}
-
-# 4) 验证下载地址真的能下
-Say ''
-Step '验证下载地址'
-$expected = "https://github.com/$Repository/releases/download/$Tag/DeepSeekHarness-$Version.zip"
-try {
-    $head = Invoke-WebRequest -Uri $expected -Method Head -MaximumRedirection 5 -TimeoutSec 30 -UseBasicParsing
-    Ok "可访问: HTTP $($head.StatusCode)"
-} catch {
-    Warn "还访问不到(刚上传可能要等几秒): $($_.Exception.Message)"
-}
-
-# 5) 提交并推 tag(这一步以前漏了,导致仓库里的 manifest.json 落后于实际发布版本,
-#    客户端因此查不到新版 —— 自更新直接失效)
-if ($Commit) {
-    Say ''
-    Step '提交并推送'
-    Push-Location $Root
-    try {
-        git fetch origin --prune
-        if ($LASTEXITCODE -ne 0) { throw 'git fetch 失败' }
-
-        git add -A
-        if ($LASTEXITCODE -ne 0) { throw 'git add 失败' }
-
-        git diff --cached --quiet
-        $hasStagedChanges = $LASTEXITCODE -eq 1
-        if ($LASTEXITCODE -gt 1) { throw '检查暂存区失败' }
-
-        if ($hasStagedChanges) {
-            $msg = "release: v$Version"
-            git -c user.name="YunxiRamito" -c user.email="killmasterags@gmail.com" commit -m $msg
-            if ($LASTEXITCODE -ne 0) { throw 'git commit 失败' }
-        } else {
-            Say '  没有新的文件改动，复用当前提交'
+        if ($release.prerelease) { throw 'Stable manifests cannot point to a prerelease.' }
+        $assetUrl = "https://github.com/$Repository/releases/download/$tag/$zipName"
+        $publicZip = Join-Path $directory 'public.zip'
+        $response = Invoke-ReleaseHttp -Uri $assetUrl -OutFile $publicZip -Proxy $Proxy
+        if ($response.Status -ne 200 -or (Get-FileHash $publicZip -Algorithm SHA256).Hash.ToLowerInvariant() -cne $receipt.sha256) {
+            throw 'Public GitHub download does not match acceptance. Public manifests remain unchanged.'
         }
-
-        git rebase origin/main
-        if ($LASTEXITCODE -ne 0) { throw '远端 main 与本地冲突，已停止发布；请解决冲突后重试' }
-
-        git push origin main
-        if ($LASTEXITCODE -ne 0) { throw 'git push main 失败' }
-
-        git tag -d $Tag 2>&1 | Out-Null
-        git tag $Tag
-        if ($LASTEXITCODE -ne 0) { throw '创建 tag 失败' }
-
-        git push --force origin $Tag
-        if ($LASTEXITCODE -ne 0) { throw 'git push tag 失败' }
-        Ok "已推送 main 与 $Tag"
-    } catch {
-        throw "git 操作失败: $($_.Exception.Message)"
+        $null = Assert-LocalReleaseTag $Repository $tag $receipt.commit $headers $Proxy
+        $null = Assert-LocalReleaseReceipt $Root $ReceiptPath
+        Write-LocalReleaseManifests $Root $receipt $assetUrl $notes
     } finally {
-        Pop-Location
+        $headers.Clear()
+        Remove-ReleaseScratch $directory $WorkRoot
     }
-} else {
-    Say ''
-    Warn '提醒: 没有加 -Commit,代码与 manifest.json 还没提交。'
-    Warn '      不提交的话客户端读到的清单是旧的,自更新会失效。'
 }
 
-Say ''
-Say '完成。安装器的 LauncherFeed 和启动器的自更新都会读到这一版。'
-Say ''
+if ($FunctionsOnly) { return }
+$ErrorActionPreference = 'Stop'
+if (-not $ReceiptPath) { throw 'Use -ReceiptPath from release.ps1 local acceptance; raw ZIP publication is not supported.' }
+$WorkRoot = Get-LocalReleaseWorkRoot $PSScriptRoot $WorkRoot
+Invoke-LocalReleaseEnvironment $WorkRoot $Proxy '' {
+    Invoke-LocalGitHubPublish $PSScriptRoot $ReceiptPath $Repository $WorkRoot $Proxy $Otp $PushCommit.IsPresent
+}

@@ -1,0 +1,11 @@
+{
+  "version": "1.7.6",
+  "sha256": "129c63666d3a53e42c574e7f4658a871ef84b5456650571b3dc46d3930679354",
+  "subDirectory": "",
+  "assets": {
+    "github": "https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/download/v1.7.6/DeepSeekHarness-1.7.6.zip",
+    "mirrors": []
+  },
+  "notes": "**启动器 · 2026-10-13 · 已发布**\n修复了检测不到用户自行安装的Windows App Runtime 1.8的Bug；\n连接板块与安卓版制作中，本次更新为小型修复更新。",
+  "releasedAt": "2026-10-13T13:54:33"
+}

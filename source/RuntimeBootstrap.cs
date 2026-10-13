@@ -4,16 +4,16 @@ using System.IO;
 using System.Reflection;
 using System.Text;
 using System.Windows.Forms;
-using Microsoft.Win32;
+using DeepSeekHarnessLauncher;
 
 [assembly: AssemblyTitle("Dafeiyu-Go")]
 [assembly: AssemblyProduct("Dafeiyu-Go")]
 [assembly: AssemblyCompany("高性能萝卜子鲸鲸有限公司")]
 [assembly: AssemblyDescription("Dafeiyu-Go，面向 DeepSeek Harness 的 Windows 安装、启动与管理工具。")]
 [assembly: AssemblyCopyright("Copyright © 2026 Deepseek/KitamaruRamito")]
-[assembly: AssemblyVersion("1.7.5.0")]
-[assembly: AssemblyFileVersion("1.7.5.0")]
-[assembly: AssemblyInformationalVersion("1.7.5")]
+[assembly: AssemblyVersion("1.7.6.0")]
+[assembly: AssemblyFileVersion("1.7.6.0")]
+[assembly: AssemblyInformationalVersion("1.7.6")]
 
 namespace DeepSeekHarnessBootstrap
 {
@@ -22,7 +22,6 @@ namespace DeepSeekHarnessBootstrap
         private const string DotNetUrl = "https://dotnet.microsoft.com/download/dotnet/8.0";
         private const string WindowsAppRuntimeUrl =
             "https://aka.ms/windowsappsdk/1.8/1.8.260804001/windowsappruntimeinstall-x64.exe";
-        private static readonly Version MinimumWindowsAppRuntime = new Version(8000, 946, 1701, 0);
 
         [STAThread]
         private static int Main()
@@ -135,44 +134,7 @@ namespace DeepSeekHarnessBootstrap
 
         private static bool HasWindowsAppRuntime()
         {
-            const string keyPath =
-                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Applications";
-            try
-            {
-                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(keyPath))
-                {
-                    if (key == null)
-                    {
-                        return false;
-                    }
-
-                    foreach (string name in key.GetSubKeyNames())
-                    {
-                        if (name.IndexOf(
-                                "MicrosoftCorporationII.WinAppRuntime.Main.1.8_",
-                                StringComparison.OrdinalIgnoreCase) != 0)
-                        {
-                            continue;
-                        }
-
-                        string remainder = name.Substring(
-                            "MicrosoftCorporationII.WinAppRuntime.Main.1.8_".Length);
-                        int end = remainder.IndexOf('_');
-                        string versionText = end >= 0 ? remainder.Substring(0, end) : remainder;
-                        Version version;
-                        if (Version.TryParse(versionText, out version)
-                            && version >= MinimumWindowsAppRuntime)
-                        {
-                            return true;
-                        }
-                    }
-                }
-            }
-            catch
-            {
-            }
-
-            return false;
+            return WindowsAppRuntimeDetector.Detect().IsReady;
         }
 
         private static void ShowDependencyError(bool dotNetReady, bool appRuntimeReady)
