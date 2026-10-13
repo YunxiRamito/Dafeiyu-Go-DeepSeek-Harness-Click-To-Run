@@ -90,7 +90,7 @@ jobs:
         shell: pwsh
         run: |
           .\check-release-gate.ps1 -Version '${{ steps.meta.outputs.version }}'
-          foreach ($suite in @('PluginUpdateCompare', 'PluginInstallRepair', 'PatchSystem', 'SettingsSearch', 'ClientNotice', 'DeveloperNotice', 'InfoWindowClient', 'DshDataImport', 'DshDataExport', 'DshDataDiscovery', 'StartupBackgroundUpdates', 'UpdateMetadata', 'UpdateIntegrity')) {
+          foreach ($suite in @('PluginUpdateCompare', 'PluginInstallRepair', 'PatchSystem', 'SettingsSearch', 'ClientNotice', 'DeveloperNotice', 'InfoWindowClient', 'DshDataImport', 'DshDataExport', 'DshDataDiscovery', 'StartupBackgroundUpdates', 'UpdateMetadata', 'UpdateIntegrity', 'ComponentRuntime')) {
             dotnet run --project "tests\$suite.Regression\$suite.Regression.csproj" -c Release
             if ($LASTEXITCODE -ne 0) { throw "$suite regression failed" }
           }
@@ -117,8 +117,12 @@ jobs:
             "/win32icon:source\DeepSeekHarness.ico" `
             "/win32manifest:source\RuntimeBootstrap.manifest" `
             "/out:source\dist-release\DeepSeek Harness.exe" `
-            "source\RuntimeBootstrap.cs"
+            "source\RuntimeBootstrap.cs" "source\WindowsAppRuntimeDetector.cs"
           if ($LASTEXITCODE -ne 0) { throw "引导程序编译失败" }
+
+      - name: 验证运行库检测
+        shell: pwsh
+        run: .\tests\RuntimeBootstrap.Regression\Run.ps1 -BootstrapPath 'source\dist-release\DeepSeek Harness.exe'
 
       - name: 验证发布目录
         shell: pwsh

@@ -792,37 +792,14 @@ namespace DeepSeekHarnessLauncher
 
         private static ComponentState DetectWinAppRuntime(out string version)
         {
-            version = String.Empty;
-            try
-            {
-                string windowsApps = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                    "WindowsApps");
-                if (!Directory.Exists(windowsApps))
-                {
-                    return ComponentState.Unknown;
-                }
+            return GetWinAppRuntimeState(WindowsAppRuntimeDetector.Detect(), out version);
+        }
 
-                string[] directories = Directory.GetDirectories(windowsApps);
-                for (int index = 0; index < directories.Length; index++)
-                {
-                    string name = Path.GetFileName(directories[index]);
-                    if (name.StartsWith(
-                        "Microsoft.WindowsAppRuntime.1.8",
-                        StringComparison.OrdinalIgnoreCase))
-                    {
-                        version = name;
-                        return ComponentState.Ready;
-                    }
-                }
-            }
-            catch
-            {
-                // WindowsApps 默认拒绝枚举，探测不了就如实报未知
-                return ComponentState.Unknown;
-            }
-
-            return ComponentState.Missing;
+        private static ComponentState GetWinAppRuntimeState(WindowsAppRuntimeDetectionResult result, out string version)
+        {
+            version = result.HighestVersion == null ? String.Empty : result.HighestVersion.ToString();
+            if (result.IsReady) return ComponentState.Ready;
+            return result.HasReadErrors ? ComponentState.Unknown : ComponentState.Missing;
         }
 
         private static string ReadVersion(string executable, string argument)

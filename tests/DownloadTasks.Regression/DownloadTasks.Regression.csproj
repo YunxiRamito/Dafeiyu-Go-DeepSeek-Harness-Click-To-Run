@@ -20,5 +20,6 @@
     <Compile Include="../../source/InstallerUpdateService.cs" Link="InstallerUpdateService.cs" />
     <Compile Include="../../source/SkillArchiveTempFiles.cs" Link="SkillArchiveTempFiles.cs" />
     <Compile Include="../../source/ComponentService.cs" Link="ComponentService.cs" />
+    <Compile Include="../../source/WindowsAppRuntimeDetector.cs" Link="WindowsAppRuntimeDetector.cs" />
   </ItemGroup>
 </Project>
