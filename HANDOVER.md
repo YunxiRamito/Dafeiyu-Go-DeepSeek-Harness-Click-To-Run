@@ -1,5 +1,18 @@
 # 交接：大肥鱼Go / Dafeiyu-Go Launcher
 
+## 2026-10-14 启动器 1.8.0 本地构建正式发布（信息栏范围已纠正）
+
+用户明确授权按指定原文发布。Release：<https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/tag/v1.8.0>，ID `412700254`；tag 保留指向源码 `dadb0bd576493d36c53be2e1af88baf0c070e456`，manifest 发布提交 `cdacde8`。本机 ZIP `../Temp_SetupandLauncher/Delivery-Corrected-20261014/DeepSeekHarness-1.8.0.zip`，27,603,509 bytes，156 文件，SHA-256 `3C892CB1ABB23F997842FFE638221AD58BDFD5A47D9A86D02F38E6D1B4A882FB`。不使用旧 Delivery-20261014 ZIP。
+
+三秒要求只属于主 DSH 窗口标题栏下方的信息栏：等待三秒后 260ms 淡出收起；busy 保留，新提示通过 version 防护。独立右下角信息窗恢复历史 Information/自动收起通知 8 秒、客户端 18 秒启动兜底，普通任务结果沿用原 3 秒；计时器 generation/dispose 防护保留。两处源码与构建快照的 269 项源输入一致。
+
+实际本地 Publish、14 组正式回归、123 IPC、122 bootstrap、6 ownership、verify 通过；新二进制三轮真实 DSH 原生窗口 126 项通过。主信息栏专项执行生产方法原文，真实 Task.Delay 在约 3011ms 请求淡出，fixture 在约 3277ms 完成折叠；它采用模拟动画控件，不冒充原生计时测量。已覆盖旧提示/旧动画完成回调、新提示、busy 与关闭取消。完整 WinUI 构建保留既有警告。
+
+GitHub 实际下载及 npm `@yunxiramito/dsh-launcher@1.8.0`、国内 npmmirror 完整 tgz 内嵌 ZIP 摘要均与本地一致；`manifest.json`/`manifest-1.8.0.json` 已推送并通过公开读取校验，Release 正文逐字匹配用户原文，latest 指向 1.8.0。npm 首次上传 HTTP 202 成功，处理期间仅轮询未重复 publish；无自动 CI 运行。三条下载源继续保留，后端安装器加速已知问题未宣称解决。Setup 1.8.1 同日独立发布，未因本信息栏修正重编。
+
+最终证据：`../Temp_SetupandLauncher/Publish-20261014/launcher-acceptance.json`、`launcher-publication-receipt.json`；本地新验收 `Delivery-Corrected-20261014/REPORT.md`、`BUILD-REPORT.md`、`Launcher-native-delivery/result.json`，信息栏专项 `StatusBarLifetime-20261014/report.json`。旧统一三秒 InfoLifetime 为历史。未真实执行用户安装/卸载/UAC、自更新替换、完整 Android/公网互联或比较内存测试。共享原仓库的其他改动与 staged 均未重置。
+
+
 ## 2026-10-14 Android 主题链路对应的手机网页包 0.1.6
 
 手机主题接续任务将 canonical 及 PC `assets/dafeiyu-mobile-ui` 更新为 `dafeiyu-mobile-ui@0.1.6`，108,166 bytes，SHA-256 `bbf352c83c4da7e6d6f1fd5b975dd91735e0c41cefaed7a1bd440053ec4ff2a3`；和 Android 正式 0.1.28 内嵌包／manifest 字节一致。普通 PC 页面不启用手机主题，Android 明确宿主上下文才接收受限外观数据；Connect 冻结包、真实权限和任务协议未改变。
