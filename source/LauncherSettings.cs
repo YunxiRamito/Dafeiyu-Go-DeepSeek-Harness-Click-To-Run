@@ -10,6 +10,9 @@ namespace DeepSeekHarnessLauncher
         public int FixedPort { get; set; } = 8787;
         public bool StartWithWindows { get; set; }
         public string SilentStart { get; set; } = "StartupOnly";
+        // Null preserves legacy choices whose user/default origin is unknown.
+        public bool? SilentStartUserModified { get; set; }
+        public string PageOpenMode { get; set; } = "Window";
 
         public string Theme { get; set; } = "System";
         public string WindowStyle { get; set; } = "System";
@@ -77,6 +80,18 @@ namespace DeepSeekHarnessLauncher
         public string GitHubTokenProtected { get; set; } = String.Empty;
         public string AdminTokenProtected { get; set; } = String.Empty;
         public string ServerMetricsTokenProtected { get; set; } = String.Empty;
+        // Aries secrets live only in aries-identity.dpapi under the settings directory.
+        internal const string DefaultAriesServerUrl = "https://202.189.21.218:10240";
+        public string AriesServerUrl { get; set; } = DefaultAriesServerUrl;
+        // Preserve a legacy separate port through LoadOrCreate's initial save.
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public System.Text.Json.JsonElement? AriesServerPort { get; set; }
+        public string AriesDeviceName { get; set; } = Environment.MachineName;
+        public string AriesDeviceId { get; set; } = String.Empty;
+        public string AriesSyncWorkspace { get; set; } = String.Empty;
+        public bool AriesSyncWorkspaceEnabled { get; set; } = true;
+        public bool DshWebBroadcastEnabled { get; set; }
+
         public string DeveloperCenterBaseUrl { get; set; } = "https://202.189.21.218:8787";
 
         /// <summary>
@@ -94,6 +109,16 @@ namespace DeepSeekHarnessLauncher
         public bool ApiKeyLastValidationSucceeded { get; set; }
 
         public bool NotificationMuted { get; set; }
+        public bool NotificationsEnabled { get; set; } = true;
+        public bool AnnouncementReminder { get; set; } = true;
+        public bool ServerNotificationReminder { get; set; } = true;
+        public bool BackendConnectionReminder { get; set; } = true;
+        public bool ServiceReminder { get; set; } = true;
+        public bool ExtensionOperationReminder { get; set; } = true;
+        public bool DataTransferReminder { get; set; } = true;
+        public bool FeedbackReplyReminder { get; set; } = true;
+        public bool PatchReminder { get; set; } = true;
+        public bool ProgressReminder { get; set; } = true;
         public bool UpdateReminder { get; set; } = true;
         public bool PluginUpdateReminder { get; set; } = true;
         public bool RechargeReminder { get; set; } = true;
@@ -113,10 +138,12 @@ namespace DeepSeekHarnessLauncher
         public decimal BalanceCustomAmount { get; set; } = 50.0m;
 
         public string DshRoot { get; set; } = String.Empty;
+        public System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<string>> AppliedInstallerSelections { get; set; } =
+            new System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<string>>(StringComparer.OrdinalIgnoreCase);
         public string NodePath { get; set; } = String.Empty;
 
         /// <summary>
-        /// 额外扫描的技能根。DSH 自己的根（&lt;dshRoot&gt;\.dsh\skills、~\.agents\skills）
+        /// 额外扫描的技能根。DSH 自己的根（ResolveDshHome/skills、~\.agents\skills）
         /// 是内置的，这里只放用户自己加的目录。
         /// </summary>
         public System.Collections.Generic.List<string> SkillRoots { get; set; } =

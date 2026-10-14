@@ -20,6 +20,8 @@ namespace DeepSeekHarnessLauncher
                 Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
             };
 
+        internal static JsonSerializerOptions RecoveryJsonOptions => new JsonSerializerOptions(JsonOptions);
+
         internal static string DirectoryPath
         {
             get
@@ -62,7 +64,7 @@ namespace DeepSeekHarnessLauncher
 
             if (settings == null)
             {
-                settings = new LauncherSettings();
+                settings = new LauncherSettings { SilentStartUserModified = false };
                 created = true;
             }
 
@@ -72,12 +74,16 @@ namespace DeepSeekHarnessLauncher
                 settings.DshRoot = FirstNonEmpty(
                     settings.DshRoot,
                     detectedDshRoot);
-                ApplyInstallerSourceDefaults(settings, launcherDirectory);
                 settings.NodePath = FirstNonEmpty(
                     settings.NodePath,
                     LauncherLocator.FindNode());
                 settings.StartWithWindows = StartupSupport.IsEnabled();
+            }
 
+            bool rootChanged = ApplyInstallerSelection(settings, launcherDirectory);
+            if (created) ApplyInstallerSourceDefaults(settings, launcherDirectory);
+            if (created && !rootChanged)
+            {
                 string legacyApiKey = CredentialStore.ReadApiKey(settings.DshRoot);
                 if (!String.IsNullOrEmpty(legacyApiKey))
                 {
@@ -241,6 +247,94 @@ namespace DeepSeekHarnessLauncher
             settings.MirrorSource = source == "backend" ? "backend" : "Auto";
         }
 
+        // Only an explicit selection bound to this launcher can supersede saved user state.
+        private static bool ApplyInstallerSelection(LauncherSettings settings, string launcherDirectory)
+        {
+            if (String.IsNullOrWhiteSpace(launcherDirectory) || !Path.IsPathFullyQualified(launcherDirectory)) return false;
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(
+                    Path.Combine(launcherDirectory, "installer-defaults.json"), Encoding.UTF8));
+                string selectionId = null;
+                string launcherRoot = null;
+                string dshRoot = null;
+                int schemaVersion = 0;
+                foreach (var property in document.RootElement.EnumerateObject())
+                {
+                    if (String.Equals(property.Name, "SchemaVersion", StringComparison.OrdinalIgnoreCase)
+                        && property.Value.ValueKind == JsonValueKind.Number)
+                        property.Value.TryGetInt32(out schemaVersion);
+                    if (property.Value.ValueKind != JsonValueKind.String) continue;
+                    if (String.Equals(property.Name, "SelectionId", StringComparison.OrdinalIgnoreCase)) selectionId = property.Value.GetString();
+                    if (String.Equals(property.Name, "LauncherRoot", StringComparison.OrdinalIgnoreCase)) launcherRoot = property.Value.GetString();
+                    if (String.Equals(property.Name, "DshRoot", StringComparison.OrdinalIgnoreCase)) dshRoot = property.Value.GetString();
+                }
+                if (schemaVersion != 2 || String.IsNullOrWhiteSpace(selectionId) || selectionId.Length > 128
+                    || !SameAbsolutePath(launcherRoot, launcherDirectory)
+                    || String.IsNullOrWhiteSpace(dshRoot) || !Path.IsPathFullyQualified(dshRoot)) return false;
+
+                string key = Path.TrimEndingDirectorySeparator(Path.GetFullPath(launcherDirectory));
+                settings.AppliedInstallerSelections = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<string>>(
+                    settings.AppliedInstallerSelections ?? new System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<string>>(),
+                    StringComparer.OrdinalIgnoreCase);
+                if (!settings.AppliedInstallerSelections.TryGetValue(key, out var applied) || applied == null)
+                    applied = new System.Collections.Generic.List<string>();
+                if (applied.Contains(selectionId)) return false;
+
+                string selectedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(dshRoot));
+                bool changed = !SameAbsolutePath(settings.DshRoot, selectedRoot);
+                if (changed)
+                {
+                    settings.NodePath = ResolveInstallerNodePath(launcherDirectory, settings.NodePath);
+                    settings.ApiKeyProtected = String.Empty;
+                    settings.ApiKeyValidatedUtc = null;
+                    settings.ApiKeyLastValidationSucceeded = false;
+                    // Do not import a previous installation's cached key after a root switch.
+                    settings.LegacyApiKeyMigrationCompleted = true;
+                }
+                settings.DshRoot = selectedRoot;
+                applied.Add(selectionId);
+                settings.AppliedInstallerSelections[key] = applied;
+                return changed;
+            }
+            catch { return false; }
+        }
+
+        private static bool SameAbsolutePath(string left, string right)
+        {
+            return !String.IsNullOrWhiteSpace(left) && !String.IsNullOrWhiteSpace(right)
+                && Path.IsPathFullyQualified(left) && Path.IsPathFullyQualified(right)
+                && String.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+                    Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string ExistingNodePath(string path)
+        {
+            return !String.IsNullOrWhiteSpace(path) && Path.IsPathFullyQualified(path) && File.Exists(path)
+                ? Path.GetFullPath(path) : null;
+        }
+
+        private static string ResolveInstallerNodePath(string launcherDirectory, string previousNode)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(
+                    Path.Combine(launcherDirectory, LegacyConfigFileName), Encoding.UTF8));
+                foreach (var property in document.RootElement.EnumerateObject())
+                {
+                    if (!String.Equals(property.Name, "nodePath", StringComparison.OrdinalIgnoreCase)
+                        || property.Value.ValueKind != JsonValueKind.String) continue;
+                    string node = ExistingNodePath(property.Value.GetString());
+                    if (node != null) return node;
+                }
+            }
+            catch { }
+            string existing = ExistingNodePath(previousNode);
+            if (existing != null) return existing;
+            try { return ExistingNodePath(LauncherLocator.FindNode()) ?? String.Empty; }
+            catch { return String.Empty; }
+        }
+
         private static string ReadInstallerSourcePreference(string path, string dshRoot)
         {
             if (String.IsNullOrWhiteSpace(dshRoot) || !Path.IsPathFullyQualified(dshRoot)) return null;
@@ -381,6 +475,15 @@ namespace DeepSeekHarnessLauncher
         private static void Normalize(LauncherSettings settings)
         {
             settings.SchemaVersion = 2;
+            settings.PageOpenMode = NormalizeChoice(settings.PageOpenMode, "Window", "Browser", "Window");
+            settings.AriesServerUrl = String.IsNullOrWhiteSpace(settings.AriesServerUrl)
+                ? LauncherSettings.DefaultAriesServerUrl : settings.AriesServerUrl.Trim();
+            settings.AriesDeviceName = String.IsNullOrWhiteSpace(settings.AriesDeviceName)
+                ? Environment.MachineName : settings.AriesDeviceName.Trim();
+            if (settings.AriesDeviceName.Length > 120)
+                settings.AriesDeviceName = settings.AriesDeviceName.Substring(0, 120);
+            settings.AriesDeviceId ??= String.Empty;
+            settings.AriesSyncWorkspace ??= String.Empty;
             settings.PortMode = NormalizeChoice(
                 settings.PortMode,
                 "Fixed",
@@ -391,7 +494,7 @@ namespace DeepSeekHarnessLauncher
                 && settings.FixedPort <= 65535
                     ? settings.FixedPort
                     : 8787;
-            settings.SilentStart = NormalizeChoice(
+            settings.SilentStart = settings.SilentStartUserModified == false ? "StartupOnly" : NormalizeChoice(
                 settings.SilentStart,
                 "StartupOnly",
                 "All",
@@ -403,6 +506,7 @@ namespace DeepSeekHarnessLauncher
                 "Light",
                 "Dark",
                 "System");
+            // "System" is the legacy auto sentinel; explicit styles remain user choices.
             settings.WindowStyle = CornerRadiusHelper.NormalizeWindowStyle(
                 settings.WindowStyle);
             settings.AccentSource = NormalizeChoice(

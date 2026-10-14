@@ -19,8 +19,9 @@ namespace DeepSeekHarnessLauncher
     internal static class LauncherSettingsStore { internal static string DirectoryPath = AppContext.BaseDirectory; }
     internal static class ProxySupport
     {
+        internal static LauncherSettings LastSettings;
         internal static void Apply(HttpWebRequest request) { request.Proxy = null; }
-        internal static void Apply(HttpWebRequest request, LauncherSettings settings) { request.Proxy = null; }
+        internal static void Apply(HttpWebRequest request, LauncherSettings settings) { LastSettings = settings; request.Proxy = null; }
         internal static void Apply(WebClient client) { client.Proxy = null; }
     }
     internal sealed class AcceleratorSource

@@ -4,9 +4,13 @@ namespace DeepSeekHarnessLauncher
 {
     internal sealed class SettingsWindowHost
     {
+        public AriesConnectionService AriesService { get; set; } = AriesConnectionService.Shared;
+        public AriesConnectionState GetAriesState() { return AriesService.Snapshot; }
+
         public bool IsPreview { get; set; }
 
         public LauncherSettings Settings { get; set; }
+        public Action RemindersChanged { get; set; } = delegate { };
 
         public Func<string> GetServiceStatus { get; set; } =
             delegate { return "状态未知"; };

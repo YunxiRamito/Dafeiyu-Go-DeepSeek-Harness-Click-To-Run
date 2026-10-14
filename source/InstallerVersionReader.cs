@@ -66,9 +66,10 @@ namespace DeepSeekHarnessLauncher
             string statePath = Path.Combine(
                 LauncherSettingsStore.DirectoryPath,
                 StateFileName);
-            string fromState = Normalize(ReadJsonProperty(
-                statePath,
-                delegate(string json) { return ReadFromStateJson(json); }));
+            string state = ReadJsonProperty(statePath, json => json);
+            bool ownsState = InstallerRegistration.MatchesInstallation(dshRoot,
+                FindString(state, "DshRoot"), FindString(state, "InstallerHome"));
+            string fromState = ownsState ? ReadFromStateJson(state) : null;
             if (fromState != null)
             {
                 source = "installer-state.json";
@@ -76,7 +77,7 @@ namespace DeepSeekHarnessLauncher
             }
 
             string fromManifest = Normalize(ReadJsonProperty(
-                ManifestPath(dshRoot),
+                ManifestPath(dshRoot, ownsState ? FindString(state, "ComponentsRoot") : null),
                 delegate(string json) { return ReadFromManifestJson(json); }));
             if (fromManifest != null)
             {
@@ -84,7 +85,7 @@ namespace DeepSeekHarnessLauncher
                 return fromManifest;
             }
 
-            string fromRegistry = Normalize(ReadRegistryVersion());
+            string fromRegistry = Normalize(ReadRegistryVersion(dshRoot));
             if (fromRegistry != null)
             {
                 source = "卸载注册表 DisplayVersion";
@@ -103,14 +104,16 @@ namespace DeepSeekHarnessLauncher
             return null;
         }
 
-        private static string ManifestPath(string dshRoot)
+        private static string ManifestPath(string dshRoot, string componentsRoot)
         {
             if (String.IsNullOrWhiteSpace(dshRoot))
             {
                 return null;
             }
 
-            return Path.Combine(dshRoot, "dsh", ManifestFileName);
+            if (!String.IsNullOrWhiteSpace(componentsRoot) && Path.IsPathFullyQualified(componentsRoot))
+                return Path.Combine(componentsRoot, ManifestFileName);
+            return Path.Combine(dshRoot, "components", ManifestFileName);
         }
 
         private static string ReadJsonProperty(string path, Func<string, string> reader)
@@ -130,25 +133,29 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        private static string ReadRegistryVersion()
+        private static string ReadRegistryVersion(string dshRoot)
         {
-            string value = ReadRegistryVersion(Registry.LocalMachine)
-                ?? ReadRegistryVersion(Registry.CurrentUser);
+            if (InstallerRegistration.SettingsOverridden) return null;
+            string value = ReadRegistryVersion(Registry.CurrentUser, dshRoot)
+                ?? ReadRegistryVersion(Registry.LocalMachine, dshRoot);
             return value;
         }
 
-        private static string ReadRegistryVersion(RegistryKey root)
+        private static string ReadRegistryVersion(RegistryKey root, string dshRoot)
         {
             try
             {
                 using (RegistryKey key = root.OpenSubKey(RegistryUninstallKey))
                 {
-                    if (key == null)
+                    if (key == null || !InstallerRegistration.MatchesInstallation(dshRoot,
+                        key.GetValue("DshRoot") as string, key.GetValue("InstallerHome") as string))
                     {
                         return null;
                     }
 
-                    return key.GetValue("DisplayVersion") as string;
+                    string version = Normalize(key.GetValue("DisplayVersion") as string);
+                    return version ?? ReadJsonProperty(ManifestPath(dshRoot,
+                        key.GetValue("ComponentsRoot") as string), ReadFromManifestJson);
                 }
             }
             catch

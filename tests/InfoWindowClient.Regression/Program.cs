@@ -52,12 +52,12 @@ CheckCompletion(client => client.CompleteService(true, false, "started"), "Succe
 DeepSeekHarnessLauncher.Program.Settings.NotificationMuted = false;
 var replyClient = Client();
 replyClient.NotifyFeedbackReply("反馈有新回复", "收到");
-Check((double)typeof(InfoWindowClient).GetField("_resultHoldSeconds", privateInstance).GetValue(replyClient) == 8,
-    "feedback reply holds for eight seconds");
+Check((double)typeof(InfoWindowClient).GetField("_resultHoldSeconds", privateInstance).GetValue(replyClient) == 3,
+    "feedback reply uses the three-second result lifetime");
+typeof(InfoWindowClient).GetField("_resultUtc", privateInstance).SetValue(replyClient, DateTime.UtcNow.AddSeconds(-2));
+Check(!replyClient.IsClosed, "reply stays active within the three-second display lifetime");
 typeof(InfoWindowClient).GetField("_resultUtc", privateInstance).SetValue(replyClient, DateTime.UtcNow.AddSeconds(-4));
-Check(!replyClient.IsClosed, "reply stays active beyond generic result lifetime");
-typeof(InfoWindowClient).GetField("_resultUtc", privateInstance).SetValue(replyClient, DateTime.UtcNow.AddSeconds(-6));
-Check(!replyClient.IsClosed, "reply waits for helper display lifetime instead of timing out during startup");
+Check(replyClient.IsClosed, "reply expires after the display and slide-out fallback lifetime");
 replyClient.Close();
 Check(replyClient.IsClosed, "closed reply allows the next queued notification");
 
@@ -121,7 +121,7 @@ Check(NotificationService.ShowPluginUpdateCompleted(2), "plugin completion enter
 Check(localNotifications.Count == 2 && localNotifications.All(item => item.IsLocal && item.Validate(out _)),
     "queued notifications are validated local messages without backend identity");
 Check(localNotifications.All(item => item.AutoDismiss),
-    "local and plugin completion notifications dismiss automatically after eight seconds");
+    "local and plugin completion notifications request automatic dismissal");
 Check(localNotifications[1].Buttons.Select(button => button.Text).SequenceEqual(new[] { "重启 DSH", "稍后" }),
     "plugin update retains both actions");
 localNotifications[1].Buttons[0].LocalAction();
@@ -228,16 +228,9 @@ namespace Microsoft.UI.Dispatching
 namespace DeepSeekHarnessLauncher
 {
     internal enum InfoOutcome { Success, Warning, Failure, Information }
-    internal sealed class AppearanceSettings
-    {
-        internal string Theme { get; set; } = "System";
-        internal string Material { get; set; } = "Mica";
-        internal string WindowStyle { get; set; } = "System";
-        internal bool NotificationMuted { get; set; }
-    }
     internal static class Program
     {
-        internal static AppearanceSettings Settings = new AppearanceSettings();
+        internal static LauncherSettings Settings = new LauncherSettings();
         internal static int RestartRequests;
         internal static void RestartAfterPluginUpdate() { RestartRequests++; }
     }

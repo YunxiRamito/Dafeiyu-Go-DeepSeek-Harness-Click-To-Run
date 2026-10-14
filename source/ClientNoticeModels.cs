@@ -36,6 +36,8 @@ namespace DeepSeekHarnessLauncher
         [JsonIgnore]
         internal bool IsLocal { get; set; }
         [JsonIgnore]
+        internal LauncherReminderKind ReminderKind { get; set; } = LauncherReminderKind.General;
+        [JsonIgnore]
         internal bool AutoDismiss { get; set; }
         [JsonIgnore]
         internal bool IsDeveloperFeedback { get; set; }
@@ -102,12 +104,32 @@ namespace DeepSeekHarnessLauncher
     }
     internal sealed class ClientNoticePresence
     {
+        private bool _platformsProvided;
+        private List<ClientNoticePlatformPresence> _platforms = new List<ClientNoticePlatformPresence>();
+
         public int OnlineCount { get; set; } = -1;
+        public int OnlineInstallations { get; set; } = -1;
+        public int OnlineWindowSeconds { get; set; }
         public DateTimeOffset ObservedAt { get; set; }
         public List<ClientNoticePresenceSample> History { get; set; } = new List<ClientNoticePresenceSample>();
         public List<ClientNoticeVersionCount> LauncherVersions { get; set; } = new List<ClientNoticeVersionCount>();
         public int WindowHours { get; set; }
         public int SampleIntervalSeconds { get; set; }
+        public List<ClientNoticePlatformPresence> Platforms
+        {
+            get => _platforms;
+            set { _platforms = value; _platformsProvided = true; }
+        }
+        [JsonIgnore]
+        public int WindowsOnlineCount { get; private set; } = -1;
+        [JsonIgnore]
+        public int? MobileOnlineCount { get; private set; }
+        [JsonIgnore]
+        public bool MobileDataAvailable { get; private set; }
+        [JsonIgnore]
+        public List<ClientNoticePlatformVersionCount> PlatformVersionCounts { get; private set; }
+            = new List<ClientNoticePlatformVersionCount>();
+
         internal void Validate()
         {
             if (OnlineCount < 0 || History == null || History.Count > 2048
@@ -116,24 +138,145 @@ namespace DeepSeekHarnessLauncher
                 || LauncherVersions.Any(item => item == null || String.IsNullOrWhiteSpace(item.Version)
                     || item.Version.Length > 64 || item.Count < 0)
                 || (WindowHours != 0 && WindowHours != 24)
-                || (SampleIntervalSeconds != 0 && SampleIntervalSeconds != 60))
+                || (SampleIntervalSeconds != 0 && SampleIntervalSeconds != 60)
+                || OnlineInstallations < -1 || (OnlineInstallations >= 0 && OnlineInstallations != OnlineCount)
+                || OnlineWindowSeconds < 0 || OnlineWindowSeconds > 86400)
                 throw new System.IO.InvalidDataException("Invalid online presence payload.");
+
+            if (_platformsProvided) ValidateCombinedPresence();
+            else MapLegacyPresence();
         }
+
+        private void ValidateCombinedPresence()
+        {
+            if (OnlineInstallations != OnlineCount || OnlineWindowSeconds <= 0
+                || Platforms == null || Platforms.Count != 2)
+                throw new System.IO.InvalidDataException("Invalid combined online presence payload.");
+
+            ClientNoticePlatformPresence pc = null;
+            ClientNoticePlatformPresence android = null;
+            long totalOnlineCount = 0;
+            foreach (ClientNoticePlatformPresence platform in Platforms)
+            {
+                if (platform == null || platform.OnlineCount < 0 || platform.OtherVersionCount < 0
+                    || platform.OtherVersionCount > platform.OnlineCount || platform.Versions == null
+                    || platform.Versions.Count > 64)
+                    throw new System.IO.InvalidDataException("Invalid platform presence payload.");
+
+                if (platform.Platform == "pc")
+                {
+                    if (pc != null) throw new System.IO.InvalidDataException("Duplicate platform presence.");
+                    pc = platform;
+                }
+                else if (platform.Platform == "android")
+                {
+                    if (android != null) throw new System.IO.InvalidDataException("Duplicate platform presence.");
+                    android = platform;
+                }
+                else throw new System.IO.InvalidDataException("Unknown presence platform.");
+
+                var versions = new HashSet<(string Version, int? VersionCode)>();
+                long versionCount = 0;
+                foreach (ClientNoticeVersionCount version in platform.Versions)
+                {
+                    if (version == null || String.IsNullOrWhiteSpace(version.Version) || version.Version.Length > 64
+                        || version.Version != version.Version.Trim() || version.Version.Any(Char.IsControl)
+                        || version.Count <= 0 || (version.VersionCode.HasValue
+                            && (version.VersionCode.Value < 1 || version.VersionCode.Value > 2100000000))
+                        || (platform.Platform == "pc" && version.VersionCode.HasValue)
+                        || !versions.Add((version.Version, version.VersionCode)))
+                        throw new System.IO.InvalidDataException("Invalid platform version presence.");
+                    versionCount += version.Count;
+                }
+
+                if (versionCount + platform.OtherVersionCount != platform.OnlineCount)
+                    throw new System.IO.InvalidDataException("Platform version counts do not match online count.");
+                totalOnlineCount += platform.OnlineCount;
+            }
+
+            if (pc == null || android == null || totalOnlineCount != OnlineCount)
+                throw new System.IO.InvalidDataException("Platform totals do not match online count.");
+
+            WindowsOnlineCount = pc.OnlineCount;
+            MobileOnlineCount = android.OnlineCount;
+            MobileDataAvailable = true;
+            LauncherVersions = pc.Versions.Select(version => new ClientNoticeVersionCount
+            {
+                Version = version.Version,
+                Count = version.Count
+            }).ToList();
+            PlatformVersionCounts = FlattenPlatformVersions(Platforms);
+        }
+
+        private void MapLegacyPresence()
+        {
+            if (OnlineInstallations < 0) OnlineInstallations = OnlineCount;
+            WindowsOnlineCount = OnlineCount;
+            MobileOnlineCount = null;
+            MobileDataAvailable = false;
+            _platforms = new List<ClientNoticePlatformPresence>
+            {
+                new ClientNoticePlatformPresence
+                {
+                    Platform = "pc",
+                    OnlineCount = OnlineCount,
+                    Versions = LauncherVersions.Select(version => new ClientNoticeVersionCount
+                    {
+                        Version = version.Version,
+                        Count = version.Count
+                    }).ToList(),
+                    OtherVersionCount = Math.Max(0, OnlineCount - (int)Math.Min(int.MaxValue,
+                        LauncherVersions.Sum(version => (long)version.Count)))
+                }
+            };
+            PlatformVersionCounts = FlattenPlatformVersions(_platforms);
+        }
+
+        private static List<ClientNoticePlatformVersionCount> FlattenPlatformVersions(
+            IEnumerable<ClientNoticePlatformPresence> platforms)
+            => platforms.SelectMany(platform => platform.Versions.Select(version => new ClientNoticePlatformVersionCount
+            {
+                Platform = platform.Platform,
+                Version = version.Version,
+                VersionCode = version.VersionCode,
+                Count = version.Count
+            })).ToList();
     }
+
+    internal sealed class ClientNoticePlatformPresence
+    {
+        public string Platform { get; set; } = String.Empty;
+        public int OnlineCount { get; set; } = -1;
+        public List<ClientNoticeVersionCount> Versions { get; set; } = new List<ClientNoticeVersionCount>();
+        public int OtherVersionCount { get; set; } = -1;
+    }
+
+    internal sealed class ClientNoticeVersionCount
+    {
+        public string Version { get; set; } = String.Empty;
+        public int? VersionCode { get; set; }
+        public int Count { get; set; }
+    }
+
+    internal sealed class ClientNoticePlatformVersionCount
+    {
+        public string Platform { get; set; } = String.Empty;
+        public string Version { get; set; } = String.Empty;
+        public int? VersionCode { get; set; }
+        public int Count { get; set; }
+    }
+
     internal sealed class ClientNoticePresenceSample
     {
         public DateTimeOffset ObservedAt { get; set; }
         public int OnlineCount { get; set; } = -1;
     }
-    internal sealed class ClientNoticeVersionCount
-    {
-        public string Version { get; set; } = String.Empty;
-        public int Count { get; set; }
-    }
     internal sealed class ClientNoticeHeartbeat
     {
         public string InstallationId { get; set; } = String.Empty;
         public string LauncherVersion { get; set; } = String.Empty;
+        [JsonPropertyName("platform")]
+        public string Platform { get; set; } = String.Empty;
     }
     internal sealed class ClientNoticeReceipt
     {
@@ -193,7 +336,7 @@ namespace DeepSeekHarnessLauncher
                 return true;
             }
         }
-        internal ClientNoticeMessage TryTake(DateTimeOffset now)
+        internal ClientNoticeMessage TryTake(DateTimeOffset now, Func<ClientNoticeMessage, bool> predicate = null)
         {
             lock (_sync)
             {
@@ -207,6 +350,8 @@ namespace DeepSeekHarnessLauncher
                         if (message.ExpiresAt.HasValue && message.ExpiresAt.Value <= now)
                         { _ids.Remove(Key(message)); _displayRetries.Remove(Key(message)); continue; }
                         if (_displayRetries.TryGetValue(Key(message), out var retry) && retry.After > now)
+                        { queue.Enqueue(message); continue; }
+                        if (predicate != null && !predicate(message))
                         { queue.Enqueue(message); continue; }
                         _active = Key(message);
                         return message;
@@ -251,13 +396,14 @@ namespace DeepSeekHarnessLauncher
                 _active = null;
             }
         }
-        internal bool HasWaitingNotification(DateTimeOffset now)
+        internal bool HasWaitingNotification(DateTimeOffset now, Func<ClientNoticeMessage, bool> predicate = null)
         {
             lock (_sync)
             {
                 return _localNotifications.Concat(_notifications).Any(message =>
                     (!message.ExpiresAt.HasValue || message.ExpiresAt > now)
-                    && (!_displayRetries.TryGetValue(Key(message), out var retry) || retry.After <= now));
+                    && (!_displayRetries.TryGetValue(Key(message), out var retry) || retry.After <= now)
+                    && (predicate == null || predicate(message)));
             }
         }
         internal void MarkWaitingFullscreenDeferred()

@@ -48,6 +48,20 @@ try
     var existing = LauncherSettingsStore.LoadOrCreate(launcherDirectory, dshRoot);
     Check(existing.MirrorSource == "ghfast" && existing.UpdateSource == "Accelerated", "existing user preference survives installer backend default");
     Check(existing.InstallerUpdateMode == "Install", "older settings gain independent automatic installer updates");
+    Check(existing.PageOpenMode == "Browser", "older settings retain system browser as the default page host");
+    foreach (string pageMode in new[] { "Window", "Browser", "Window" })
+    {
+        existing.PageOpenMode = pageMode;
+        LauncherSettingsStore.Save(existing);
+        existing = LauncherSettingsStore.LoadOrCreate(launcherDirectory, dshRoot);
+        Check(existing.PageOpenMode == pageMode, "page host choice survives save and reload: " + pageMode);
+        Check(existing.DshRoot == dshRoot && existing.MirrorSource == "ghfast",
+            "changing page host preserves service root and download preference");
+    }
+    existing.PageOpenMode = "invalid";
+    LauncherSettingsStore.Save(existing);
+    existing = LauncherSettingsStore.LoadOrCreate(launcherDirectory, dshRoot);
+    Check(existing.PageOpenMode == "Browser", "unknown page host normalizes to system browser");
     foreach (string mode in new[] { "Install", "Check", "Off" })
     {
         existing.InstallerUpdateMode = mode;
@@ -94,6 +108,68 @@ try
     File.WriteAllText(Path.Combine(priorityUser, "installer-state.json"), JsonSerializer.Serialize(new { DshRoot = dshRoot, SourcePreference = "official" }));
     ConfigStore.SaveLauncherDefaults(launcherDirectory, dshRoot, "backend");
     Check(LauncherSettingsStore.LoadOrCreate(launcherDirectory, dshRoot).MirrorSource == "backend", "installation-local defaults take priority over old per-user state");
+
+    string selectedUser = Path.Combine(fixture, "selection-user");
+    Environment.SetEnvironmentVariable("DAFEIYU_LAUNCHER_SETTINGS_DIRECTORY", selectedUser);
+    string oldRoot = Path.Combine(fixture, "previous-dsh");
+    string laterRoot = Path.Combine(fixture, "user-later-choice");
+    string selectedNode = Path.Combine(fixture, "new-node.exe");
+    File.WriteAllText(selectedNode, "fixture only, never executed");
+    File.WriteAllText(Path.Combine(launcherDirectory, "launcher.json"), JsonSerializer.Serialize(new { nodePath = selectedNode }));
+    LauncherSettingsStore.Save(new LauncherSettings
+    {
+        DshRoot = oldRoot, Theme = "Dark", MirrorSource = "ghfast", FixedPort = 9000,
+        ApiKeyProtected = "fixture-key", ApiKeyValidatedUtc = DateTime.UtcNow,
+        ApiKeyLastValidationSucceeded = true, LegacyApiKeyMigrationCompleted = true,
+        GitHubTokenProtected = "fixture-github", AriesDeviceId = "launcher-identity",
+        NodePath = Path.Combine(fixture, "deleted-old-node.exe")
+    });
+    void SeedSelection(string id, string launcher, string root) => File.WriteAllText(seedPath,
+        JsonSerializer.Serialize(new { SchemaVersion = 2, SelectionId = id, LauncherRoot = launcher, DshRoot = root, SourcePreference = "backend" }));
+    void IgnoredSelection(string json, string label)
+    {
+        File.WriteAllText(seedPath, json);
+        var ignored = LauncherSettingsStore.LoadOrCreate(launcherDirectory, dshRoot);
+        Check(ignored.DshRoot == oldRoot && ignored.ApiKeyProtected == "fixture-key", label);
+    }
+    IgnoredSelection(JsonSerializer.Serialize(new { DshRoot = dshRoot, LauncherRoot = launcherDirectory }), "unmarked defaults cannot override an existing root");
+    IgnoredSelection(JsonSerializer.Serialize(new { SelectionId = "", DshRoot = dshRoot, LauncherRoot = launcherDirectory }), "blank selection ID is ignored");
+    IgnoredSelection(JsonSerializer.Serialize(new { SelectionId = "wrong-directory", DshRoot = dshRoot, LauncherRoot = fixture }), "selection is bound to its launcher directory");
+    IgnoredSelection(JsonSerializer.Serialize(new { SelectionId = "relative-root", DshRoot = "relative", LauncherRoot = launcherDirectory }), "relative selected DSH root is ignored");
+    IgnoredSelection(JsonSerializer.Serialize(new { SelectionId = 123, DshRoot = dshRoot, LauncherRoot = launcherDirectory }), "non-string selection ID is ignored");
+    IgnoredSelection("{invalid", "malformed selection is ignored");
+    IgnoredSelection(JsonSerializer.Serialize(new { SchemaVersion = 1, SelectionId = "old-schema", DshRoot = dshRoot, LauncherRoot = launcherDirectory }), "old schema cannot claim an explicit installation selection");
+    SeedSelection("install-1", launcherDirectory.ToUpperInvariant() + Path.DirectorySeparatorChar, dshRoot);
+    var selected = LauncherSettingsStore.LoadOrCreate(launcherDirectory, oldRoot);
+    Check(selected.DshRoot == dshRoot, "explicit installation choice supersedes old saved root");
+    Check(selected.NodePath == selectedNode, "root switch selects existing installer nodePath instead of a deleted old component");
+    Check(selected.Theme == "Dark" && selected.MirrorSource == "ghfast" && selected.FixedPort == 9000, "root selection preserves appearance, source and port preferences");
+    Check(selected.ApiKeyProtected == "" && selected.ApiKeyValidatedUtc == null && !selected.ApiKeyLastValidationSucceeded,
+        "root switch clears cached DSH key and validation");
+    Check(selected.LegacyApiKeyMigrationCompleted, "root switch cannot reimport a previous cached key");
+    Check(selected.GitHubTokenProtected == "fixture-github" && selected.AriesDeviceId == "launcher-identity", "launcher-scoped credentials and identity remain independent of DSH root");
+    Check(!Directory.Exists(dshRoot), "selection consumes metadata without creating or copying DSH credentials or identity");
+    selected.DshRoot = laterRoot;
+    selected.ApiKeyProtected = "later-fixture-key";
+    selected.NodePath = "user-later-node-choice";
+    LauncherSettingsStore.Save(selected);
+    var afterChoice = LauncherSettingsStore.LoadOrCreate(launcherDirectory, dshRoot);
+    Check(afterChoice.DshRoot == laterRoot && afterChoice.ApiKeyProtected == "later-fixture-key", "consumed selection does not override later root or credentials");
+    Check(afterChoice.NodePath == "user-later-node-choice", "consumed selection cannot override later user node choice");
+    SeedSelection("install-2", launcherDirectory, laterRoot);
+    var sameRoot = LauncherSettingsStore.LoadOrCreate(launcherDirectory, dshRoot);
+    Check(sameRoot.ApiKeyProtected == "later-fixture-key", "new explicit selection of the same root preserves its credentials");
+    SeedSelection("install-1", launcherDirectory, dshRoot);
+    Check(LauncherSettingsStore.LoadOrCreate(launcherDirectory, dshRoot).DshRoot == laterRoot, "historically consumed selection cannot replay after a newer selection");
+    SeedSelection("install-3", launcherDirectory, dshRoot);
+    Check(LauncherSettingsStore.LoadOrCreate(launcherDirectory, laterRoot).DshRoot == dshRoot, "new installation selection may apply once again");
+
+    Environment.SetEnvironmentVariable("DAFEIYU_LAUNCHER_SETTINGS_DIRECTORY", Path.Combine(fixture, "new-selection-user"));
+    File.WriteAllText(Path.Combine(launcherDirectory, "launcher.json"), JsonSerializer.Serialize(new { dshRoot = oldRoot }));
+    var newSelected = LauncherSettingsStore.LoadOrCreate(launcherDirectory, oldRoot);
+    Check(newSelected.DshRoot == dshRoot && newSelected.MirrorSource == "backend", "first creation applies selected target before seeding its source preference");
+    Check(newSelected.ApiKeyProtected == "" && newSelected.LegacyApiKeyMigrationCompleted, "selected target does not import stale legacy-root credentials on first creation");
+    Check(newSelected.NodePath == "", "missing selected and legacy node paths cannot retain a deleted component");
 
     var legacyRepair = new InstallOptions();
     EffectiveInstallPlan.Restore(legacyRepair, new InstallerState { DshRoot = dshRoot });

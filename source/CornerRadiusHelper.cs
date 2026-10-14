@@ -8,6 +8,7 @@ namespace DeepSeekHarnessLauncher
     {
         internal const string Windows10Style = "Windows10";
         internal const string Windows11Style = "Windows11";
+        private const int Windows11MinimumBuild = 22000;
         private const int DwmwaWindowCornerPreference = 33;
         private const int DwmwcpDoNotRound = 1;
         private const int DwmwcpRound = 2;
@@ -19,11 +20,12 @@ namespace DeepSeekHarnessLauncher
             ref int value,
             int valueSize);
 
+        private static readonly int _windowsBuild =
+            Environment.OSVersion.Version.Build;
         private static readonly bool _isWindows11System =
-            Environment.OSVersion.Version.Build >= 22000;
-        private static string _windowStyle = _isWindows11System
-            ? Windows11Style
-            : Windows10Style;
+            IsWindows11Build(_windowsBuild);
+        private static string _windowStyle =
+            GetDefaultWindowStyleForBuild(_windowsBuild);
 
         internal static bool IsWindows11
         {
@@ -32,12 +34,19 @@ namespace DeepSeekHarnessLauncher
 
         internal static string DefaultWindowStyle
         {
-            get
-            {
-                return _isWindows11System
-                    ? Windows11Style
-                    : Windows10Style;
-            }
+            get { return GetDefaultWindowStyleForBuild(_windowsBuild); }
+        }
+
+        internal static bool IsWindows11Build(int windowsBuild)
+        {
+            return windowsBuild >= Windows11MinimumBuild;
+        }
+
+        internal static string GetDefaultWindowStyleForBuild(int windowsBuild)
+        {
+            return IsWindows11Build(windowsBuild)
+                ? Windows11Style
+                : Windows10Style;
         }
 
         internal static string WindowStyle
@@ -70,6 +79,11 @@ namespace DeepSeekHarnessLauncher
             get { return new CornerRadius(UsesWindows11Style ? 4 : 0); }
         }
 
+        internal static CornerRadius SearchShellRadius
+        {
+            get { return new CornerRadius(UsesWindows11Style ? 17 : 0); }
+        }
+
         internal static string NormalizeWindowStyle(string value)
         {
             return String.Equals(
@@ -98,7 +112,7 @@ namespace DeepSeekHarnessLauncher
 
         internal static void ApplyWindowFrame(IntPtr windowHandle)
         {
-            if (windowHandle == IntPtr.Zero || !IsWindows11)
+            if (windowHandle == IntPtr.Zero)
             {
                 return;
             }
@@ -129,6 +143,7 @@ namespace DeepSeekHarnessLauncher
 
             resources["ControlCornerRadius"] = ControlRadius;
             resources["OverlayCornerRadius"] = SurfaceRadius;
+            resources["SettingsSearchShellCornerRadius"] = SearchShellRadius;
         }
     }
 }

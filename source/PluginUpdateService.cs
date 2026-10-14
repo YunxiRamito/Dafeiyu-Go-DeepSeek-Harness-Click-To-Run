@@ -47,6 +47,7 @@ namespace DeepSeekHarnessLauncher
             new List<PluginUpdateMatch>();
         public bool RateLimited { get; set; }
         public string Error { get; set; }
+        public bool Partial => RateLimited || !String.IsNullOrWhiteSpace(Error);
     }
 
     /// <summary>
@@ -70,15 +71,14 @@ namespace DeepSeekHarnessLauncher
             PluginCatalogService.CatalogResult catalog =
                 PluginCatalogService.Load(settings, forceRefresh, log);
             result.RateLimited = catalog != null && catalog.RateLimited;
+            result.Error = catalog?.Error;
             List<PluginCatalogItem> items = catalog == null || catalog.Items == null
                 ? new List<PluginCatalogItem>()
                 : catalog.Items;
             if (items.Count == 0)
             {
                 // 目录为空不直接返回：不在目录里的插件要靠远端 HEAD sha 判更新。
-                result.Error = catalog == null
-                    ? "插件目录为空。"
-                    : (catalog.Error ?? "插件目录为空。");
+                if (String.IsNullOrWhiteSpace(result.Error)) result.Error = "插件目录为空。";
             }
 
             Dictionary<string, PluginInstallRecord> records =
@@ -126,7 +126,12 @@ namespace DeepSeekHarnessLauncher
                     continue;
                 }
 
-                PluginCatalogItem remote = ResolveRemoteRepository(settings, spec, log);
+                PluginCatalogItem remote = ResolveRemoteRepository(settings, spec, log, out string remoteError);
+                if (!String.IsNullOrWhiteSpace(remoteError))
+                {
+                    string detail = "插件 " + spec.Owner + "/" + spec.Repository + " HEAD 检查未完成：" + remoteError;
+                    result.Error = String.IsNullOrWhiteSpace(result.Error) ? detail : result.Error + "\n" + detail;
+                }
                 if (remote == null)
                 {
                     continue;
@@ -150,13 +155,7 @@ namespace DeepSeekHarnessLauncher
                 });
             }
 
-            // 目录为空但目录外插件查到了更新时，别让"目录为空"盖掉可执行的结果：
-            // 界面是先看 Error 再看 match 的。
-            if (result.Updates.Count > 0)
-            {
-                result.Error = null;
-            }
-
+            // Partial checks retain both failures and independently found updates.
             return result;
         }
 
@@ -383,8 +382,10 @@ namespace DeepSeekHarnessLauncher
         private static PluginCatalogItem ResolveRemoteRepository(
             LauncherSettings settings,
             PluginSpec spec,
-            Action<string> log)
+            Action<string> log,
+            out string failure)
         {
+            failure = null;
             if (spec == null || !spec.IsGitHub)
             {
                 return null;
@@ -397,6 +398,9 @@ namespace DeepSeekHarnessLauncher
                     settings,
                     spec,
                     out error);
+                failure = !String.IsNullOrWhiteSpace(error) ? error
+                    : item == null ? "未取得仓库信息。"
+                    : !IsCommitSha(item.SourceSha) ? "未取得有效的远端 HEAD 提交。" : null;
                 if (item == null && log != null)
                 {
                     log("插件 " + spec.Owner + "/" + spec.Repository
@@ -408,6 +412,8 @@ namespace DeepSeekHarnessLauncher
             }
             catch (Exception exception)
             {
+                failure = exception.Message;
+                if (String.IsNullOrWhiteSpace(failure)) failure = "远端 HEAD 查询异常。";
                 if (log != null)
                 {
                     log("插件 " + spec.Owner + "/" + spec.Repository

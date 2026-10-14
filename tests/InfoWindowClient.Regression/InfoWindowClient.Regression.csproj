@@ -5,5 +5,7 @@
     <Compile Include="..\..\source\ClientNoticeStore.cs" Link="ClientNoticeStore.cs" />
     <Compile Include="..\..\source\InfoWindowClient.cs" Link="InfoWindowClient.cs" />
     <Compile Include="..\..\source\NotificationService.cs" Link="NotificationService.cs" />
+    <Compile Include="..\..\source\LauncherReminderPolicy.cs" Link="LauncherReminderPolicy.cs" />
+    <Compile Include="..\..\source\LauncherSettings.cs" Link="LauncherSettings.cs" />
   </ItemGroup>
 </Project>

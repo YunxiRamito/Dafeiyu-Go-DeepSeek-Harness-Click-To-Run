@@ -601,11 +601,12 @@ namespace DeepSeekHarnessLauncher
         /// 应用更新:拉起一个独立的替换脚本,然后退出自己。
         /// 必须由脚本干替换的活 —— 正在运行的程序没法覆盖自己的 exe。
         /// </summary>
-        public static void ApplyUpdateAndExit(string newFilesDirectory, string installDirectory, string infoSession = null)
+        public static void ApplyUpdateAndExit(string newFilesDirectory, string installDirectory, string infoSession = null,
+            bool reopenApplicationWindow = false)
         {
             try
             {
-                StartApplyUpdate(newFilesDirectory, installDirectory, infoSession);
+                StartApplyUpdate(newFilesDirectory, installDirectory, infoSession, reopenApplicationWindow);
             }
             catch (Exception exception)
             {
@@ -614,7 +615,8 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        private static void StartApplyUpdate(string newFilesDirectory, string installDirectory, string infoSession)
+        private static void StartApplyUpdate(string newFilesDirectory, string installDirectory, string infoSession,
+            bool reopenApplicationWindow)
         {
             string scriptPath = Path.Combine(Path.GetTempPath(), "DeepSeekHarnessUpdate", "apply-update.ps1");
             string restartCommandPath = Path.Combine(
@@ -627,7 +629,8 @@ namespace DeepSeekHarnessLauncher
             // 路径可能有空格,所以整体套双引号;里面的反斜杠原样保留,不做 C 风格转义。
             string launcherCommand =
                 "\"" + Path.Combine(installDirectory, "DeepSeek Harness.exe") + "\" "
-                + "--no-browser --updated=" + Constants.Version;
+                + (reopenApplicationWindow ? "--restore-application-window " : "--no-browser ")
+                + "--updated=" + Constants.Version;
             if (!String.IsNullOrEmpty(infoSession)
                 && infoSession.StartsWith("DafeiyuGo.Info.", StringComparison.Ordinal)
                 && Guid.TryParseExact(infoSession.Substring("DafeiyuGo.Info.".Length), "N", out Guid _))

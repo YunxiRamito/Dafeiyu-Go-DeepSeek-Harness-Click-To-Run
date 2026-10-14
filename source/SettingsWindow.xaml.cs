@@ -1,6 +1,7 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -21,6 +22,7 @@ using Microsoft.UI.Xaml.Media.Animation;
 using Windows.Foundation;
 using Windows.Graphics;
 using Windows.ApplicationModel.DataTransfer;
+using Windows.Storage;
 using Windows.Storage.Pickers;
 using Windows.Storage.Streams;
 using Windows.UI.ViewManagement;
@@ -65,6 +67,7 @@ namespace DeepSeekHarnessLauncher
         private bool _serverMetricsBusy;
         private ServerMetricsResponse _serverMetricsResponse;
         private ClientNoticePresence _serverPresenceHistory;
+        private ClientNoticePresence _noticePresenceSnapshot;
         private bool _presenceHistoryBusy;
         private int _serverPresenceHoverIndex = -1;
         private int _serverUploadHoverIndex = -1;
@@ -112,7 +115,6 @@ namespace DeepSeekHarnessLauncher
             SettingsWindowHost host)
         {
             InitializeComponent();
-            ApplyOfficialColorNavigationIcons();
             _serverMetricsTimer = DispatcherQueue.CreateTimer();
             _serverMetricsTimer.Interval = TimeSpan.FromSeconds(2);
             _serverMetricsTimer.IsRepeating = true;
@@ -173,6 +175,7 @@ namespace DeepSeekHarnessLauncher
             InitializeDownloadCenter();
             InitializeInfoPreview();
             InitializePreviewPresence();
+            InitializeConnectionsPage();
             BuildSettingsGroups();
             // 补丁优先：先把补丁页、disable、overrides 落到导航上，再采设置搜索索引，
             // 被 disable 掉的内置条目就不会进索引。
@@ -196,25 +199,40 @@ namespace DeepSeekHarnessLauncher
         }
 
         /// <summary>
-        /// Windows 11 uses the original Microsoft Fluent UI System Icons color SVGs.
-        /// Windows 10 keeps its native symbol-font glyphs so the icon language follows the host OS.
-        /// These assets come from Microsoft's Fluent icon library; they are not extracted Windows Settings assets.
+        /// Navigation artwork follows the selected window style, not the host OS.
+        /// Windows 11 uses pinned Microsoft Fluent color SVGs; Windows 10 uses the
+        /// Fluent regular SVG set for the current theme.
         /// </summary>
         private void ApplyOfficialColorNavigationIcons()
         {
-            if (!CornerRadiusHelper.IsWindows11)
+            if (CornerRadiusHelper.UsesWindows11Style)
+            {
+                HomeNavItem.Icon = CreateOfficialColorNavigationIcon("home");
+                ModelsNavItem.Icon = CreateOfficialColorNavigationIcon("models");
+                BasicNavItem.Icon = CreateOfficialColorNavigationIcon("general");
+                ConnectionsNavItem.Icon = CreateOfficialColorNavigationIcon("connection");
+                FeaturesNavItem.Icon = CreateOfficialColorNavigationIcon("plugins");
+                SystemNavItem.Icon = CreateOfficialColorNavigationIcon("components");
+                UpdatesNavItem.Icon = CreateOfficialColorNavigationIcon("updates");
+                PatchesNavItem.Icon = CreateOfficialColorNavigationIcon("patches");
+                AboutNavItem.Icon = CreateOfficialColorNavigationIcon("about");
+                DownloadsNavItem.Icon = CreateOfficialColorNavigationIcon("downloads");
+                DeveloperNavItem.Icon = CreateOfficialColorNavigationIcon("developer");
                 return;
+            }
 
-            HomeNavItem.Icon = CreateOfficialColorNavigationIcon("home");
-            ModelsNavItem.Icon = CreateOfficialColorNavigationIcon("models");
-            BasicNavItem.Icon = CreateOfficialColorNavigationIcon("general");
-            FeaturesNavItem.Icon = CreateOfficialColorNavigationIcon("plugins");
-            SystemNavItem.Icon = CreateOfficialColorNavigationIcon("components");
-            UpdatesNavItem.Icon = CreateOfficialColorNavigationIcon("updates");
-            PatchesNavItem.Icon = CreateOfficialColorNavigationIcon("patches");
-            AboutNavItem.Icon = CreateOfficialColorNavigationIcon("about");
-            DownloadsNavItem.Icon = CreateOfficialColorNavigationIcon("downloads");
-            DeveloperNavItem.Icon = CreateOfficialColorNavigationIcon("developer");
+            bool dark = IsDarkTheme();
+            HomeNavItem.Icon = CreateFluentRegularNavigationIcon("home", dark);
+            BasicNavItem.Icon = CreateFluentRegularNavigationIcon("general", dark);
+            ConnectionsNavItem.Icon = CreateFluentRegularNavigationIcon("connection", dark);
+            ModelsNavItem.Icon = CreateFluentRegularNavigationIcon("service", dark);
+            FeaturesNavItem.Icon = CreateFluentRegularNavigationIcon("plugins", dark);
+            SystemNavItem.Icon = CreateFluentRegularNavigationIcon("components", dark);
+            UpdatesNavItem.Icon = CreateFluentRegularNavigationIcon("updates", dark);
+            PatchesNavItem.Icon = CreateFluentRegularNavigationIcon("alerts", dark);
+            AboutNavItem.Icon = CreateFluentRegularNavigationIcon("about", dark);
+            DownloadsNavItem.Icon = CreateFluentRegularNavigationIcon("updates", dark);
+            DeveloperNavItem.Icon = CreateFluentRegularNavigationIcon("api", dark);
         }
 
         private static ImageIcon CreateOfficialColorNavigationIcon(string assetName)
@@ -226,6 +244,59 @@ namespace DeepSeekHarnessLauncher
                     UriSource = new Uri("ms-appx:///assets/SettingsNavIconsWin11/" + assetName + ".svg")
                 }
             };
+        }
+
+        private ImageIcon CreateFluentRegularNavigationIcon(
+            string assetName,
+            bool dark)
+        {
+            string directory = dark
+                ? "SettingsNavIconsWin10Dark/"
+                : "SettingsNavIconsWin10/";
+            Uri sourceUri = new Uri("ms-appx:///assets/" + directory + assetName + ".svg");
+            SvgImageSource source = new SvgImageSource();
+            if (dark && assetName == "connection")
+            {
+                _ = LoadDarkConnectionNavigationIconAsync(source, sourceUri);
+            }
+            else
+            {
+                source.UriSource = sourceUri;
+            }
+
+            return new ImageIcon { Source = source };
+        }
+
+        private async System.Threading.Tasks.Task LoadDarkConnectionNavigationIconAsync(
+            SvgImageSource source,
+            Uri sourceUri)
+        {
+            try
+            {
+                string svg = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory,
+                    "assets", "SettingsNavIconsWin10Dark", "connection.svg"));
+                // Keep both shipped regular SVGs byte-for-byte upstream. Only the
+                // in-memory monochrome presentation receives the theme foreground.
+                string darkSvg = svg.Replace("fill=\"#212121\"", "fill=\"#E5E5E5\"");
+                if (_settingsClosed) return;
+                using (InMemoryRandomAccessStream stream = new InMemoryRandomAccessStream())
+                {
+                    using (DataWriter writer = new DataWriter(stream.GetOutputStreamAt(0)))
+                    {
+                        writer.WriteBytes(Encoding.UTF8.GetBytes(darkSvg));
+                        await writer.StoreAsync();
+                        await writer.FlushAsync();
+                        writer.DetachStream();
+                    }
+                    stream.Seek(0);
+                    if (!_settingsClosed) await source.SetSourceAsync(stream);
+                }
+            }
+            catch (Exception exception)
+            {
+                if (!_settingsClosed)
+                    _host.Log("Dark connection navigation SVG: " + exception.Message);
+            }
         }
 
         private void ConfigureTaskbarWindow()
@@ -431,6 +502,8 @@ namespace DeepSeekHarnessLauncher
 
             CollectSearchEntries(HomePage, "Home", "主页", null);
             CollectSearchEntries(ModelPage, "Model", "模型", null);
+            CollectSearchEntries(ConnectionsPage, "Connections", "连接", null);
+            CollectConnectionsSearchEntries();
             CollectSearchEntries(GeneralPage, "General", "常规", "通用");
             CollectSearchEntries(ThemePage, "Theme", "外观", "通用");
             CollectSearchEntries(ApiPage, "Api", "API", "通用");
@@ -454,7 +527,7 @@ namespace DeepSeekHarnessLauncher
 
             // 非标准设置行需要显式登记，不能依赖 SettingsRowGridStyle 自动采集。
             CollectSearchEntry("ServerMetrics:Page", "服务器监控", "查看 CPU、内存、磁盘、网络和硬件信息。", "ServerMetrics", "服务器", "在线人数 服务器状态 monitor", ServerMetricsPage);
-            CollectSearchEntry("ServerMetrics:Presence", "在线人数", "查看近 24 小时在线人数历史图表。", "ServerMetrics", "服务器", "在线统计 人数图表 24小时 presence history", ServerPresenceChart);
+            CollectSearchEntry("ServerMetrics:Presence", "在线人数", "查看近 24 小时 PC 在线人数历史图表。", "ServerMetrics", "服务器", "在线统计 PC 人数图表 24小时 presence history", ServerPresenceChart);
             CollectSearchEntry("ServerMetrics:Cpu", "CPU", "服务器处理器使用率。", "ServerMetrics", "服务器", "处理器 cpu", ServerCpuText);
             CollectSearchEntry("ServerMetrics:Memory", "内存", "服务器内存占用。", "ServerMetrics", "服务器", "memory", ServerMemoryText);
             CollectSearchEntry("ServerMetrics:Disk", "硬盘", "服务器磁盘空间。", "ServerMetrics", "服务器", "磁盘 disk", ServerDiskText);
@@ -563,7 +636,7 @@ namespace DeepSeekHarnessLauncher
 
             // SettingsRowGridStyle 是首选设置布局。Service、Updates 等页面也会有独立卡片，
             // 它们没有标准行；从卡片标题和说明直接建索引，后续新增同类卡片无需手动登记。
-            if (pageTag == "Model" || pageTag == "Service" || pageTag == "Updates" || pageTag == "Patches"
+            if (pageTag == "Connections" || pageTag == "Model" || pageTag == "Service" || pageTag == "Updates" || pageTag == "Patches"
                 || pageTag == "General" || pageTag == "Theme" || pageTag == "Api"
                 || pageTag == "Alerts" || pageTag == "About" || pageTag == "Components")
             {
@@ -853,6 +926,8 @@ namespace DeepSeekHarnessLauncher
         {
             switch (pageTag)
             {
+                case "Connections":
+                    return "连接 配对 设备 二维码 QR Aries 服务器 URI 端口 同步 广播 CPU 内存 GPU 网络 存储";
                 case "General":
                     return "常规 启动 自启 端口 port 语言";
                 case "Theme":
@@ -1209,10 +1284,16 @@ namespace DeepSeekHarnessLauncher
             object args)
         {
             if (_settingsClosed) return;
-            // 图用的是主题资源画笔，切主题要重画一遍（不然会停在上一套配色）
-            DrawHomeUsageChart();
-            RenderServerUploadChart();
-            RenderServerPresenceChart();
+            ApplyOfficialColorNavigationIcons();
+            // Wait for ThemeResource expressions to update before rebuilding chart elements.
+            DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, delegate
+            {
+                if (_settingsClosed) return;
+                DrawHomeUsageChart();
+                RenderServerUploadChart();
+                RenderServerPresenceChart();
+                RenderServerVersionChart();
+            });
         }
 
         private void LoadSettingsIntoControls()
@@ -1223,6 +1304,9 @@ namespace DeepSeekHarnessLauncher
             FixedPortRadio.IsChecked = _settings.PortMode == "Fixed";
             DefaultPortRadio.IsChecked = _settings.PortMode == "Default";
             SelectTaggedItem(SilentStartComboBox, _settings.SilentStart);
+            bool openInBrowser = String.Equals(_settings.PageOpenMode, "Browser", StringComparison.OrdinalIgnoreCase);
+            PageOpenWindowRadio.IsChecked = !openInBrowser;
+            PageOpenBrowserRadio.IsChecked = openInBrowser;
             SelectTaggedItem(ThemeComboBox, _settings.Theme);
             SelectTaggedItem(WindowStyleComboBox, _settings.WindowStyle);
             SelectTaggedItem(AccentSourceComboBox, _settings.AccentSource);
@@ -1252,10 +1336,7 @@ namespace DeepSeekHarnessLauncher
                     ? "Check"
                     : _settings.PatchUpdateMode);
 
-            NotificationMutedToggle.IsOn = _settings.NotificationMuted;
-            UpdateReminderToggle.IsOn = _settings.UpdateReminder;
-            PluginUpdateReminderToggle.IsOn = _settings.PluginUpdateReminder;
-            RechargeReminderToggle.IsOn = _settings.RechargeReminder;
+            LoadReminderSettingsIntoControls();
 
             _proxyUiReady = false;
             SelectRadioByTag(ProxyModeSelector, _settings.ProxyMode, "None");
@@ -1314,7 +1395,9 @@ namespace DeepSeekHarnessLauncher
             SettingsSearchBox.Loaded += delegate { HookSearchFocus(); };
             SettingsSearchBox.PreviewKeyDown += SettingsSearchBox_PreviewKeyDown;
             StartWithWindowsToggle.Toggled += StartWithWindowsToggle_Toggled;
-            SilentStartComboBox.SelectionChanged += SettingComboBox_SelectionChanged;
+            SilentStartComboBox.SelectionChanged += SilentStartComboBox_SelectionChanged;
+            PageOpenWindowRadio.Checked += PageOpenModeRadio_Checked;
+            PageOpenBrowserRadio.Checked += PageOpenModeRadio_Checked;
             UpdateSourceComboBox.SelectionChanged += SettingComboBox_SelectionChanged;
             PluginSourceComboBox.SelectionChanged += SettingComboBox_SelectionChanged;
             UpdateIntervalComboBox.SelectionChanged += SettingComboBox_SelectionChanged;
@@ -1529,6 +1612,16 @@ namespace DeepSeekHarnessLauncher
             RefreshInstallerVersion();
 
             NotificationMutedToggle.Toggled += ReminderToggle_Toggled;
+            NotificationsEnabledToggle.Toggled += ReminderToggle_Toggled;
+            AnnouncementReminderToggle.Toggled += ReminderToggle_Toggled;
+            ServerNotificationReminderToggle.Toggled += ReminderToggle_Toggled;
+            BackendConnectionReminderToggle.Toggled += ReminderToggle_Toggled;
+            ServiceReminderToggle.Toggled += ReminderToggle_Toggled;
+            ExtensionOperationReminderToggle.Toggled += ReminderToggle_Toggled;
+            DataTransferReminderToggle.Toggled += ReminderToggle_Toggled;
+            FeedbackReplyReminderToggle.Toggled += ReminderToggle_Toggled;
+            PatchReminderToggle.Toggled += ReminderToggle_Toggled;
+            ProgressReminderToggle.Toggled += ReminderToggle_Toggled;
             UpdateReminderToggle.Toggled += ReminderToggle_Toggled;
             PluginUpdateReminderToggle.Toggled += ReminderToggle_Toggled;
             RechargeReminderToggle.Toggled += ReminderToggle_Toggled;
@@ -1609,12 +1702,14 @@ namespace DeepSeekHarnessLauncher
         {
             if (_settingsClosed) return;
             ClientNoticePresence presence = _host.GetNoticePresence();
+            _noticePresenceSnapshot = presence;
+            _serverVersionHoverIndex = -1;
             bool online = presence != null;
-            NoticePresenceText.Text = online ? presence.OnlineCount.ToString("N0") + " 人在线" : "在线状态未连接";
             NoticePresenceDot.Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(255,
                 online ? (byte)40 : (byte)138, online ? (byte)167 : (byte)138, online ? (byte)69 : (byte)138));
             ApplyPresenceFooterLayout();
             RenderServerPresenceChart();
+            RenderServerVersionChart();
         }
 
         private void NoticePresenceFooterItem_Tapped(object sender, RoutedEventArgs args)
@@ -1708,21 +1803,23 @@ namespace DeepSeekHarnessLauncher
         private void RenderServerPresenceChart()
         {
             if (_settingsClosed || _activeMemoryPageKey != "ServerMetrics") return;
+            SetServerPresenceHistoryTitle();
             if (ServerPresenceChart == null || _host == null) return;
             double width = ServerPresenceChart.ActualWidth;
             if (width <= 100) return;
             ServerPresenceChart.Children.Clear();
             ClientNoticePresence presence = _serverPresenceHistory;
+            (int Total, int Pc, int Mobile, bool MobileAvailable) currentCounts = GetDeveloperCenterPresenceCounts(presence);
             DateTimeOffset now = presence?.ObservedAt ?? DateTimeOffset.UtcNow;
             var samples = (presence?.History ?? new List<ClientNoticePresenceSample>())
                 .Where(sample => sample != null && sample.OnlineCount >= 0 && sample.ObservedAt >= now.AddHours(-24) && sample.ObservedAt <= now)
                 .OrderBy(sample => sample.ObservedAt).ToList();
             if (presence != null && presence.ObservedAt != default
                 && (samples.Count == 0 || (presence.ObservedAt - samples[samples.Count - 1].ObservedAt).TotalSeconds > 30))
-                samples.Add(new ClientNoticePresenceSample { ObservedAt = presence.ObservedAt, OnlineCount = presence.OnlineCount });
-            ServerPresenceSummaryText.Text = presence == null ? "在线人数暂时无法读取。"
-                : presence.OnlineCount.ToString("N0") + " 人在线 · " + (samples.Count == 0 ? "暂无历史记录。" : "历史记录每分钟采样。");
-            int peak = Math.Max(presence?.OnlineCount ?? 0, samples.Count == 0 ? 0 : samples.Max(sample => sample.OnlineCount));
+                samples.Add(new ClientNoticePresenceSample { ObservedAt = presence.ObservedAt, OnlineCount = currentCounts.Pc });
+            ServerPresenceSummaryText.Text = presence == null ? "PC 在线人数历史暂时无法读取。"
+                : "PC " + currentCounts.Pc.ToString("N0") + " 人在线 · " + (samples.Count == 0 ? "暂无历史记录。" : "历史记录每分钟采样。");
+            int peak = Math.Max(currentCounts.Pc, samples.Count == 0 ? 0 : samples.Max(sample => sample.OnlineCount));
             double step = Math.Max(1, Math.Ceiling(peak / 4.0));
             double maximum = step * 4;
             double left = 58, right = width - 12, top = 32, bottom = 204;
@@ -1772,7 +1869,7 @@ namespace DeepSeekHarnessLauncher
                 ServerPresenceChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Line
                 { X1 = x, X2 = x, Y1 = top, Y2 = bottom, Stroke = accent, Opacity = 0.7, StrokeThickness = 1 });
                 AddServerChartTooltip(ServerPresenceChart,
-                    new[] { selected.ObservedAt.ToLocalTime().ToString("MM-dd HH:mm"), selected.OnlineCount.ToString("N0") + " 人在线" }, x, y);
+                    new[] { selected.ObservedAt.ToLocalTime().ToString("MM-dd HH:mm"), "PC " + selected.OnlineCount.ToString("N0") + " 人在线" }, x, y);
             }
         }
 
@@ -1870,21 +1967,18 @@ namespace DeepSeekHarnessLauncher
             double width = ServerVersionChart.ActualWidth;
             if (width <= 120) return;
             ServerVersionChart.Children.Clear();
-            ClientNoticePresence presence = _serverPresenceHistory;
-            var versions = (presence?.LauncherVersions ?? new List<ClientNoticeVersionCount>())
-                .Where(item => item != null && !String.IsNullOrWhiteSpace(item.Version) && item.Count > 0)
-                .OrderByDescending(item => item.Count).ThenBy(item => item.Version, StringComparer.OrdinalIgnoreCase).ToList();
-            int total = versions.Sum(item => item.Count);
-            var slices = versions.Take(6).Select(item => new ServerVersionSlice { Version = item.Version, Count = item.Count }).ToList();
-            int other = Math.Max(0, total - slices.Sum(item => item.Count));
-            if (other > 0) slices.Add(new ServerVersionSlice { Version = "其他", Count = other });
-            _serverVersionSlices = slices;
-            ServerVersionSummaryText.Text = presence == null ? "启动器版本分布暂时无法读取。"
-                : total.ToString("N0") + " 个在线安装 · " + versions.Count.ToString("N0") + " 个版本";
 
-            double centerX = width / 2, centerY = 82, outerRadius = 66, innerRadius = 40;
-            double legendTop = 164;
-            double legendColumnWidth = (width - 16) / 2;
+            ClientNoticePresence presence = _noticePresenceSnapshot;
+            (int Total, int Pc, int Mobile, bool MobileAvailable) online = GetDeveloperCenterPresenceCounts(presence);
+            _serverVersionSlices = BuildServerVersionSlices(presence);
+            LayoutServerVersionDonut(_serverVersionSlices);
+            if (_serverVersionHoverIndex >= _serverVersionSlices.Count) _serverVersionHoverIndex = -1;
+
+            ServerVersionSummaryText.Text = presence == null ? "PC / 移动端在线版本分布暂时无法读取。"
+                : "PC " + online.Pc.ToString("N0") + " 在线 · 移动端 "
+                    + (online.MobileAvailable ? online.Mobile.ToString("N0") + " 在线" : "人数未知");
+            if (presence == null) _serverVersionHoverIndex = -1;
+
             Brush foreground = ResolveChartBrush("TextFillColorSecondaryBrush", "ControlStrokeColorDefaultBrush");
             Brush emptyBrush = ResolveChartBrush("ControlStrokeColorDefaultBrush", "TextFillColorTertiaryBrush");
             Windows.UI.Color[] colors =
@@ -1892,91 +1986,122 @@ namespace DeepSeekHarnessLauncher
                 Windows.UI.Color.FromArgb(255, 0, 153, 188),
                 Windows.UI.Color.FromArgb(255, 222, 118, 55),
                 Windows.UI.Color.FromArgb(255, 120, 100, 210),
-                Windows.UI.Color.FromArgb(255, 44, 160, 92),
+                Windows.UI.Color.FromArgb(255, 190, 159, 37),
                 Windows.UI.Color.FromArgb(255, 207, 70, 104),
                 Windows.UI.Color.FromArgb(255, 142, 120, 63),
                 Windows.UI.Color.FromArgb(255, 87, 137, 193)
             };
-            if (total == 0)
+            double centerX = width / 2, centerY = 108;
+            double outerRadius = Math.Min(92, (width - 16) / 2), innerRadius = outerRadius * 0.62;
+            var empty = new Microsoft.UI.Xaml.Shapes.Ellipse
             {
-                var empty = new Microsoft.UI.Xaml.Shapes.Ellipse
-                { Width = outerRadius * 2, Height = outerRadius * 2, Stroke = emptyBrush, StrokeThickness = outerRadius - innerRadius, Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0)) };
-                Canvas.SetLeft(empty, centerX - outerRadius); Canvas.SetTop(empty, centerY - outerRadius); ServerVersionChart.Children.Add(empty);
-                var none = new TextBlock { Text = presence == null ? "暂不可用" : "暂无在线版本", FontSize = 12, Foreground = foreground };
-                none.Measure(new Size(Double.PositiveInfinity, Double.PositiveInfinity));
-                Canvas.SetLeft(none, centerX - none.DesiredSize.Width / 2); Canvas.SetTop(none, legendTop); ServerVersionChart.Children.Add(none);
-            }
-            else
+                Width = outerRadius * 2, Height = outerRadius * 2, Stroke = emptyBrush,
+                StrokeThickness = outerRadius - innerRadius, IsHitTestVisible = false
+            };
+            Canvas.SetLeft(empty, centerX - outerRadius);
+            Canvas.SetTop(empty, centerY - outerRadius);
+            ServerVersionChart.Children.Add(empty);
+            var centerCount = new TextBlock
             {
-                double angle = -90;
-                for (int index = 0; index < slices.Count; index++)
+                Text = presence == null ? "--" : online.Total.ToString("N0"), FontSize = 22,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = foreground,
+                Width = innerRadius * 2 - 12, TextAlignment = TextAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis, IsHitTestVisible = false
+            };
+            Canvas.SetLeft(centerCount, centerX - centerCount.Width / 2);
+            Canvas.SetTop(centerCount, centerY - 25);
+            ServerVersionChart.Children.Add(centerCount);
+            var centerCaption = new TextBlock
+            {
+                Text = presence == null ? "未知" : "在线", FontSize = 11, Foreground = foreground,
+                Width = innerRadius * 2, TextAlignment = TextAlignment.Center, IsHitTestVisible = false
+            };
+            Canvas.SetLeft(centerCaption, centerX - innerRadius);
+            Canvas.SetTop(centerCaption, centerY + 8);
+            ServerVersionChart.Children.Add(centerCaption);
+            double legendTop = 216;
+
+            for (int index = 0; index < _serverVersionSlices.Count; index++)
+            {
+                ServerVersionSlice slice = _serverVersionSlices[index];
+                double opacity = _serverVersionHoverIndex < 0 || _serverVersionHoverIndex == index ? 1 : 0.45;
+                Brush color = !slice.IsAvailable ? emptyBrush : slice.Platform == "移动端"
+                    ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 44, 160, 92))
+                    : new SolidColorBrush(colors[index % colors.Length]);
+                if (slice.SweepAngle > 0)
                 {
-                    double sweep = 360.0 * slices[index].Count / total;
-                    Brush fill = new SolidColorBrush(colors[index % colors.Length]);
-                    if (slices.Count == 1)
+                    if (slice.SweepAngle >= 360)
                     {
                         var full = new Microsoft.UI.Xaml.Shapes.Ellipse
                         {
-                            Width = outerRadius * 2, Height = outerRadius * 2,
-                            Stroke = fill, StrokeThickness = outerRadius - innerRadius,
-                            Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(0, 0, 0, 0))
+                            Width = outerRadius * 2, Height = outerRadius * 2, Stroke = color,
+                            StrokeThickness = outerRadius - innerRadius, Opacity = opacity, IsHitTestVisible = false
                         };
-                        Canvas.SetLeft(full, centerX - outerRadius); Canvas.SetTop(full, centerY - outerRadius); ServerVersionChart.Children.Add(full);
+                        Canvas.SetLeft(full, centerX - outerRadius);
+                        Canvas.SetTop(full, centerY - outerRadius);
+                        ServerVersionChart.Children.Add(full);
                     }
                     else
                     {
-                        var figure = new Microsoft.UI.Xaml.Media.PathFigure
-                        { StartPoint = DonutPoint(centerX, centerY, outerRadius, angle), IsClosed = true };
-                        figure.Segments.Add(new Microsoft.UI.Xaml.Media.ArcSegment
+                        double start = slice.StartAngle - 90, end = start + slice.SweepAngle;
+                        var figure = new PathFigure
+                        { StartPoint = DonutPoint(centerX, centerY, outerRadius, start), IsClosed = true, IsFilled = true };
+                        figure.Segments.Add(new ArcSegment
                         {
-                            Point = DonutPoint(centerX, centerY, outerRadius, angle + sweep),
-                            Size = new Size(outerRadius, outerRadius), IsLargeArc = sweep > 180,
-                            SweepDirection = Microsoft.UI.Xaml.Media.SweepDirection.Clockwise
+                            Point = DonutPoint(centerX, centerY, outerRadius, end), Size = new Size(outerRadius, outerRadius),
+                            IsLargeArc = slice.SweepAngle > 180, SweepDirection = SweepDirection.Clockwise
                         });
-                        figure.Segments.Add(new Microsoft.UI.Xaml.Media.LineSegment { Point = DonutPoint(centerX, centerY, innerRadius, angle + sweep) });
-                        figure.Segments.Add(new Microsoft.UI.Xaml.Media.ArcSegment
+                        figure.Segments.Add(new LineSegment { Point = DonutPoint(centerX, centerY, innerRadius, end) });
+                        figure.Segments.Add(new ArcSegment
                         {
-                            Point = DonutPoint(centerX, centerY, innerRadius, angle),
-                            Size = new Size(innerRadius, innerRadius), IsLargeArc = sweep > 180,
-                            SweepDirection = Microsoft.UI.Xaml.Media.SweepDirection.Counterclockwise
+                            Point = DonutPoint(centerX, centerY, innerRadius, start), Size = new Size(innerRadius, innerRadius),
+                            IsLargeArc = slice.SweepAngle > 180, SweepDirection = SweepDirection.Counterclockwise
                         });
-                        var geometry = new Microsoft.UI.Xaml.Media.PathGeometry();
+                        var geometry = new PathGeometry();
                         geometry.Figures.Add(figure);
                         ServerVersionChart.Children.Add(new Microsoft.UI.Xaml.Shapes.Path
-                        {
-                            Data = geometry, Fill = fill,
-                            Opacity = _serverVersionHoverIndex < 0 || _serverVersionHoverIndex == index ? 1 : 0.42,
-                            IsHitTestVisible = false
-                        });
+                        { Data = geometry, Fill = color, Opacity = opacity, IsHitTestVisible = false });
                     }
-                    int legendRow = index / 2;
-                    int legendColumn = index % 2;
-                    double itemLeft = 8 + legendColumn * legendColumnWidth;
-                    var marker = new Microsoft.UI.Xaml.Shapes.Rectangle { Width = 9, Height = 9, Fill = fill, IsHitTestVisible = false };
-                    Canvas.SetLeft(marker, itemLeft); Canvas.SetTop(marker, legendTop + 6 + legendRow * 23); ServerVersionChart.Children.Add(marker);
-                    var label = new TextBlock
-                    {
-                        Text = slices[index].Version + " · " + slices[index].Count.ToString("N0"),
-                        FontSize = 11, Foreground = foreground, Width = Math.Max(40, legendColumnWidth - 18),
-                        TextTrimming = TextTrimming.CharacterEllipsis, IsHitTestVisible = false
-                    };
-                    Canvas.SetLeft(label, itemLeft + 14); Canvas.SetTop(label, legendTop + 1 + legendRow * 23); ServerVersionChart.Children.Add(label);
-                    angle += sweep;
                 }
+                var legend = new Grid { Width = width - 16, ColumnSpacing = 8, Opacity = opacity, IsHitTestVisible = false };
+                legend.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                legend.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                legend.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                legend.Children.Add(new Microsoft.UI.Xaml.Shapes.Rectangle
+                { Width = 9, Height = 9, Fill = color, VerticalAlignment = VerticalAlignment.Center });
+                var label = new TextBlock
+                {
+                    Text = slice.DisplayVersion, FontSize = 12, Foreground = foreground,
+                    TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center
+                };
+                Grid.SetColumn(label, 1);
+                legend.Children.Add(label);
+                var count = new TextBlock
+                {
+                    Text = slice.IsAvailable ? slice.Count.ToString("N0") : "未知",
+                    FontSize = 12, Foreground = foreground, VerticalAlignment = VerticalAlignment.Center
+                };
+                Grid.SetColumn(count, 2);
+                legend.Children.Add(count);
+                legend.Measure(new Size(legend.Width, Double.PositiveInfinity));
+                slice.LegendTop = legendTop;
+                slice.LegendHeight = Math.Max(28, legend.DesiredSize.Height + 8);
+                Canvas.SetLeft(legend, 8);
+                Canvas.SetTop(legend, legendTop + 4);
+                ServerVersionChart.Children.Add(legend);
+                legendTop += slice.LegendHeight;
             }
-            var centerCount = new TextBlock { Text = (presence?.OnlineCount ?? 0).ToString("N0"), FontSize = 22, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = foreground };
-            centerCount.Measure(new Size(Double.PositiveInfinity, Double.PositiveInfinity));
-            Canvas.SetLeft(centerCount, centerX - centerCount.DesiredSize.Width / 2); Canvas.SetTop(centerCount, centerY - 20); ServerVersionChart.Children.Add(centerCount);
-            var centerCaption = new TextBlock { Text = "在线", FontSize = 11, Foreground = foreground };
-            centerCaption.Measure(new Size(Double.PositiveInfinity, Double.PositiveInfinity));
-            Canvas.SetLeft(centerCaption, centerX - centerCaption.DesiredSize.Width / 2); Canvas.SetTop(centerCaption, centerY + 8); ServerVersionChart.Children.Add(centerCaption);
-            if (_serverVersionHoverIndex >= 0 && _serverVersionHoverIndex < slices.Count)
+            ServerVersionChart.Height = Math.Max(244, legendTop + 8);
+
+            if (_serverVersionHoverIndex >= 0 && _serverVersionHoverIndex < _serverVersionSlices.Count)
             {
-                ServerVersionSlice selected = slices[_serverVersionHoverIndex];
-                double percent = total == 0 ? 0 : selected.Count * 100.0 / total;
+                ServerVersionSlice selected = _serverVersionSlices[_serverVersionHoverIndex];
+                string countText = selected.IsAvailable ? selected.Count.ToString("N0") + " 人在线" : "人数未知";
+                if (selected.IsAvailable && online.MobileAvailable && online.Total > 0)
+                    countText += " · " + (selected.Count * 100.0 / online.Total).ToString("0.0") + "%";
                 AddServerChartTooltip(ServerVersionChart,
-                    new[] { selected.Version, selected.Count.ToString("N0") + " 人 · " + percent.ToString("0.0") + "%" },
-                    centerX + outerRadius * 0.4, centerY - outerRadius * 0.3);
+                    new[] { selected.DisplayVersion, countText },
+                    centerX, centerY - outerRadius, wrap: true);
             }
         }
 
@@ -1984,30 +2109,12 @@ namespace DeepSeekHarnessLauncher
         {
             Windows.Foundation.Point point = args.GetCurrentPoint(ServerVersionChart).Position;
             double width = ServerVersionChart.ActualWidth;
-            double centerX = width / 2, centerY = 82;
-            double dx = point.X - centerX, dy = point.Y - centerY;
-            double radius = Math.Sqrt(dx * dx + dy * dy);
-            int index = -1;
-            if (radius >= 40 && radius <= 73 && _serverVersionSlices.Count > 0)
-            {
-                double degrees = Math.Atan2(dy, dx) * 180 / Math.PI + 90;
-                if (degrees < 0) degrees += 360;
-                double cursor = 0;
-                int total = _serverVersionSlices.Sum(slice => slice.Count);
-                for (int i = 0; i < _serverVersionSlices.Count; i++)
-                {
-                    cursor += 360.0 * _serverVersionSlices[i].Count / Math.Max(1, total);
-                    if (degrees <= cursor) { index = i; break; }
-                }
-            }
-            double legendTop = 164;
-            if (index < 0 && point.Y >= legendTop && point.X >= 8 && point.X <= width - 8)
-            {
-                int row = (int)((point.Y - legendTop) / 23);
-                int column = point.X < width / 2 ? 0 : 1;
-                int candidate = row * 2 + column;
-                if (candidate >= 0 && candidate < _serverVersionSlices.Count) index = candidate;
-            }
+            double outerRadius = Math.Min(92, (width - 16) / 2);
+            int index = FindServerVersionDonutSlice(_serverVersionSlices,
+                point.X - width / 2, point.Y - 108, outerRadius * 0.62, outerRadius);
+            if (index < 0 && point.X >= 8 && point.X <= width - 8)
+                index = _serverVersionSlices.FindIndex(slice =>
+                    point.Y >= slice.LegendTop && point.Y < slice.LegendTop + slice.LegendHeight);
             if (index == _serverVersionHoverIndex) return;
             _serverVersionHoverIndex = index;
             RenderServerVersionChart();
@@ -2112,7 +2219,11 @@ namespace DeepSeekHarnessLauncher
                 .OrderBy(sample => sample.ObservedAt).ToList();
             if (presence != null && presence.ObservedAt != default
                 && (samples.Count == 0 || (presence.ObservedAt - samples[samples.Count - 1].ObservedAt).TotalSeconds > 30))
-                samples.Add(new ClientNoticePresenceSample { ObservedAt = presence.ObservedAt, OnlineCount = presence.OnlineCount });
+                samples.Add(new ClientNoticePresenceSample
+                {
+                    ObservedAt = presence.ObservedAt,
+                    OnlineCount = GetDeveloperCenterPresenceCounts(presence).Pc
+                });
             double width = ServerPresenceChart.ActualWidth;
             int index = FindClosestChartSample(samples.Count,
                 i => width - 12 - (width - 70) * (now - samples[i].ObservedAt).TotalHours / 24,
@@ -2129,16 +2240,21 @@ namespace DeepSeekHarnessLauncher
             RenderServerPresenceChart();
         }
 
-        private static void AddServerChartTooltip(Canvas canvas, IEnumerable<string> lines, double x, double y)
+        private void AddServerChartTooltip(Canvas canvas, IEnumerable<string> lines, double x, double y, bool wrap = false)
         {
             var stack = new StackPanel { Spacing = 3 };
             foreach (string line in lines)
-                stack.Children.Add(new TextBlock { Text = line, FontSize = 11, TextWrapping = TextWrapping.NoWrap });
+                stack.Children.Add(new TextBlock
+                {
+                    Text = line, FontSize = 11, TextWrapping = wrap ? TextWrapping.Wrap : TextWrapping.NoWrap,
+                    Foreground = ResolveChartBrush("TextFillColorSecondaryBrush", "TextFillColorTertiaryBrush"),
+                    MaxWidth = wrap ? Math.Max(1, canvas.ActualWidth - 26) : Double.PositiveInfinity
+                });
             var tooltip = new Border
             {
                 Background = ResolveChartBrush("SolidBackgroundFillColorSecondaryBrush", "SolidBackgroundFillColorBaseBrush"),
                 BorderBrush = ResolveChartBrush("CardStrokeColorDefaultBrush", "ControlStrokeColorDefaultBrush"),
-                BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4), Padding = new Thickness(8, 6, 8, 6),
+                BorderThickness = new Thickness(1), CornerRadius = CornerRadiusHelper.ControlRadius, Padding = new Thickness(8, 6, 8, 6),
                 Child = stack, IsHitTestVisible = false
             };
             tooltip.Measure(new Size(Double.PositiveInfinity, Double.PositiveInfinity));
@@ -2147,18 +2263,19 @@ namespace DeepSeekHarnessLauncher
             Canvas.SetLeft(tooltip, left); Canvas.SetTop(tooltip, top); canvas.Children.Add(tooltip);
         }
 
-        private sealed class ServerVersionSlice
-        {
-            internal string Version { get; set; } = String.Empty;
-            internal int Count { get; set; }
-        }
-
         private static string FormatBytes(double bytes)
         {
             string[] units = { "B", "KB", "MB", "GB", "TB" };
             int unit = 0;
             while (bytes >= 1024 && unit < units.Length - 1) { bytes /= 1024; unit++; }
             return bytes.ToString(unit == 0 ? "0" : "0.0") + " " + units[unit];
+        }
+
+        private void SetServerPresenceHistoryTitle()
+        {
+            if (ServerPresenceChartCard?.Child is StackPanel card && card.Children.Count > 0
+                && card.Children[0] is TextBlock title)
+                title.Text = "在线人数 · PC近24小时";
         }
 
         private void ApplyPresenceFooterLayout()
@@ -2174,9 +2291,12 @@ namespace DeepSeekHarnessLauncher
             NoticePresenceText.MaxWidth = compact ? 40 : double.PositiveInfinity;
             NoticePresenceText.TextTrimming = compact ? TextTrimming.CharacterEllipsis : TextTrimming.CharacterEllipsis;
             NoticePresenceText.FontSize = compact ? 11 : 12;
+            ClientNoticePresence presence = _noticePresenceSnapshot;
+            string details = presence == null ? "在线状态未连接" : FormatDeveloperCenterPresence(presence);
+            Microsoft.UI.Xaml.Controls.ToolTipService.SetToolTip(NoticePresenceText, details);
             NoticePresenceText.Text = compact
-                ? (_host.GetNoticePresence() is ClientNoticePresence current ? current.OnlineCount.ToString("N0") : "–")
-                : (_host.GetNoticePresence() is ClientNoticePresence expanded ? expanded.OnlineCount.ToString("N0") + " 人在线" : "在线状态未连接");
+                ? (presence == null ? "–" : GetDeveloperCenterPresenceCounts(presence).Total.ToString("N0"))
+                : details;
         }
 
         private string _lastPluginStateSignature = String.Empty;
@@ -2618,6 +2738,28 @@ namespace DeepSeekHarnessLauncher
             SaveSettings();
         }
 
+        private void PageOpenModeRadio_Checked(object sender, RoutedEventArgs args)
+        {
+            if (_initializing || _suppressSettingSelectionChanged
+                || sender is not RadioButton radio || radio.IsChecked != true)
+            {
+                return;
+            }
+
+            _settings.PageOpenMode = PageOpenBrowserRadio.IsChecked == true ? "Browser" : "Window";
+            SaveSettings();
+        }
+
+        private void SilentStartComboBox_SelectionChanged(object sender, SelectionChangedEventArgs args)
+        {
+            if (_initializing || _suppressSettingSelectionChanged) return;
+            string mode = GetSelectedTag(SilentStartComboBox, "StartupOnly");
+            if (String.Equals(mode, _settings.SilentStart, StringComparison.OrdinalIgnoreCase)) return;
+            _settings.SilentStart = mode;
+            _settings.SilentStartUserModified = true;
+            SaveSettings();
+        }
+
         private void SettingComboBox_SelectionChanged(
             object sender,
             SelectionChangedEventArgs args)
@@ -2628,9 +2770,6 @@ namespace DeepSeekHarnessLauncher
                 return;
             }
 
-            _settings.SilentStart = GetSelectedTag(
-                SilentStartComboBox,
-                "StartupOnly");
             string updateSource = GetSelectedTag(
                 UpdateSourceComboBox,
                 "Accelerated");
@@ -2727,6 +2866,39 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
+        private void LoadReminderSettingsIntoControls()
+        {
+            NotificationsEnabledToggle.IsOn = _settings.NotificationsEnabled;
+            AnnouncementReminderToggle.IsOn = _settings.AnnouncementReminder;
+            ServerNotificationReminderToggle.IsOn = _settings.ServerNotificationReminder;
+            BackendConnectionReminderToggle.IsOn = _settings.BackendConnectionReminder;
+            ServiceReminderToggle.IsOn = _settings.ServiceReminder;
+            ExtensionOperationReminderToggle.IsOn = _settings.ExtensionOperationReminder;
+            DataTransferReminderToggle.IsOn = _settings.DataTransferReminder;
+            FeedbackReplyReminderToggle.IsOn = _settings.FeedbackReplyReminder;
+            PatchReminderToggle.IsOn = _settings.PatchReminder;
+            ProgressReminderToggle.IsOn = _settings.ProgressReminder;
+            NotificationMutedToggle.IsOn = _settings.NotificationMuted;
+            UpdateReminderToggle.IsOn = _settings.UpdateReminder;
+            PluginUpdateReminderToggle.IsOn = _settings.PluginUpdateReminder;
+            RechargeReminderToggle.IsOn = _settings.RechargeReminder;
+            UpdateReminderControlStates();
+        }
+
+        private void UpdateReminderControlStates()
+        {
+            NotificationDetails.IsEnabled = NotificationsEnabledToggle.IsOn;
+            UpdateReminderToggle.IsEnabled = NotificationsEnabledToggle.IsOn;
+            PluginUpdateReminderToggle.IsEnabled = NotificationsEnabledToggle.IsOn;
+            UpdateCustomThresholdStates();
+        }
+
+        private void SaveReminderSettings()
+        {
+            SaveSettings();
+            _host.RemindersChanged();
+        }
+
         private void ReminderToggle_Toggled(
             object sender,
             RoutedEventArgs args)
@@ -2737,10 +2909,21 @@ namespace DeepSeekHarnessLauncher
             }
 
             _settings.NotificationMuted = NotificationMutedToggle.IsOn;
+            _settings.NotificationsEnabled = NotificationsEnabledToggle.IsOn;
+            _settings.AnnouncementReminder = AnnouncementReminderToggle.IsOn;
+            _settings.ServerNotificationReminder = ServerNotificationReminderToggle.IsOn;
+            _settings.BackendConnectionReminder = BackendConnectionReminderToggle.IsOn;
+            _settings.ServiceReminder = ServiceReminderToggle.IsOn;
+            _settings.ExtensionOperationReminder = ExtensionOperationReminderToggle.IsOn;
+            _settings.DataTransferReminder = DataTransferReminderToggle.IsOn;
+            _settings.FeedbackReplyReminder = FeedbackReplyReminderToggle.IsOn;
+            _settings.PatchReminder = PatchReminderToggle.IsOn;
+            _settings.ProgressReminder = ProgressReminderToggle.IsOn;
             _settings.UpdateReminder = UpdateReminderToggle.IsOn;
             _settings.PluginUpdateReminder = PluginUpdateReminderToggle.IsOn;
             _settings.RechargeReminder = RechargeReminderToggle.IsOn;
-            SaveSettings();
+            UpdateReminderControlStates();
+            SaveReminderSettings();
         }
 
         private void ThresholdCheckBox_Changed(
@@ -2763,7 +2946,7 @@ namespace DeepSeekHarnessLauncher
             _settings.BalanceAlert1 = Balance1CheckBox.IsChecked == true;
             _settings.BalanceAlertCustom = BalanceCustomCheckBox.IsChecked == true;
             UpdateCustomThresholdStates();
-            SaveSettings();
+            SaveReminderSettings();
         }
 
         private void ThresholdNumberBox_ValueChanged(
@@ -2787,13 +2970,13 @@ namespace DeepSeekHarnessLauncher
                 _settings.BalanceCustomAmount = (decimal)sender.Value;
             }
 
-            SaveSettings();
+            SaveReminderSettings();
         }
 
         private void UpdateCustomThresholdStates()
         {
-            SpendCustomBox.IsEnabled = SpendCustomCheckBox.IsChecked == true;
-            BalanceCustomBox.IsEnabled = BalanceCustomCheckBox.IsChecked == true;
+            SpendCustomBox.IsEnabled = NotificationsEnabledToggle.IsOn && SpendCustomCheckBox.IsChecked == true;
+            BalanceCustomBox.IsEnabled = NotificationsEnabledToggle.IsOn && BalanceCustomCheckBox.IsChecked == true;
         }
 
         private void SaveSettings()
@@ -5402,7 +5585,7 @@ namespace DeepSeekHarnessLauncher
             bool dynamicPatchPage = target.StartsWith("Patch_", StringComparison.Ordinal);
             string group = GroupOf(target);
             string navTag = group ?? target;
-            bool known = navTag == "Home" || navTag == "Model" || navTag == "Basic" || navTag == "Features"
+            bool known = navTag == "Home" || navTag == "Connections" || navTag == "Model" || navTag == "Basic" || navTag == "Features"
                 || navTag == "System" || navTag == "UpdatesGroup"
                 || navTag == "AboutGroup" || navTag == "Downloads" || navTag == "Developer" || navTag == "ServerMetrics";
             if (!known) { target = "General"; group = "Basic"; navTag = "Basic"; }
@@ -5431,6 +5614,8 @@ namespace DeepSeekHarnessLauncher
 
             HomePage.Visibility = navTag == "Home" ? Visibility.Visible : Visibility.Collapsed;
             ModelPage.Visibility = navTag == "Model" ? Visibility.Visible : Visibility.Collapsed;
+            ConnectionsPage.Visibility = navTag == "Connections" ? Visibility.Visible : Visibility.Collapsed;
+            SetConnectionsPageActive(navTag == "Connections");
             BasicPage.Visibility = navTag == "Basic" ? Visibility.Visible : Visibility.Collapsed;
             FeaturesPage.Visibility = navTag == "Features" ? Visibility.Visible : Visibility.Collapsed;
             SystemPage.Visibility = navTag == "System" ? Visibility.Visible : Visibility.Collapsed;
@@ -5471,14 +5656,14 @@ namespace DeepSeekHarnessLauncher
 
             FrameworkElement page = navTag switch
             {
-                "Home" => HomePage, "Model" => ModelPage, "Features" => FeaturesPage, "System" => SystemPage,
+                "Home" => HomePage, "Connections" => ConnectionsPage, "Model" => ModelPage, "Features" => FeaturesPage, "System" => SystemPage,
                 "UpdatesGroup" => UpdatesGroupPage, "AboutGroup" => AboutGroupPage,
                 "Downloads" => DownloadsPage,
                 "Developer" => DeveloperPage, "ServerMetrics" => ServerMetricsPage, _ => BasicPage
             };
             NavigationViewItem item = navTag switch
             {
-                "Home" => HomeNavItem, "Model" => ModelsNavItem, "Basic" => BasicNavItem,
+                "Home" => HomeNavItem, "Connections" => ConnectionsNavItem, "Model" => ModelsNavItem, "Basic" => BasicNavItem,
                 "Features" => FeaturesNavItem, "System" => SystemNavItem,
                 "UpdatesGroup" => UpdatesNavItem, "AboutGroup" => AboutNavItem,
                 "Developer" => DeveloperNavItem, "ServerMetrics" => ServerMetricsFooterEntry, _ => DownloadsNavItem
@@ -5793,7 +5978,7 @@ namespace DeepSeekHarnessLauncher
         }
 
         private Brush _searchShellIdleBrush;
-        private bool _searchFocusHooked;
+        private TextBox _searchFocusTextBox;
 
         /// <summary>
         /// 聚焦描边用的主题色：自定义强调色写在 SettingsRoot 资源里，
@@ -5842,13 +6027,8 @@ namespace DeepSeekHarnessLauncher
         {
             try
             {
-                if (_searchFocusHooked)
-                {
-                    return;
-                }
-
                 TextBox inner = FindDescendant<TextBox>(SettingsSearchBox);
-                if (inner == null)
+                if (inner == null || ReferenceEquals(inner, _searchFocusTextBox))
                 {
                     return;
                 }
@@ -5862,7 +6042,10 @@ namespace DeepSeekHarnessLauncher
                         SetSearchShellFocused(false);
                     }
                 };
-                _searchFocusHooked = true;
+                _searchFocusTextBox = inner;
+                SetSearchShellFocused(inner.FocusState != FocusState.Unfocused
+                    || (SettingsSearchPanel != null
+                        && SettingsSearchPanel.Visibility == Visibility.Visible));
             }
             catch
             {
@@ -6107,6 +6290,7 @@ namespace DeepSeekHarnessLauncher
                 _ => ElementTheme.Default
             };
             LauncherAppearance.SetTheme(elementTheme);
+            ApplyOfficialColorNavigationIcons();
             ApplyTitleBarButtonColors();
         }
 
@@ -6128,6 +6312,15 @@ namespace DeepSeekHarnessLauncher
         private void ApplyWindowStyle()
         {
             CornerRadiusHelper.SetWindowStyle(_settings.WindowStyle);
+            CornerRadiusHelper.ApplyApplicationResources(SettingsRoot.Resources);
+            // Resource changes alone do not invalidate already resolved ThemeResource
+            // expressions. Refresh the subtree in the same dispatcher turn so existing
+            // card/control templates pick up the selected style without recreating HWNDs.
+            ElementTheme requested = SettingsRoot.RequestedTheme;
+            SettingsRoot.RequestedTheme = SettingsRoot.ActualTheme == ElementTheme.Dark
+                ? ElementTheme.Light : ElementTheme.Dark;
+            SettingsRoot.RequestedTheme = requested;
+            ApplyOfficialColorNavigationIcons();
         }
 
         private void AccentSourceComboBox_SelectionChanged(
@@ -6861,17 +7054,7 @@ namespace DeepSeekHarnessLauncher
                 || patchUpdatesEnabled;
 
             UpdateIntervalComboBox.IsEnabled = anyUpdatesEnabled;
-            UpdateReminderToggle.IsEnabled = anyUpdatesEnabled;
-            if (!anyUpdatesEnabled)
-            {
-                UpdateReminderToggle.IsOn = false;
-            }
-
-            PluginUpdateReminderToggle.IsEnabled = pluginUpdatesEnabled;
-            if (!pluginUpdatesEnabled)
-            {
-                PluginUpdateReminderToggle.IsOn = false;
-            }
+            UpdateReminderControlStates();
 
             DshUpdateWarning.IsOpen =
                 GetSelectedTag(DshUpdateModeComboBox, "Off") == "Install";
@@ -7137,6 +7320,7 @@ namespace DeepSeekHarnessLauncher
         private void SettingsWindow_Closed(object sender, WindowEventArgs args)
         {
             _settingsDestroyed = true;
+            ReleaseConnectionsPage();
             _appWindow.Closing -= SettingsAppWindow_Closing;
             Closed -= SettingsWindow_Closed;
             _settingsClosed = true;
@@ -11270,25 +11454,14 @@ namespace DeepSeekHarnessLauncher
         }
 
         /// <summary>从主题资源里取画笔，取不到就退回一个中性色（高对比主题下也别画不出来）。</summary>
-        private static Brush ResolveChartBrush(string first, string second)
+        private Brush ResolveChartBrush(string first, string second)
         {
-            string[] keys = { first, second };
-            for (int index = 0; index < keys.Length; index++)
+            foreach (string key in new[] { first, second })
             {
-                try
-                {
-                    object resource = Application.Current.Resources[keys[index]];
-                    Brush brush = resource as Brush;
-                    if (brush != null)
-                    {
-                        return brush;
-                    }
-                }
-                catch
-                {
-                }
+                foreach (Border probe in ChartThemePalette.Children.OfType<Border>())
+                    if (String.Equals(probe.Tag as string, key, StringComparison.Ordinal) && probe.Background != null)
+                        return probe.Background;
             }
-
             return new SolidColorBrush(Windows.UI.Color.FromArgb(255, 128, 128, 128));
         }
 
@@ -13061,10 +13234,7 @@ namespace DeepSeekHarnessLauncher
                 SelectTaggedItem(UpdateIntervalComboBox, _settings.UpdateInterval);
                 SelectTaggedItem(LauncherChannelComboBox, _settings.LauncherChannel);
                 SelectTaggedItem(DshChannelComboBox, _settings.DshChannel);
-                NotificationMutedToggle.IsOn = _settings.NotificationMuted;
-                UpdateReminderToggle.IsOn = _settings.UpdateReminder;
-                PluginUpdateReminderToggle.IsOn = _settings.PluginUpdateReminder;
-                RechargeReminderToggle.IsOn = _settings.RechargeReminder;
+                LoadReminderSettingsIntoControls();
                 Spend5CheckBox.IsChecked = _settings.SpendAlert5;
                 Spend10CheckBox.IsChecked = _settings.SpendAlert10;
                 Spend20CheckBox.IsChecked = _settings.SpendAlert20;

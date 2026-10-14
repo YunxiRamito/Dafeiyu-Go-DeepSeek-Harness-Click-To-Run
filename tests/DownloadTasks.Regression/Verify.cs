@@ -379,6 +379,30 @@ public static class Verification
                         "verified installer appended ZIP still installs both payload files: " + error);
                 }
 
+                string rollbackRoot = Path.Combine(root, "installer-rollback");
+                string rollbackSource = Path.Combine(root, "installer-rollback-payload");
+                Directory.CreateDirectory(Path.Combine(rollbackRoot, ".installer"));
+                Directory.CreateDirectory(rollbackSource);
+                File.WriteAllText(Path.Combine(rollbackRoot, ".installer", "DSH-Installer.exe"), "old installer");
+                File.WriteAllText(Path.Combine(rollbackRoot, "DSH-Uninstall.exe"), "old uninstaller");
+                File.WriteAllText(Path.Combine(rollbackSource, "DSH-Installer.exe"), "new installer");
+                File.WriteAllText(Path.Combine(rollbackSource, "DSH-Uninstall.exe"), "new uninstaller");
+                bool rollbackFailed = false;
+                using (var locked = new FileStream(Path.Combine(rollbackRoot, "DSH-Uninstall.exe"), FileMode.Open, FileAccess.Read, FileShare.None))
+                {
+                    try { InstallerUpdateService.ApplyPayload(rollbackSource, rollbackRoot); }
+                    catch (IOException) { rollbackFailed = true; }
+                }
+                Assert(rollbackFailed && File.ReadAllText(Path.Combine(rollbackRoot, ".installer", "DSH-Installer.exe")) == "old installer"
+                    && File.ReadAllText(Path.Combine(rollbackRoot, "DSH-Uninstall.exe")) == "old uninstaller",
+                    "locked standalone uninstaller rolls back the installer directory too");
+                Assert(!Directory.EnumerateFileSystemEntries(rollbackRoot).Any(path => Path.GetFileName(path).Contains(".new-")
+                    || Path.GetFileName(path).Contains(".old-")), "failed installer transaction cleans only its own staging");
+                InstallerUpdateService.ApplyPayload(rollbackSource, rollbackRoot);
+                Assert(File.ReadAllText(Path.Combine(rollbackRoot, ".installer", "DSH-Installer.exe")) == "new installer"
+                    && File.ReadAllText(Path.Combine(rollbackRoot, "DSH-Uninstall.exe")) == "new uninstaller",
+                    "retry after the uninstaller closes updates both programs together");
+
                 byte[] installerSetup;
                 using (var memory = new MemoryStream())
                 {

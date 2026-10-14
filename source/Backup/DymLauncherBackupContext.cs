@@ -21,6 +21,10 @@ namespace DeepSeekHarnessLauncher.Backup
                 "SpendAlert5", "SpendAlert10", "SpendAlert20", "SpendAlert50", "SpendAlertCustom", "SpendCustomAmount",
                 "BalanceAlert20", "BalanceAlert10", "BalanceAlert5", "BalanceAlert1", "BalanceAlertCustom", "BalanceCustomAmount" },
             ["engine"] = new[] { "PortMode", "FixedPort", "SilentStart" },
+            ["reminderControls"] = new[] { "NotificationsEnabled", "AnnouncementReminder", "ServerNotificationReminder",
+                "BackendConnectionReminder", "ServiceReminder", "ExtensionOperationReminder", "DataTransferReminder",
+                "FeedbackReplyReminder", "PatchReminder", "ProgressReminder" },
+            ["window"] = new[] { "PageOpenMode" },
             ["translation"] = new[] { "TranslationModel", "TranslationBaseUrl" },
         };
         private static readonly Dictionary<string, string[]> Choices = new(StringComparer.Ordinal)
@@ -31,13 +35,21 @@ namespace DeepSeekHarnessLauncher.Backup
             ["PluginSource"] = new[] { "Market", "GitHub" }, ["LauncherChannel"] = new[] { "Auto", "Stable", "Preview" },
             ["DshChannel"] = new[] { "Auto", "latest", "next", "alpha" }, ["UpdateInterval"] = new[] { "EveryStart", "ThreeDays", "SevenDays", "OneMonth", "Off" },
             ["PortMode"] = new[] { "Fixed", "Random", "Default" }, ["SilentStart"] = new[] { "All", "StartupOnly", "Off" },
+            ["PageOpenMode"] = new[] { "Window", "Browser" },
         };
 
         internal static DymPortableContext Create(LauncherSettings settings)
         {
             if (settings == null) throw new ArgumentNullException(nameof(settings));
-            var result = new DymPortableContext { PcPreferences = Capture(settings), DeepSeekApiKey = LauncherSettingsStore.ReadApiKey(settings),
+            var result = new DymPortableContext { PcPreferences = Capture(settings),
                 NodePath = settings.NodePath, BundleRoot = settings.DshRoot };
+            // A decryption failure is unknown, not an exportable absence.
+            try
+            {
+                result.DeepSeekApiKey = String.IsNullOrEmpty(settings.ApiKeyProtected) ? String.Empty : CredentialStore.UnprotectApiKey(settings.ApiKeyProtected);
+                result.OfficialCredentialSnapshotKnown = true;
+            }
+            catch { result.OfficialCredentialSnapshotKnown = false; result.CaptureWarnings.Add("官方凭据无法安全读取，未导出删除意图；其他有效内容已继续导出。"); }
             try { result.ProviderOrder = ReadOrder(); }
             catch { result.ProviderOrderCaptured = false; result.CaptureWarnings.Add("现有提供商排序无法读取，其他有效内容已继续导出或恢复。"); }
             return result;
@@ -99,26 +111,11 @@ namespace DeepSeekHarnessLauncher.Backup
                     }
                 }
             }
-            if (plan.DeepSeekApiKey != null)
+            if (plan.OfficialCredential.Known)
             {
-                string previous = current.ApiKeyProtected;
-                try
-                {
-                    if (!String.Equals(LauncherSettingsStore.ReadApiKey(current), expected.DeepSeekApiKey, StringComparison.Ordinal))
-                        throw new IOException("Credential changed during import.");
-                    LauncherSettingsStore.SetApiKey(current, plan.DeepSeekApiKey);
-                    var saved = JsonNode.Parse(File.ReadAllText(LauncherSettingsStore.FilePath)) as JsonObject;
-                    string protectedValue = saved?["apiKeyProtected"]?.GetValue<string>();
-                    if (String.IsNullOrEmpty(protectedValue) || !String.Equals(CredentialStore.UnprotectApiKey(protectedValue), plan.DeepSeekApiKey, StringComparison.Ordinal))
-                        throw new IOException("Credential was not persisted.");
-                    result.PortableSettingsApplied = true;
-                }
-                catch
-                {
-                    current.ApiKeyProtected = previous;
-                    try { LauncherSettingsStore.Save(current); } catch { result.Warnings.Add("API Key 回退未完成，请检查设置目录权限后重试。"); }
-                    result.Warnings.Add("DeepSeek API Key 未完成安全恢复或导入期间已修改，已保留现有凭据。");
-                }
+                // Parsed intent is not an applied receipt. Ordinary import has
+                // no confirmed host-gated transaction for official credentials.
+                result.Warnings.Add("官方 API Key 的值或明确缺失已读取，尚待安全恢复接口接续；现有官方凭据未修改。");
             }
             if (plan.ProviderOrder != null)
             {
@@ -165,7 +162,8 @@ namespace DeepSeekHarnessLauncher.Backup
             ?? throw new IOException("Unsupported preference field.");
         private static string Camel(string name) => Char.ToLowerInvariant(name[0]) + name.Substring(1);
         private static string GroupLabel(string key) => key switch { "appearance" => "外观", "downloads" => "下载与更新",
-            "notifications" => "通知", "engine" => "引擎", "translation" => "翻译", _ => "未知分组" };
+            "notifications" => "通知", "reminderControls" => "提醒开关", "window" => "窗口",
+            "engine" => "引擎", "translation" => "翻译", _ => "未知分组" };
         private static string[] ReadOrder()
         {
             string path = Path.Combine(LauncherSettingsStore.DirectoryPath, "ModelProviderOrder.json");

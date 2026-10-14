@@ -7,6 +7,7 @@
     <NoWarn>CA1416</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="obj/**/*.cs;bin/**/*.cs" />
     <Compile Include="../../source/LauncherSettings.cs" Link="LauncherSettings.cs" />
     <Compile Include="../../source/LauncherSettingsStore.cs" Link="LauncherSettingsStore.cs" />
     <Compile Include="../../../Dafeiyu-Go-DeepSeek-Harness-Setup/src/DshInstaller.Shared/ConfigStore.cs" Link="ConfigStore.cs" />

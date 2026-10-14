@@ -19,6 +19,8 @@
     <Compile Include="../../source/AnnouncementService.cs" Link="AnnouncementService.cs" />
     <Compile Include="../../source/FeaturedSkillService.cs" Link="FeaturedSkillService.cs" />
     <Compile Include="../../source/ClientNoticeModels.cs" Link="ClientNoticeModels.cs" />
+    <Compile Include="../../source/LauncherSettings.cs" Link="LauncherSettings.cs" />
+    <Compile Include="../../source/LauncherReminderPolicy.cs" Link="LauncherReminderPolicy.cs" />
     <Compile Include="../../source/ProductVersion.cs" Link="ProductVersion.cs" />
     <Compile Include="../../source/SafeArchiveExtractor.cs" Link="SafeArchiveExtractor.cs" />
   </ItemGroup>

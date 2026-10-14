@@ -12,7 +12,7 @@ using Microsoft.UI.Dispatching;
 namespace DeepSeekHarnessLauncher
 {
     // Only display state crosses this pipe; the helper has no service/update commands.
-    internal sealed class InfoWindowClient
+    internal sealed class InfoWindowClient : IDisposable
     {
         private readonly BlockingCollection<string> _messages = new BlockingCollection<string>(64);
         private readonly string _pipeName;
@@ -28,11 +28,18 @@ namespace DeepSeekHarnessLauncher
         private volatile bool _noticeDisplayed;
         private volatile bool _closed;
         private volatile bool _showingResult;
+        private volatile LauncherReminderKind _reminderKind;
+        private volatile bool _progressFlow;
+        private volatile bool _suppressed;
         private DateTime _resultUtc;
         private double _resultHoldSeconds = 3;
+        private readonly object _resultLifetimeSync = new object();
+        private Timer _resultCloseTimer;
+        private long _resultGeneration;
         private Process _process;
         private string _cacheDirectory;
         private int _started;
+        private int _showRequested;
         private Thread _worker;
         private volatile bool _handoff;
         private readonly object _cacheCleanupGate = new object();
@@ -40,8 +47,11 @@ namespace DeepSeekHarnessLauncher
         private static readonly ConcurrentDictionary<string, InfoWindowClient> ActiveClients = new ConcurrentDictionary<string, InfoWindowClient>();
 
         private static int _sessionConsumed;
-        internal InfoWindowClient(DispatcherQueue dispatcher, Action<string> log)
+        internal InfoWindowClient(DispatcherQueue dispatcher, Action<string> log,
+            LauncherReminderKind kind = LauncherReminderKind.General, bool progress = false)
         {
+            _reminderKind = kind;
+            _progressFlow = progress;
             _log = log;
             _dispatcher = dispatcher;
             _pipeName = "DafeiyuGo.Info." + Guid.NewGuid().ToString("N");
@@ -63,15 +73,25 @@ namespace DeepSeekHarnessLauncher
 
         internal bool IsClosed
         {
-            get { return _closed || (_showingResult && _resultHoldSeconds != 8 && (DateTime.UtcNow - _resultUtc).TotalSeconds > _resultHoldSeconds + 0.3); }
+            get { return _closed || (_showingResult && (DateTime.UtcNow - _resultUtc).TotalSeconds > _resultHoldSeconds + 0.3); }
         }
         internal bool IsShowingResult { get { return _showingResult; } }
+        internal bool IsSuppressed => _suppressed;
         internal bool HasDisplayedNotice => _noticeDisplayed;
-        internal bool IsNoticeDisplayTimedOut => _noticeId != null && !_noticeDisplayed
+        internal bool IsNoticeDisplayTimedOut => !_suppressed && _noticeId != null && !_noticeDisplayed
             && (DateTime.UtcNow - _noticeDisplayStartedUtc).TotalSeconds >= 30;
 
         internal void Show()
         {
+            Interlocked.Exchange(ref _showRequested, 1);
+            // The first content command determines whether this is a progress
+            // flow. Show alone must not route it through notification settings.
+            if (_messages.Count != 0) StartIfRequested();
+        }
+
+        private void StartIfRequested()
+        {
+            if (Volatile.Read(ref _showRequested) == 0 || !CanDisplay(_progressFlow)) return;
             if (Interlocked.Exchange(ref _started, 1) != 0) return;
             _worker = new Thread(Run) { IsBackground = true, Name = "DafeiyuGoInfoPipe" };
             ActiveClients[_pipeName] = this;
@@ -82,7 +102,7 @@ namespace DeepSeekHarnessLauncher
         {
             try
             {
-                if (_closed) return;
+                if (!CanDisplay(_progressFlow)) return;
                 using var pipe = new NamedPipeServerStream(_pipeName, PipeDirection.Out, 1,
                     PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                 if (!_inherited)
@@ -106,7 +126,7 @@ namespace DeepSeekHarnessLauncher
                     Directory.CreateDirectory(Path.GetDirectoryName(destination));
                     File.Copy(file, destination);
                 }
-                if (_closed) return;
+                if (!CanDisplay(_progressFlow)) return;
                 string path = Path.Combine(directory, "DafeiyuGo.Info.exe");
                 string theme = Program.Settings?.Theme ?? "System";
                 string material = Program.Settings?.Material ?? "Mica";
@@ -128,7 +148,14 @@ namespace DeepSeekHarnessLauncher
                 if (_inherited) AttachInheritedHelper(pipe);
                 using var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
                 foreach (string message in _messages.GetConsumingEnumerable())
+                {
+                    if (!CanDisplay(_progressFlow))
+                    {
+                        writer.WriteLine("{\"Command\":\"Close\"}");
+                        break;
+                    }
                     writer.WriteLine(message);
+                }
             }
             catch (OperationCanceledException) when (_closed) { }
             catch (Exception exception)
@@ -137,8 +164,12 @@ namespace DeepSeekHarnessLauncher
             }
             finally
             {
-                _closed = true;
-                _messages.CompleteAdding();
+                lock (_resultLifetimeSync)
+                {
+                    StopResultCloseTimer();
+                    _closed = true;
+                    _messages.CompleteAdding();
+                }
                 if (!_handoff)
                 {
                     WaitForHelperExit();
@@ -162,9 +193,13 @@ namespace DeepSeekHarnessLauncher
 
         private void HelperExited(object sender, EventArgs args)
         {
-            _closed = true;
-            _messages.CompleteAdding();
-            _connectionStop.Cancel();
+            lock (_resultLifetimeSync)
+            {
+                StopResultCloseTimer();
+                _closed = true;
+                _messages.CompleteAdding();
+                _connectionStop.Cancel();
+            }
             if (!_handoff) CleanupCacheDirectory();
         }
 
@@ -324,6 +359,8 @@ namespace DeepSeekHarnessLauncher
         private void Send(string command, string title, string detail, double percent, string outcome = "", bool playChime = false)
         {
             if (_closed) return;
+            if (command == "Update" || command == "Working") _progressFlow = true;
+            if (command != "Close" && !CanDisplay(_progressFlow)) return;
             string message = JsonSerializer.Serialize(new
             {
                 Command = command, Title = title ?? "", Detail = detail ?? "",
@@ -336,29 +373,37 @@ namespace DeepSeekHarnessLauncher
             });
             try { _messages.TryAdd(message); }
             catch (InvalidOperationException) { }
+            if (command != "Close") StartIfRequested();
         }
 
         internal void ShowNotice(ClientNoticeMessage notice)
         {
-            if (notice == null || !notice.Validate(out _)) return;
-            _showingResult = false;
-            _noticeId = notice.Id;
-            _noticeDisplayStartedUtc = DateTime.UtcNow;
-            _noticeDisplayed = false;
-            if (Interlocked.Exchange(ref _actionListenerStarted, 1) == 0)
-                _ = System.Threading.Tasks.Task.Run(ReadNoticeActions);
-            string message = JsonSerializer.Serialize(new {
-                Command = "Notice", Title = notice.Title,
-                Detail = notice.Markdown,
-                NoticeId = notice.Id, PublishedAt = notice.DisplayDate,
-                Buttons = notice.Buttons.ConvertAll(button => button.Text).ToArray(),
-                IsLocal = notice.IsLocal, AutoDismiss = notice.AutoDismiss,
-                PlayChime = Program.Settings?.NotificationMuted != true,
-                Muted = Program.Settings?.NotificationMuted == true,
-                Theme = Program.Settings?.Theme ?? "System", Material = Program.Settings?.Material ?? "Mica",
-                WindowStyle = Program.Settings?.WindowStyle ?? "System"
-            });
-            try { if (!_closed) _messages.TryAdd(message); } catch (InvalidOperationException) { }
+            lock (_resultLifetimeSync)
+            {
+                if (notice == null || !notice.Validate(out _)) return;
+                SetReminderKind(LauncherReminderPolicy.KindForNotice(notice));
+                if (!CanDisplay(_progressFlow)) return;
+                StopResultCloseTimer();
+                _showingResult = false;
+                _noticeId = notice.Id;
+                _noticeDisplayStartedUtc = DateTime.UtcNow;
+                _noticeDisplayed = false;
+                if (Interlocked.Exchange(ref _actionListenerStarted, 1) == 0)
+                    _ = System.Threading.Tasks.Task.Run(ReadNoticeActions);
+                string message = JsonSerializer.Serialize(new {
+                    Command = "Notice", Title = notice.Title,
+                    Detail = notice.Markdown,
+                    NoticeId = notice.Id, PublishedAt = notice.DisplayDate,
+                    Buttons = notice.Buttons.ConvertAll(button => button.Text).ToArray(),
+                    IsLocal = notice.IsLocal, AutoDismiss = notice.AutoDismiss,
+                    PlayChime = Program.Settings?.NotificationMuted != true,
+                    Muted = Program.Settings?.NotificationMuted == true,
+                    Theme = Program.Settings?.Theme ?? "System", Material = Program.Settings?.Material ?? "Mica",
+                    WindowStyle = Program.Settings?.WindowStyle ?? "System"
+                });
+                try { if (!_closed) _messages.TryAdd(message); } catch (InvalidOperationException) { }
+                StartIfRequested();
+            }
         }
         private async System.Threading.Tasks.Task ReadNoticeActions()
         {
@@ -400,26 +445,52 @@ namespace DeepSeekHarnessLauncher
             catch (Exception exception) { _log?.Invoke("通知交互通道失败：" + exception.Message); }
         }
 
+        internal void SetReminderKind(LauncherReminderKind kind, bool? progress = null)
+        {
+            _reminderKind = kind;
+            if (progress.HasValue) _progressFlow = progress.Value;
+        }
+
+        private bool CanDisplay(bool progress)
+        {
+            if (_closed) return false;
+            if (LauncherReminderPolicy.Allows(Program.Settings, _reminderKind, progress)) return true;
+            _suppressed = true;
+            Close();
+            return false;
+        }
+
         internal void ApplyAppearance() { Send("Appearance", "", "", -1); }
+
+        internal static void ReapplyReminderPolicy()
+        {
+            foreach (var client in ActiveClients.Values) client.ApplyAppearance();
+        }
 
         private string _title = "正在检查更新…";
         private string _detail = "正在读取版本清单";
         internal void Update(string title, string detail, double percent)
         {
-            _showingResult = false;
-            if (!String.IsNullOrEmpty(title)) _title = title;
-            if (!String.IsNullOrEmpty(detail)) _detail = detail;
-            Send("Update", _title, _detail, percent);
+            lock (_resultLifetimeSync)
+            {
+                StopResultCloseTimer();
+                _showingResult = false;
+                if (!String.IsNullOrEmpty(title)) _title = title;
+                if (!String.IsNullOrEmpty(detail)) _detail = detail;
+                Send("Update", _title, _detail, percent);
+            }
         }
 
         /// <summary>补丁安装共用右下角更新窗，避免补丁页和启动期流程各自维护一套提示。</summary>
         internal void UpdatePatch(string title, string detail, double percent)
         {
+            SetReminderKind(LauncherReminderKind.Patch);
             Update(String.IsNullOrWhiteSpace(title) ? "正在安装补丁" : title, detail, percent);
         }
 
         internal void CompletePatch(bool success, string detail, bool restartRequired)
         {
+            SetReminderKind(LauncherReminderKind.Patch);
             string text = (detail ?? String.Empty).Trim();
             if (success)
             {
@@ -432,51 +503,78 @@ namespace DeepSeekHarnessLauncher
         }
         internal void ShowInfo(string title, string detail)
         {
-            _showingResult = false;
-            _title = title; _detail = detail;
-            Send("Working", title, detail, -1);
+            lock (_resultLifetimeSync)
+            {
+                StopResultCloseTimer();
+                _showingResult = false;
+                _title = title; _detail = detail;
+                Send("Working", title, detail, -1);
+            }
         }
         internal void ShowServiceWorking(bool restarting, string detail)
         {
+            SetReminderKind(LauncherReminderKind.Service);
             ShowInfo(restarting ? "正在重启 DSH 服务" : "正在启动 DSH 服务", detail);
         }
-        internal void UpdateServiceDetail(string detail) { ShowInfo(_title, detail); }
+        internal void UpdateServiceDetail(string detail)
+        {
+            SetReminderKind(LauncherReminderKind.Service);
+            ShowInfo(_title, detail);
+        }
         internal void CompleteService(bool success, bool restarting, string detail)
         {
+            SetReminderKind(LauncherReminderKind.Service);
             CompleteInfo(success ? InfoOutcome.Success : InfoOutcome.Failure,
                 success ? (restarting ? "DSH 服务已重启" : "DSH 服务已启动")
                     : (restarting ? "DSH 服务重启失败" : "DSH 服务启动失败"), detail, false);
         }
         internal void CompleteServiceWarning(string title, string detail)
         {
+            SetReminderKind(LauncherReminderKind.Service);
             CompleteInfo(InfoOutcome.Warning, title, detail);
         }
         internal void CompleteInfo(InfoOutcome outcome, string title, string detail, bool? playChime = null)
         {
-            _resultUtc = DateTime.UtcNow;
-            _resultHoldSeconds = outcome == InfoOutcome.Information ? 8 : 3;
-            _showingResult = true;
-            Send("Complete", title, detail, -1, outcome.ToString(), playChime ?? outcome == InfoOutcome.Success);
-            DateTime completedUtc = _resultUtc;
-            // Reply lifetime starts when the helper displays it. Allow helper startup
-            // before applying a fallback timeout, so it can remain visible for five seconds.
-            int closeDelayMs = outcome == InfoOutcome.Information ? 18000 : 3500;
-            ThreadPool.QueueUserWorkItem(delegate
+            lock (_resultLifetimeSync)
             {
-                Thread.Sleep(closeDelayMs);
-                if (_showingResult && _resultUtc == completedUtc) Close();
-            });
+                if (!CanDisplay(_progressFlow)) return;
+                StopResultCloseTimer();
+                _resultUtc = DateTime.UtcNow;
+                _resultHoldSeconds = 3;
+                _showingResult = true;
+                Send("Complete", title, detail, -1, outcome.ToString(), playChime ?? outcome == InfoOutcome.Success);
+                long generation = _resultGeneration;
+                // The helper holds every result for 3 seconds. Allow its slide-out
+                // before the client fallback closes this result's session.
+                _resultCloseTimer = new Timer(_ =>
+                {
+                    lock (_resultLifetimeSync)
+                        if (!_closed && _showingResult && _resultGeneration == generation) Close();
+                }, null, 3500, Timeout.Infinite);
+            }
+        }
+        private void StopResultCloseTimer()
+        {
+            _resultGeneration++;
+            _resultCloseTimer?.Dispose();
+            _resultCloseTimer = null;
         }
         internal void NotifyFeedbackReply(string title, string detail)
         {
+            SetReminderKind(LauncherReminderKind.FeedbackReply);
             CompleteInfo(InfoOutcome.Information, title, detail, true);
         }
         internal void Close()
         {
-            Send("Close", "", "", -1);
-            _closed = true;
-            _messages.CompleteAdding();
-            _connectionStop.Cancel();
+            lock (_resultLifetimeSync)
+            {
+                StopResultCloseTimer();
+                Send("Close", "", "", -1);
+                _closed = true;
+                _messages.CompleteAdding();
+                _connectionStop.Cancel();
+            }
         }
+        public void Dispose() { Close(); }
     }
 }

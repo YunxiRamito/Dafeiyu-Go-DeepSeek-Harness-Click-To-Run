@@ -23,9 +23,9 @@
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <DefineConstants>DISABLE_XAML_GENERATED_MAIN</DefineConstants>
-    <Version>1.7.6</Version>
-    <AssemblyVersion>1.7.6.0</AssemblyVersion>
-    <FileVersion>1.7.6.0</FileVersion>
+    <Version>1.8.0</Version>
+    <AssemblyVersion>1.8.0.0</AssemblyVersion>
+    <FileVersion>1.8.0.0</FileVersion>
     <Product>Dafeiyu-Go</Product>
     <Title>Dafeiyu-Go</Title>
     <AssemblyTitle>Dafeiyu-Go</AssemblyTitle>
@@ -54,6 +54,11 @@
     <EmbeddedResource Include="Backup\dym-portable.mjs" LogicalName="DeepSeekHarnessLauncher.Backup.dym-portable.mjs" />
     <EmbeddedResource Include="Backup\dym-persistence.mjs" LogicalName="DeepSeekHarnessLauncher.Backup.dym-persistence.mjs" />
     <EmbeddedResource Include="Backup\dym-configuration.mjs" LogicalName="DeepSeekHarnessLauncher.Backup.dym-configuration.mjs" />
+    <EmbeddedResource Include="Backup\dym-official-selection.mjs" LogicalName="DeepSeekHarnessLauncher.Backup.dym-official-selection.mjs" />
+    <EmbeddedResource Include="Backup\OfficialCredentials\dym-official-dsh-port.mjs" LogicalName="DeepSeekHarnessLauncher.Backup.OfficialCredentials.dym-official-dsh-port.mjs" />
+    <EmbeddedResource Include="Backup\OfficialCredentials\dym-official-dsh-store.mjs" LogicalName="DeepSeekHarnessLauncher.Backup.OfficialCredentials.dym-official-dsh-store.mjs" />
+    <EmbeddedResource Include="Backup\OfficialCredentials\dym-persistence.mjs" LogicalName="DeepSeekHarnessLauncher.Backup.OfficialCredentials.dym-persistence.mjs" />
+    <EmbeddedResource Include="Backup\pc-official-launch-capture.mjs" LogicalName="DeepSeekHarnessLauncher.Backup.OfficialCredentials.pc-official-launch-capture.mjs" />
     <Content Include="DeepSeekHarness.ico" CopyToOutputDirectory="PreserveNewest" />
     <EmbeddedResource Include="assets\DeepSeek-icon.png" LogicalName="AppIcon.png" />
     <Content Include="assets\DeepSeek-icon.png" CopyToOutputDirectory="PreserveNewest" />
@@ -64,6 +69,12 @@
     <Content Include="assets\SettingsNavIconsWin11\*.svg" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="assets\SettingsNavIconsWin11\ATTRIBUTION.md" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="assets\SettingsNavIconsWin11\LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\SettingsNavIconsWin10\*.svg" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\SettingsNavIconsWin10\ATTRIBUTION.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\SettingsNavIconsWin10\LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\SettingsNavIconsWin10Dark\*.svg" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\SettingsNavIconsWin10Dark\ATTRIBUTION.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="assets\SettingsNavIconsWin10Dark\LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="assets\plugin-placeholder.svg" CopyToOutputDirectory="PreserveNewest" />
 
     <!-- 自带的用量统计插件：随包发出去，一键安装就是把它复制到 <dshRoot>\plugins\ -->
@@ -74,6 +85,7 @@
     <Content Include="assets\dafeiyu-mobile-ui\**" CopyToOutputDirectory="PreserveNewest" />
     <EmbeddedResource Include="MobileUiPluginOperation.mjs" LogicalName="DeepSeekHarnessLauncher.MobileUiPluginOperation.mjs" />
     <Content Include="assets\sounds\notify_F4_F5_v2.mp3" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="certs-download-ca.crt" Link="certs\download-ca.crt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
@@ -82,6 +94,8 @@
                       GlobalPropertiesToRemove="AssemblyName;TargetFramework;TargetPlatformVersion;TargetPlatformMinVersion;DefineConstants;UseWinUI" />
     <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" Version="8.2.251219" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260804001" />
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.6.2" />
+    <PackageReference Include="QRCoder" Version="1.6.0" />
     <PackageReference Include="Markdig" Version="0.37.0" />
     <PackageReference Include="TinyPinyin.Net" Version="1.0.2" />
     <PackageReference Include="YamlDotNet" Version="16.3.0" />

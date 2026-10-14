@@ -532,11 +532,6 @@ namespace DeepSeekHarnessLauncher
             public int Stars;
         }
     }
-    internal sealed class LauncherSettings
-    {
-        public string PatchUpdateMode { get; set; } = "Check";
-        public string LauncherChannel { get; set; } = "Stable";
-    }
 
     // 回归测试必须完全离线：UpdateMetadataReader.BackendCandidates 只用到下面两支。
     // 用「不做后端包装」的桩，避免强制刷新补丁清单时真的去连 202.189.21.218:8787。

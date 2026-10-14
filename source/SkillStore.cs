@@ -48,24 +48,26 @@ namespace DeepSeekHarnessLauncher
         {
             List<SkillRootInfo> roots = new List<SkillRootInfo>();
             string dshRoot = settings == null ? null : settings.DshRoot;
+            string dshHome = DshPluginCliService.ResolveDshHome(dshRoot);
 
-            if (!String.IsNullOrWhiteSpace(dshRoot))
+            if (!String.IsNullOrWhiteSpace(dshHome))
             {
                 roots.Add(new SkillRootInfo
                 {
-                    Path = Path.Combine(dshRoot, ".dsh", "skills"),
+                    Path = Path.Combine(dshHome, "skills"),
                     Label = "DSH 用户技能",
                     Rank = 400,
                     Preferred = true
                 });
             }
 
+            string agentsHome = Environment.GetEnvironmentVariable("DSH_AGENTS_HOME");
+            if (String.IsNullOrWhiteSpace(agentsHome))
+                agentsHome = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".agents");
             roots.Add(new SkillRootInfo
             {
-                Path = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                    ".agents",
-                    "skills"),
+                Path = Path.Combine(agentsHome, "skills"),
                 Label = "共享技能",
                 Rank = 500
             });
@@ -146,15 +148,15 @@ namespace DeepSeekHarnessLauncher
                 return roots[0];
             }
 
-            string dshRoot = settings == null ? null : settings.DshRoot;
-            if (String.IsNullOrWhiteSpace(dshRoot))
+            string dshHome = DshPluginCliService.ResolveDshHome(settings == null ? null : settings.DshRoot);
+            if (String.IsNullOrWhiteSpace(dshHome))
             {
                 return null;
             }
 
             return new SkillRootInfo
             {
-                Path = Path.Combine(dshRoot, ".dsh", "skills"),
+                Path = Path.Combine(dshHome, "skills"),
                 Label = "DSH 用户技能",
                 Rank = 400,
                 Preferred = true
@@ -349,6 +351,9 @@ namespace DeepSeekHarnessLauncher
             {
                 return;
             }
+
+            if (!String.Equals(Normalize(record.RootPath), Normalize(entry.RootPath),
+                StringComparison.OrdinalIgnoreCase)) return;
 
             entry.LauncherInstalled = true;
             entry.InstalledAt = record.InstalledAt;

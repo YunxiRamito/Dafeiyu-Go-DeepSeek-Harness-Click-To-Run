@@ -7,11 +7,16 @@
     <NoWarn>SYSLIB0014</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="**/*.cs" />
+    <Compile Include="Program.cs" />
+    <Compile Include="VersionChecks.cs" />
     <Compile Include="../../source/ProductVersion.cs" Link="ProductVersion.cs" />
     <Compile Include="../../source/InstallerVersionPolicy.cs" Link="InstallerVersionPolicy.cs" />
     <Compile Include="../../source/InstallerVersionReader.cs" Link="InstallerVersionReader.cs" />
+    <Compile Include="../../source/InstallerRegistration.cs" Link="InstallerRegistration.cs" />
     <Compile Include="../../source/InstallerUpdateService.cs" Link="InstallerUpdateService.cs" />
     <Compile Include="../../source/UpdateMetadataReader.cs" Link="UpdateMetadataReader.cs" />
     <Compile Include="../../source/BackendDownloadSource.cs" Link="BackendDownloadSource.cs" />
+    <Compile Include="../../source/GitHubAccelerator.cs" Link="GitHubAccelerator.cs" />
   </ItemGroup>
 </Project>

@@ -68,4 +68,37 @@ catch (InvalidOperationException) { failed = true; }
 Check(failed && completedCycles == 1, "unhandled deferred failure leaves the cycle due for the next startup");
 StartupBackgroundUpdates.RunChecks(Array.Empty<Action>(), () => false, () => completedCycles++);
 Check(completedCycles == 2, "no enabled deferred stages still completes an already attempted DSH cycle");
+bool installerFailed = false;
+order.Clear();
+StartupBackgroundUpdates.RunChecks(new Action[]
+{
+    () => { order.Add("installer"); installerFailed = true; },
+    () => order.Add("plugins")
+}, () => false, () => completedCycles++, () => !installerFailed);
+Check(order.SequenceEqual(new[] { "installer", "plugins" }) && completedCycles == 2,
+    "handled installer failure does not skip other checks or postpone the next automatic attempt");
+StartupBackgroundUpdates.RunChecks(new Action[] { () => installerFailed = false },
+    () => false, () => completedCycles++, () => !installerFailed);
+Check(completedCycles == 3, "a successful retry advances the automatic check timestamp");
+Check(!ServicePageUrl.IsUsable("http://localhost:8787/?token=current", 8788), "stale service port cannot trigger page open");
 Console.WriteLine($"PASS {checks} startup service gate checks.");
+Check(ServicePageUrl.IsUsable("http://localhost:8787/?token=current", 8787), "current token is usable immediately");
+Check(ServicePageUrl.IsUsable("http://127.0.0.1:8788/?other=1&token=current", 8788), "actual service port and token query supported");
+Check(!ServicePageUrl.IsUsable("http://localhost:8787/?token=stale", 8788), "old service port rejected");
+Check(!ServicePageUrl.IsUsable("http://localhost:8787/?token=", 8787), "empty token rejected");
+Check(!ServicePageUrl.IsUsable("http://localhost:8787/?x=token=wrong", 8787), "token inside another parameter rejected");
+Check(!ServicePageUrl.IsUsable("http://example.com:8787/?token=remote", 8787), "remote destination rejected");
+Check(!ServicePageUrl.IsUsable("http://user@localhost:8787/?token=value", 8787), "URL credentials rejected");
+using var entered = new ManualResetEventSlim();
+using var release = new ManualResetEventSlim();
+int localReady = 0;
+var slowChecks = StartupBackgroundUpdates.RunWhenReadyAsync(
+    () => Volatile.Read(ref localReady) == 1, () => false,
+    () => { entered.Set(); release.Wait(TimeSpan.FromSeconds(5)); });
+Check(!entered.IsSet, "slow DSH metadata cannot start before local service");
+Volatile.Write(ref localReady, 1);
+Check(entered.Wait(TimeSpan.FromSeconds(2)), "DSH check enters after service is ready");
+Check(!slowChecks.IsCompleted && localReady == 1, "slow network check leaves local service ready");
+release.Set();
+await slowChecks.WaitAsync(TimeSpan.FromSeconds(2));
+Console.WriteLine($"PASS {checks} startup and service URL checks.");

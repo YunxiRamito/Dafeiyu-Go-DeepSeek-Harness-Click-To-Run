@@ -6,6 +6,7 @@ using System.IO.Compression;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 
 namespace DeepSeekHarnessLauncher
@@ -114,6 +115,8 @@ namespace DeepSeekHarnessLauncher
                 string version = resolveVersion();
                 if (ProductVersion.IsValid(version))
                 {
+                    error = "只取得安装器版本，未取得可信 SHA-256；不能自动安装，请重试更新检查。"
+                        + DescribeError(exception);
                     return new InstallerUpdatePackage { Version = version };
                 }
 
@@ -126,10 +129,43 @@ namespace DeepSeekHarnessLauncher
             LauncherSettings settings,
             out string error)
         {
+            var urls = ReleaseApiCandidates(settings);
+            UpdateMetadataReader.Result<InstallerUpdatePackage> result = null;
+            if (urls.Count > 0)
+            {
+                result = ReadReleaseApi(urls, settings);
+                if (result.Value != null) { error = null; return result.Value; }
+            }
+            InstallerUpdatePackage pagePackage = FetchFromReleasePage(settings, out string pageError);
+            error = pagePackage != null ? null : (result == null ? String.Empty : result.Error + "；")
+                + "Release 页面读取失败：" + pageError;
+            return pagePackage;
+        }
+
+        internal static List<string> ReleaseApiCandidates(LauncherSettings settings)
+        {
+            string api = "https://api.github.com/repos/" + Repository + "/releases/latest";
+            if (BackendDownloadSource.IsSelected(settings)) return UpdateMetadataReader.BackendCandidates(api);
+            // GitHub APIs cannot use CDN prefixes. CDN mode keeps this anonymous
+            // API direct; its HTML fallback uses the selected mirror candidates.
+            return new List<string> { api };
+        }
+
+        internal static UpdateMetadataReader.Result<InstallerUpdatePackage> ReadReleaseApi(
+            IReadOnlyList<string> urls, LauncherSettings settings)
+        {
+            return UpdateMetadataReader.ReadFirstValid(new[] { urls }, json =>
+            {
+                InstallerUpdatePackage package = ParseReleaseApi(json, out string parseError);
+                if (package == null) throw new InvalidDataException(parseError);
+                return package;
+            }, request => ProxySupport.Apply(request, settings),
+                totalBudgetMilliseconds: 4000, groupBudgetMilliseconds: 4000);
+        }
+
+        internal static InstallerUpdatePackage ParseReleaseApi(string json, out string error)
+        {
             error = null;
-            string api = "https://api.github.com/repos/"
-                + Repository + "/releases/latest";
-            string json = DownloadText(settings, api);
             using (JsonDocument document = JsonDocument.Parse(json))
             {
                 JsonElement root = document.RootElement;
@@ -188,15 +224,120 @@ namespace DeepSeekHarnessLauncher
                     break;
                 }
 
-                if (String.IsNullOrWhiteSpace(package.SetupUrl))
+                if (!ProductVersion.IsValid(version) || !IsValidSha256(package.Sha256)
+                    || !IsExpectedAssetUrl(package.SetupUrl, tag.GetString()))
                 {
-                    error = "安装器 Release 中没有 "
-                        + SetupAssetName + " 资产。";
+                    error = "安装器 Release 缺少有效版本、匹配的安装器资产或 SHA-256。";
                     return null;
                 }
 
                 return package;
             }
+        }
+
+        /// <summary>
+        /// GitHub 的 Release 页面展示资产 digest，即使 API 被限流也能提供完整
+        /// 安装校验信息。普通 Release 正文不属于可信 hash 来源，不能从正文猜测。
+        /// </summary>
+        private static InstallerUpdatePackage FetchFromReleasePage(
+            LauncherSettings settings,
+            out string error)
+        {
+            error = null;
+            var latest = UpdateMetadataReader.ReadFirstValid(
+                new[] { (IReadOnlyList<string>)ReleasePageCandidates("latest", settings) },
+                html => ParseReleasePageTag(html), request => ConfigureReleasePageRequest(request, settings),
+                totalBudgetMilliseconds: 4000, groupBudgetMilliseconds: 4000);
+            if (latest.Value == null) { error = latest.Error; return null; }
+            var assets = UpdateMetadataReader.ReadFirstValid(
+                new[] { (IReadOnlyList<string>)ReleasePageCandidates("expanded_assets/" + Uri.EscapeDataString(latest.Value), settings) },
+                html => ParseReleaseAssets(html, latest.Value, out _),
+                request => ConfigureReleasePageRequest(request, settings),
+                totalBudgetMilliseconds: 4000, groupBudgetMilliseconds: 4000);
+            error = assets.Error;
+            return assets.Value;
+        }
+
+        internal static void ConfigureReleasePageRequest(HttpWebRequest request, LauncherSettings settings)
+        {
+            // GitHub's web routes negotiate JSON summaries when Accept is JSON;
+            // they do not contain the canonical URL or the displayed asset digest.
+            request.Accept = "text/html";
+            ProxySupport.Apply(request, settings);
+        }
+
+        internal static List<string> ReleasePageCandidates(string path, LauncherSettings settings)
+        {
+            string url = "https://github.com/" + Repository + "/releases/" + path;
+            return BackendDownloadSource.IsSelected(settings)
+                ? UpdateMetadataReader.BackendCandidates(url) : GitHubAccelerator.Candidates(url, settings);
+        }
+
+        internal static string ParseReleasePageTag(string html)
+        {
+            // Only the canonical OpenGraph URL identifies this release. Links in
+            // the body or the site's previous-release navigation cannot select it.
+            foreach (Match meta in Regex.Matches(html ?? String.Empty, @"<meta\b[^>]*>",
+                RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1)))
+            {
+                if (HtmlAttribute(meta.Value, "property") != "og:url") continue;
+                string url = HtmlAttribute(meta.Value, "content");
+                string prefix = "/" + Repository + "/releases/tag/";
+                if (url.StartsWith("https://github.com", StringComparison.OrdinalIgnoreCase))
+                    url = url.Substring("https://github.com".Length);
+                if (!url.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
+                string tag = url.Substring(prefix.Length);
+                return tag.IndexOfAny(new[] { '/', '?', '#', '%', '"', '\'' }) < 0
+                    && ProductVersion.IsValid(tag.TrimStart('v', 'V')) ? tag : null;
+            }
+            return null;
+        }
+
+        internal static InstallerUpdatePackage ParseReleaseAssets(string html, string tag, out string error)
+        {
+            error = "Release 页面缺少匹配的安装器资产或 SHA-256。";
+            if (!ProductVersion.IsValid(tag?.TrimStart('v', 'V'))) return null;
+            string expectedPath = "/" + Repository + "/releases/download/" + tag + "/" + SetupAssetName;
+            InstallerUpdatePackage package = null;
+            // Digests belong to their asset list item; another asset's digest or
+            // a hash pasted into release notes must never authorize this EXE.
+            foreach (Match item in Regex.Matches(html ?? String.Empty, @"<li\b[^>]*>(.*?)</li\s*>",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline, TimeSpan.FromSeconds(1)))
+            {
+                bool assetLink = false;
+                foreach (Match link in Regex.Matches(item.Value, @"<a\b[^>]*>", RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1)))
+                    if (HtmlAttribute(link.Value, "href") == expectedPath) assetLink = true;
+                if (!assetLink) continue;
+                string hash = null;
+                foreach (Match copy in Regex.Matches(item.Value, @"<clipboard-copy\b[^>]*>", RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1)))
+                {
+                    if (HtmlAttribute(copy.Value, "aria-label") != "Copy to clipboard digest for " + SetupAssetName) continue;
+                    string digest = HtmlAttribute(copy.Value, "value");
+                    if (!digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)
+                        || !IsValidSha256(digest.Substring(7)) || hash != null) return null;
+                    hash = digest.Substring(7);
+                }
+                if (hash == null || package != null) return null;
+                package = new InstallerUpdatePackage { Version = tag.TrimStart('v', 'V'),
+                    SetupUrl = "https://github.com" + expectedPath, Sha256 = hash };
+            }
+            if (package != null) error = null;
+            return package;
+        }
+
+        private static string HtmlAttribute(string element, string name)
+        {
+            Match attribute = Regex.Match(element, "\\s" + Regex.Escape(name) + @"\s*=\s*([""'])(.*?)\1",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline, TimeSpan.FromSeconds(1));
+            return attribute.Success ? WebUtility.HtmlDecode(attribute.Groups[2].Value) : String.Empty;
+        }
+
+        private static bool IsExpectedAssetUrl(string url, string tag)
+        {
+            return Uri.TryCreate(url, UriKind.Absolute, out Uri uri) && uri.Scheme == "https"
+                && uri.Host == "github.com" && uri.IsDefaultPort && uri.UserInfo.Length == 0
+                && uri.Query.Length == 0 && uri.Fragment.Length == 0
+                && uri.AbsolutePath == "/" + Repository + "/releases/download/" + tag + "/" + SetupAssetName;
         }
 
         /// <summary>
@@ -209,15 +350,19 @@ namespace DeepSeekHarnessLauncher
             out string version)
         {
             version = null;
+            // The backend is an explicit engine; do not bypass it with a direct
+            // GitHub redirect probe after its metadata requests have failed.
+            if (BackendDownloadSource.IsSelected(settings)) return false;
             try
             {
                 HttpWebRequest request = (HttpWebRequest)WebRequest.Create(
                     "https://github.com/" + Repository + "/releases/latest");
                 request.Method = "GET";
                 request.AllowAutoRedirect = false;
-                request.Timeout = 20000;
+                request.Timeout = 4000;
+                request.ReadWriteTimeout = 4000;
                 request.UserAgent = Constants.UserAgent;
-                ProxySupport.Apply(request);
+                ProxySupport.Apply(request, settings);
 
                 using (HttpWebResponse response =
                     (HttpWebResponse)request.GetResponse())
@@ -548,13 +693,7 @@ namespace DeepSeekHarnessLauncher
                     return false;
                 }
 
-                ReplaceDirectory(
-                    payloadPath,
-                    Path.Combine(dshRoot, InstallerFolderName));
-                File.Copy(
-                    payloadUninstaller,
-                    Path.Combine(dshRoot, UninstallerExeName),
-                    true);
+                ApplyPayload(payloadPath, dshRoot);
                 return true;
             }
             catch (Exception exception)
@@ -754,32 +893,51 @@ namespace DeepSeekHarnessLauncher
             return -1;
         }
 
-        private static void ReplaceDirectory(
-            string source,
-            string target)
+        internal static void ApplyPayload(string source, string dshRoot)
         {
-            string backup = target + ".old";
-            TryDeleteDirectory(backup);
-            if (Directory.Exists(target))
-            {
-                Directory.Move(target, backup);
-            }
-
+            if (String.IsNullOrWhiteSpace(dshRoot)) throw new ArgumentException("安装目录为空。");
+            string target = Path.Combine(Path.GetFullPath(dshRoot), InstallerFolderName);
+            string uninstaller = Path.Combine(Path.GetFullPath(dshRoot), UninstallerExeName);
+            string id = Guid.NewGuid().ToString("N");
+            string prepared = target + ".new-" + id;
+            string backup = target + ".old-" + id;
+            string preparedUninstaller = uninstaller + ".new-" + id;
+            string backupUninstaller = uninstaller + ".old-" + id;
+            bool movedOriginal = false, appliedDirectory = false, completed = false;
             try
             {
-                Directory.CreateDirectory(target);
-                CopyDirectory(source, target);
-                TryDeleteDirectory(backup);
+                Directory.CreateDirectory(prepared);
+                CopyDirectory(source, prepared);
+                File.Copy(Path.Combine(source, UninstallerExeName), preparedUninstaller, false);
+                if (Directory.Exists(target))
+                {
+                    Directory.Move(target, backup);
+                    movedOriginal = true;
+                }
+                Directory.Move(prepared, target);
+                appliedDirectory = true;
+                if (File.Exists(uninstaller)) File.Replace(preparedUninstaller, uninstaller, backupUninstaller);
+                else File.Move(preparedUninstaller, uninstaller);
+                completed = true;
             }
             catch
             {
-                TryDeleteDirectory(target);
-                if (Directory.Exists(backup))
+                if (appliedDirectory) TryDeleteDirectory(target);
+                if (movedOriginal && Directory.Exists(backup))
                 {
                     Directory.Move(backup, target);
                 }
-
                 throw;
+            }
+            finally
+            {
+                TryDeleteDirectory(prepared);
+                TryDeleteFile(preparedUninstaller);
+                if (completed)
+                {
+                    TryDeleteDirectory(backup);
+                    TryDeleteFile(backupUninstaller);
+                }
             }
         }
 

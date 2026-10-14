@@ -608,27 +608,39 @@ namespace DeepSeekHarnessLauncher
             bool acceptVersionRisk = false,
             Func<bool> cancelled = null,
             Action<long> cacheProgress = null,
-            Action<long, long, double> detailProgress = null)
+            Action<long, long, double> detailProgress = null,
+            string profileName = null,
+            string temporaryRoot = null,
+            bool ignoreScripts = false,
+            bool preserveOtherDependencies = false)
         {
+            var arguments = new List<string> { "add", specifier };
+            if (ignoreScripts) arguments.Add("--ignore-scripts");
             return RunWithRecovery(
                 settings,
-                new[] { "add", specifier },
+                arguments,
                 timeoutMs,
                 log,
                 output,
                 acceptVersionRisk,
                 cancelled,
                 cacheProgress,
-                detailProgress);
+                detailProgress,
+                profileName,
+                temporaryRoot,
+                preserveOtherDependencies);
         }
 
         internal static CliResult Remove(
             LauncherSettings settings,
             string bundleName,
             int timeoutMs,
-            Action<string> log)
+            Action<string> log,
+            string profileName = null,
+            string temporaryRoot = null)
         {
-            return Run(settings, new[] { "remove", bundleName }, timeoutMs, log);
+            return Run(settings, new[] { "remove", bundleName }, timeoutMs, log,
+                profileName: profileName, temporaryRoot: temporaryRoot);
         }
 
         internal static CliResult Update(
@@ -636,7 +648,9 @@ namespace DeepSeekHarnessLauncher
             string specifier,
             int timeoutMs,
             Action<string> log,
-            bool acceptVersionRisk = false)
+            bool acceptVersionRisk = false,
+            string profileName = null,
+            string temporaryRoot = null)
         {
             // 固定到 tag / commit 或来自 GitHub 的来源，靠重新 add 拿新内容；
             // registry 包用 pnpm update 才符合"更新"语义。
@@ -648,7 +662,9 @@ namespace DeepSeekHarnessLauncher
                     timeoutMs,
                     log,
                     null,
-                    acceptVersionRisk);
+                    acceptVersionRisk,
+                    profileName: profileName,
+                    temporaryRoot: temporaryRoot);
             }
 
             return RunWithRecovery(
@@ -657,7 +673,9 @@ namespace DeepSeekHarnessLauncher
                 timeoutMs,
                 log,
                 null,
-                acceptVersionRisk);
+                acceptVersionRisk,
+                profileName: profileName,
+                temporaryRoot: temporaryRoot);
         }
 
         /// <summary>跑 <c>dsh plugin --profile &lt;name&gt; ...</c>（桌面安装自动走 shim）。</summary>
@@ -669,7 +687,10 @@ namespace DeepSeekHarnessLauncher
             Action<string> output = null,
             Func<bool> cancelled = null,
             Action<long> cacheProgress = null,
-            Action<long, long, double> detailProgress = null)
+            Action<long, long, double> detailProgress = null,
+            string profileName = null,
+            string temporaryRoot = null,
+            bool preserveOtherDependencies = false)
         {
             CliResult result = new CliResult();
             string dshRoot = settings == null ? null : settings.DshRoot;
@@ -682,12 +703,25 @@ namespace DeepSeekHarnessLauncher
             }
 
             bool desktop = IsDesktopInstall(dshRoot);
-            string profileName = ResolveProfileName(dshRoot);
+            if (!String.IsNullOrWhiteSpace(profileName))
+            {
+                profileName = profileName.Trim();
+                if (!IsValidExplicitProfileName(profileName))
+                {
+                    result.Failed = true;
+                    result.Error = "指定的 DSH profile 名称无效。";
+                    return result;
+                }
+            }
+            else
+            {
+                profileName = ResolveProfileName(dshRoot);
+            }
             string profileDirectory = Path.Combine(
                 ResolveDshHome(dshRoot), ProfilesDirectoryName, profileName);
             using var operation = PluginOperationSupport.Acquire(
                 profileDirectory,
-                () => output?.Invoke("等待其他插件操作完成…"), cancelled);
+                () => output?.Invoke("等待其他插件操作完成…"), cancelled, temporaryRoot);
             // Keep migration, package specifiers and child environment on one source
             // even if the user switches the engine while its writer lock is busy.
             var downloadSettings = new LauncherSettings
@@ -697,7 +731,7 @@ namespace DeepSeekHarnessLauncher
             };
             bool backendDownload = BackendDownloadSource.IsSelected(downloadSettings);
             using var transferProgress = new PluginTransferProgress(output, cacheProgress, detailProgress);
-            if (!backendDownload
+            if (!preserveOtherDependencies && !backendDownload
                 && pluginArguments != null && pluginArguments.Count > 0
                 && (String.Equals(pluginArguments[0], "add", StringComparison.OrdinalIgnoreCase)
                     || String.Equals(pluginArguments[0], "update", StringComparison.OrdinalIgnoreCase)))
@@ -720,8 +754,12 @@ namespace DeepSeekHarnessLauncher
             {
                 var downloadArguments = new List<string>(pluginArguments);
                 for (int index = 1; index < downloadArguments.Count; index++)
+                {
+                    if (downloadArguments[index].StartsWith("-", StringComparison.Ordinal))
+                        continue;
                     downloadArguments[index] = PackageDownloadEnvironment.ResolvePackageSpecifier(
                         downloadArguments[index], backendDownload);
+                }
                 downloadArguments.RemoveAll(argument => argument.StartsWith("--reporter=", StringComparison.OrdinalIgnoreCase));
                 downloadArguments.Add("--reporter=ndjson");
                 downloadArguments.Add("--config.fetch-retries=2");
@@ -750,7 +788,8 @@ namespace DeepSeekHarnessLauncher
             }
             else
             {
-                string node = LauncherLocator.FindNode();
+                string node = !String.IsNullOrWhiteSpace(settings?.NodePath)
+                    && File.Exists(settings.NodePath) ? settings.NodePath : LauncherLocator.FindNode();
                 if (String.IsNullOrWhiteSpace(node))
                 {
                     result.Failed = true;
@@ -773,6 +812,19 @@ namespace DeepSeekHarnessLauncher
                 result.Failed = true;
                 result.Error = "后端下载源证书验证失败：" + exception.Message;
                 return result;
+            }
+            if (!String.IsNullOrWhiteSpace(temporaryRoot))
+            {
+                string temporary = Path.GetFullPath(temporaryRoot);
+                Directory.CreateDirectory(temporary);
+                startInfo.Environment["TEMP"] = temporary;
+                startInfo.Environment["TMP"] = temporary;
+                startInfo.Environment["TMPDIR"] = temporary;
+                startInfo.Environment["npm_config_cache"] = Path.Combine(temporary, "npm-cache");
+                startInfo.Environment["npm_config_store_dir"] = Path.Combine(temporary, "pnpm-store");
+                startInfo.Environment["XDG_CACHE_HOME"] = Path.Combine(temporary, "cache");
+                startInfo.Environment["XDG_STATE_HOME"] = Path.Combine(temporary, "state");
+                startInfo.Environment["COREPACK_HOME"] = Path.Combine(temporary, "corepack");
             }
 
             try
@@ -897,12 +949,17 @@ namespace DeepSeekHarnessLauncher
 
         // ---------------------------------------------------------------- 自动恢复
 
-        internal static Dictionary<string, string> ReadProfileDependencySpecifiers(LauncherSettings settings)
+        internal static Dictionary<string, string> ReadProfileDependencySpecifiers(
+            LauncherSettings settings,
+            string profileName = null,
+            string profileDirectory = null)
         {
             Dictionary<string, string> dependencies = new Dictionary<string, string>(StringComparer.Ordinal);
             try
             {
-                string directory = TryResolveProfileDirectory(settings);
+                string directory = String.IsNullOrWhiteSpace(profileDirectory)
+                    ? TryResolveProfileDirectory(settings, profileName)
+                    : profileDirectory;
                 var root = System.Text.Json.Nodes.JsonNode.Parse(
                     File.ReadAllText(Path.Combine(directory, "package.json"), Encoding.UTF8));
                 var values = root?["dependencies"] as System.Text.Json.Nodes.JsonObject;
@@ -1007,15 +1064,31 @@ namespace DeepSeekHarnessLauncher
             bool acceptVersionRisk,
             Func<bool> cancelled = null,
             Action<long> cacheProgress = null,
-            Action<long, long, double> detailProgress = null)
+            Action<long, long, double> detailProgress = null,
+            string profileName = null,
+            string temporaryRoot = null,
+            bool preserveOtherDependencies = false)
         {
-            string profileDirectory = TryResolveProfileDirectory(settings);
+            if (!String.IsNullOrWhiteSpace(profileName)
+                && !IsValidExplicitProfileName(profileName.Trim()))
+            {
+                return new CliResult
+                {
+                    Failed = true,
+                    Error = "指定的 DSH profile 名称无效。"
+                };
+            }
+            string profileDirectory = TryResolveProfileDirectory(settings, profileName);
             using var operation = PluginOperationSupport.Acquire(profileDirectory ?? Path.Combine(
-                ResolveDshHome(settings.DshRoot), ProfilesDirectoryName, ResolveProfileName(settings.DshRoot)),
-                () => output?.Invoke("等待其他插件操作完成…"), cancelled);
-            CleanupBrokenSymlinks(profileDirectory, log);
+                ResolveDshHome(settings.DshRoot), ProfilesDirectoryName,
+                String.IsNullOrWhiteSpace(profileName)
+                    ? ResolveProfileName(settings.DshRoot)
+                    : profileName),
+                () => output?.Invoke("等待其他插件操作完成…"), cancelled, temporaryRoot);
+            if (!preserveOtherDependencies) CleanupBrokenSymlinks(profileDirectory, log);
 
-            CliResult first = Run(settings, pluginArguments, timeoutMs, log, output, cancelled, cacheProgress, detailProgress);
+            CliResult first = Run(settings, pluginArguments, timeoutMs, log, output, cancelled,
+                cacheProgress, detailProgress, profileName, temporaryRoot, preserveOtherDependencies);
             if (first.Cancelled || first.TimedOut) return first;
             if (first.Unsupported || !first.Started)
             {
@@ -1024,7 +1097,8 @@ namespace DeepSeekHarnessLauncher
 
             string specifier = pluginArguments.Count > 1 ? pluginArguments[1] : null;
             string targetKey = ResolveInstalledDependencyKey(specifier, null,
-                ReadProfileDependencySpecifiers(settings), settings.DshRoot, profileDirectory);
+                ReadProfileDependencySpecifiers(settings, profileName, profileDirectory),
+                settings.DshRoot, profileDirectory);
             string text = SelectInstallCompatibilityOutput(first.Output, targetKey, first.Failed);
             List<string> allowBuildKeys = ParseBuildScriptAuthorizationKeys(first.Output);
             bool parsedExemption = TryParseVersionExemption(
@@ -1069,7 +1143,9 @@ namespace DeepSeekHarnessLauncher
                         exemptionPackage,
                         exemptionDshVersion,
                         log,
-                        cancelled);
+                        cancelled,
+                        profileName,
+                        temporaryRoot);
                     if (allow.Failed)
                     {
                         if (log != null)
@@ -1095,10 +1171,12 @@ namespace DeepSeekHarnessLauncher
                         + DescribeKeys(changedKeys));
                 }
 
-                final = Run(settings, pluginArguments, timeoutMs, log, output, cancelled, cacheProgress, detailProgress);
+                final = Run(settings, pluginArguments, timeoutMs, log, output, cancelled,
+                    cacheProgress, detailProgress, profileName, temporaryRoot, preserveOtherDependencies);
                 final.AllowBuildsKeys = changedKeys;
                 targetKey = ResolveInstalledDependencyKey(specifier, null,
-                    ReadProfileDependencySpecifiers(settings), settings.DshRoot, profileDirectory);
+                    ReadProfileDependencySpecifiers(settings, profileName, profileDirectory),
+                    settings.DshRoot, profileDirectory);
                 if (TryParseVersionExemption(
                     SelectInstallCompatibilityOutput(final.Output, targetKey, final.Failed),
                     out string secondPackage,
@@ -1168,7 +1246,9 @@ namespace DeepSeekHarnessLauncher
             string packageVersion,
             string dshVersion,
             Action<string> log,
-            Func<bool> cancelled = null)
+            Func<bool> cancelled = null,
+            string profileName = null,
+            string temporaryRoot = null)
         {
             if (log != null)
             {
@@ -1189,7 +1269,9 @@ namespace DeepSeekHarnessLauncher
                 2 * 60 * 1000,
                 log,
                 null,
-                cancelled);
+                cancelled: cancelled,
+                profileName: profileName,
+                temporaryRoot: temporaryRoot);
         }
 
         // ---------------------------------------------------------------- 输出解析（离线可断言）
@@ -2246,7 +2328,9 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        private static string TryResolveProfileDirectory(LauncherSettings settings)
+        private static string TryResolveProfileDirectory(
+            LauncherSettings settings,
+            string explicitProfileName = null)
         {
             if (settings == null || String.IsNullOrWhiteSpace(settings.DshRoot))
             {
@@ -2255,12 +2339,45 @@ namespace DeepSeekHarnessLauncher
 
             try
             {
+                if (!String.IsNullOrWhiteSpace(explicitProfileName))
+                {
+                    string name = explicitProfileName.Trim();
+                    if (!IsValidExplicitProfileName(name)) return null;
+                    string home = ResolveDshHome(settings.DshRoot);
+                    if (String.IsNullOrWhiteSpace(home)) return null;
+                    return Path.Combine(home, ProfilesDirectoryName, name);
+                }
                 return DshProfileService.ResolveProfileDirectory(settings.DshRoot);
             }
             catch
             {
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Validates the profile segment before it is combined with DSH_HOME.  The
+        /// official SDK applies the same path-boundary rule; keeping this check here
+        /// ensures the explicit mobile route cannot silently fall back to another
+        /// profile or escape the profiles directory.
+        /// </summary>
+        private static bool IsValidExplicitProfileName(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value)
+                || String.Equals(value, ".", StringComparison.Ordinal)
+                || String.Equals(value, "..", StringComparison.Ordinal)
+                || String.Equals(value, "node_modules", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return value.IndexOfAny(new[]
+            {
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar,
+                ':',
+                '\0'
+            }) < 0;
         }
 
         /// <summary>桌面 shim 是 .cmd：必须经由命令解释器执行。</summary>

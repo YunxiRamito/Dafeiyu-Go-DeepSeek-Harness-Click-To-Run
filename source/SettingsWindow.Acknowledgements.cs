@@ -113,7 +113,7 @@ namespace DeepSeekHarnessLauncher
                 var card = new Border
                 {
                     Padding = new Thickness(4),
-                    CornerRadius = new CornerRadius(8),
+                    CornerRadius = CornerRadiusHelper.SurfaceRadius,
                     Style = SettingsRoot.Resources["SettingsCardStyle"] as Style
                 };
                 var content = new StackPanel { Spacing = 5, HorizontalAlignment = HorizontalAlignment.Center };
@@ -125,7 +125,7 @@ namespace DeepSeekHarnessLauncher
                 {
                     Width = 48,
                     Height = 48,
-                    CornerRadius = new CornerRadius(8),
+                    CornerRadius = CornerRadiusHelper.SurfaceRadius,
                     Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 77, 107, 254)),
                     Child = new FontIcon { Glyph = "\uE77B", FontSize = 22, Foreground = new SolidColorBrush(Microsoft.UI.Colors.White) }
                 });

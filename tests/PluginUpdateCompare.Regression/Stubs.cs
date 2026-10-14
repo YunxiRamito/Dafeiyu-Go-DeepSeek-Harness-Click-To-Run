@@ -20,6 +20,7 @@ namespace DeepSeekHarnessLauncher
     internal sealed class LauncherSettings
     {
         public string DshRoot { get; set; }
+        public string NodePath { get; set; } = String.Empty;
         public string UpdateSource { get; set; }
         public string MirrorSource { get; set; }
     }

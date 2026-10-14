@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260804001" />
+    <Compile Include="../../source/DshWindow.cs" Link="DshWindow.cs" />
+    <Compile Include="../../source/DshWindowPolicy.cs" Link="DshWindowPolicy.cs" />
+    <Compile Include="../../source/ServicePageUrl.cs" Link="ServicePageUrl.cs" />
+    <Compile Include="../../source/LauncherAppearance.cs" Link="LauncherAppearance.cs" />
+    <Compile Include="../../source/CornerRadiusHelper.cs" Link="CornerRadiusHelper.cs" />
+    <Compile Include="../../source/LauncherSettings.cs" Link="LauncherSettings.cs" />
+    <Compile Include="../../source/ClientNoticeModels.cs" Link="ClientNoticeModels.cs" />
+    <Compile Include="../../source/LauncherReminderPolicy.cs" Link="LauncherReminderPolicy.cs" />
+    <Compile Include="../../source/SettingsWindow.Presence.cs" Link="SettingsWindow.Presence.cs" />
+    <Content Include="../../source/assets/DeepSeek-icon.png" Link="assets/DeepSeek-icon.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

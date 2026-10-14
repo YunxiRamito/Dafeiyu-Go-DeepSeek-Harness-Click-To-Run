@@ -11,5 +11,7 @@
     <Compile Include="../../source/ProfileDependencySourceMigration.cs" Link="ProfileDependencySourceMigration.cs" />
     <Compile Include="../../source/DshPluginCliService.cs" Link="DshPluginCliService.cs" />
     <Compile Include="../../source/PluginOperationSupport.cs" Link="PluginOperationSupport.cs" />
+    <Compile Include="../../source/SkillStore.cs" Link="SkillStore.cs" />
+    <Compile Include="../../source/SkillsModels.cs" Link="SkillsModels.cs" />
   </ItemGroup>
 </Project>

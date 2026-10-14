@@ -7,6 +7,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { readCredentials, writeCredentials, writeCompatibleArtifact } from './dym-persistence.mjs';
 import { dshToNative, nativeToDsh } from './dym-configuration.mjs';
+import { officialSelection, isOfficialReference } from './dym-official-selection.mjs';
 
 const VERSION = '0.2.1-alpha.1';
 const MAX = 24 * 1024 * 1024;
@@ -85,7 +86,7 @@ async function profile(root, home) {
   check(['zstd', 'none'].includes(compression));
   return { boot, context, rows, providers, officialRef, sessions, compression };
 }
-function portableCredentials(document, view, key) {
+function portableCredentials(document, view, key, launcherKeyKnown) {
   const references = new Set([view.officialRef, ...Object.values(view.providers).map(item => item.apiKeyEnv).filter(Boolean)]);
   const refs = Object.fromEntries(Object.entries(document.refs).filter(([name]) => references.has(name)));
   const records = Object.fromEntries(Object.entries(document.records).filter(([name]) => name.startsWith('llm-pi-ai/') && route(name.slice(10))));
@@ -96,7 +97,10 @@ function portableCredentials(document, view, key) {
       if (value.env[environment]) { check(portableFiles[name]?.[kind]); delete value.env[environment]; }
     }
   }
-  if (key) result.launcherDeepSeekKey = key;
+  if (launcherKeyKnown) {
+    if (key) { result.launcherDeepSeekKey = key; refs[view.officialRef] = key; }
+    else delete refs[view.officialRef];
+  }
   return result;
 }
 function nativeCredential(routeId, profileValue, document) {
@@ -112,14 +116,14 @@ function nativeCredential(routeId, profileValue, document) {
   }
   return result ? validateNativeCredential(result) : result;
 }
-export async function capture(root, home, launcherKey, order = []) {
+export async function capture(root, home, launcherKey, order = [], launcherKeyKnown = false) {
   const view = await profile(root, home);
   const raw = await readCredentials(root, home);
-  const credentials = portableCredentials(raw, view, launcherKey);
+  const credentials = portableCredentials(raw, view, launcherKey, launcherKeyKnown);
   const converted = await dshToNative(root, view.providers);
   const providers = [{ id: 'deepseek', name: 'DeepSeek 官方', builtinProvider: 'deepseek', enabled: true, models: [] }, ...converted.providers];
   const secrets = {};
-  const officialKey = launcherKey || credentials.refs[view.officialRef];
+  const officialKey = launcherKeyKnown ? launcherKey : credentials.refs[view.officialRef];
   if (officialKey) secrets.deepseek = { type: 'api_key', key: officialKey };
   for (const item of converted.providers) {
     const value = nativeCredential(item.dshRoute, view.providers[item.dshRoute], credentials);
@@ -129,13 +133,15 @@ export async function capture(root, home, launcherKey, order = []) {
   const identifiers = [...new Set([...order, ...byId.keys()])].filter(id => byId.has(id));
   return { credentials, providers: { schema: 1, revision: 0, providers: identifiers.map(id => byId.get(id)), credentials: secrets } };
 }
-async function importProviders(root, home, native) {
+async function importProviders(root, home, native, selectedOfficialRef) {
   check(native?.schema === 1 && Array.isArray(native.providers) && plain(native.credentials));
   const providerIds = new Set(native.providers.map(item => item.id));
   check(providerIds.size === native.providers.length && Object.keys(native.credentials).every(id => providerIds.has(id)));
   Object.values(native.credentials).forEach(validateNativeCredential);
   const view = await profile(root, home);
   const converted = await nativeToDsh(root, native);
+  for (const item of Object.values(converted.providers))
+    if (item.apiKeyEnv) check(!isOfficialReference(item.apiKeyEnv, view.officialRef, selectedOfficialRef));
   // Preserve unrelated providers. An explicit import updates only the routes in this backup.
   const providers = { ...view.providers, ...converted.providers };
   await dshToNative(root, providers); // exact pinned strict schema before any write
@@ -171,10 +177,15 @@ async function importProviders(root, home, native) {
   for (const item of native.providers) {
     const value = native.credentials[item.id];
     if (!value) continue;
-    if (item.id === 'deepseek') { check(value.type === 'api_key'); updates.refs.push({ ref: view.officialRef, value: value.key }); continue; }
+    // Official value/absence is published separately through a fresh reference
+    // and the native recovery journal. Generic import must not replace it.
+    if (item.id === 'deepseek') { check(value.type === 'api_key'); continue; }
     const id = item.dshRoute ?? item.id;
     if (!Object.hasOwn(converted.providers, id)) continue;
-    if (value.type === 'api_key' && value.key) updates.refs.push({ ref: converted.providers[id].apiKeyEnv, value: value.key });
+    if (value.type === 'api_key' && value.key) {
+      check(!isOfficialReference(converted.providers[id].apiKeyEnv, view.officialRef, selectedOfficialRef));
+      updates.refs.push({ ref: converted.providers[id].apiKeyEnv, value: value.key });
+    }
     const record = value.type === 'oauth' ? { kind: 'grant', payload: structuredClone(value) } : { ...value, kind: 'api-key' };
     delete record.type; delete record.files;
     updates.records.push({ provider: id, record, ...(value.files ? { files: value.files } : {}) });
@@ -241,12 +252,14 @@ async function importHistory(root, home, native) {
   return { restored, archived };
 }
 export async function restore(root, home, staging) {
-  const warnings = [], result = { warnings, historyRestored: 0, providerOrder: null };
+  const warnings = [], result = { warnings, historyRestored: 0, providerOrder: null, officialDshApplied: false };
   const run = async (label, operation) => { try { return await operation(); } catch { warnings.push(`${label}未完成，原始数据已保留，请安装匹配运行组件或修复后重新导入`); return null; } };
   const native = await run('手机提供商读取', () => jsonFile(staging, '.dafeiyu/config/providers.json'));
-  if (native) result.providerOrder = await run('提供商配置与凭据恢复', () => importProviders(root, home, native));
   const credentials = await run('DSH 凭据读取', () => jsonFile(staging, '.dafeiyu/config/credentials.json'));
-  if (credentials) await run('DSH 凭据恢复', async () => {
+  const official = await run('官方凭据选择读取', () => officialSelection(native, credentials));
+  if (official?.known) warnings.push('官方 API Key 的值或明确缺失已读取，尚待恢复协调器安全发布；未写入旧官方引用');
+  if (native && official) result.providerOrder = await run('其他提供商配置与凭据恢复', () => importProviders(root, home, native, official.reference));
+  if (credentials && official) await run('DSH 凭据恢复', async () => {
     check(credentials.version === 1 && plain(credentials.refs) && plain(credentials.records));
     for (const [name, record] of Object.entries(credentials.records)) {
       check(name.startsWith('llm-pi-ai/') && route(name.slice(10)) && plain(record));
@@ -256,7 +269,8 @@ export async function restore(root, home, staging) {
     const view = await profile(root, home), current = await readCredentials(root, home);
     const allowedRefs = new Set([view.officialRef, ...Object.values(view.providers).map(item => item.apiKeyEnv).filter(Boolean)]);
     const updates = { expectedRevision: current.revision,
-      refs: Object.entries(credentials.refs).filter(([ref]) => allowedRefs.has(ref)).map(([ref, value]) => ({ ref, value })),
+      refs: Object.entries(credentials.refs).filter(([ref]) => allowedRefs.has(ref)
+        && !isOfficialReference(ref, view.officialRef, official?.reference)).map(([ref, value]) => ({ ref, value })),
       records: Object.entries(credentials.records).filter(([key]) => key.startsWith('llm-pi-ai/') && route(key.slice(10))).map(([key, record]) =>
         ({ provider: key.slice(10), record, ...(credentials.portableFiles?.[key] ? { files: credentials.portableFiles[key] } : {}) })) };
     await writeCredentials(root, home, updates);
@@ -274,7 +288,7 @@ async function main() {
   const request = JSON.parse(buffer.toString('utf8'));
   check(typeof request.home === 'string');
   const root = path.resolve(process.argv[2]), home = path.resolve(request.home);
-  const value = request.operation === 'capture' ? await capture(root, home, request.launcherKey, request.order)
+  const value = request.operation === 'capture' ? await capture(root, home, request.launcherKey, request.order, request.launcherKeyKnown === true)
     : request.operation === 'restore' ? await restore(root, home, path.resolve(request.staging)) : null;
   check(value && Buffer.byteLength(JSON.stringify(value)) <= MAX);
   process.stdout.write(JSON.stringify({ ok: true, value }) + '\n');

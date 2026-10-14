@@ -30,6 +30,47 @@ Assert(!InstallerUpdateService.PrepareAndApply(new InstallerUpdatePackage { Setu
 Assert(!InstallerUpdateService.PrepareAndApply(new InstallerUpdatePackage { SetupUrl = "invalid://must-not-be-used", Sha256 = "bad" }, "unused", null, out error), "invalid hash rejected before I/O");
 Assert(error.Contains("SHA-256"), "invalid hash diagnosed before download");
 
+const string releaseTag = "v1.8.0";
+const string releasePath = "/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Setup/releases/download/v1.8.0/DSH-Installer-Setup.exe";
+string releaseHash = new string('b', 64);
+string assetHtml = "<li><a href=\"" + releasePath + "\">DSH-Installer-Setup.exe</a>"
+    + "<clipboard-copy aria-label=\"Copy to clipboard digest for DSH-Installer-Setup.exe\" value=\"sha256:"
+    + releaseHash + "\"></clipboard-copy></li>";
+var htmlPackage = InstallerUpdateService.ParseReleaseAssets(assetHtml, releaseTag, out error);
+Assert(htmlPackage?.Version == "1.8.0" && htmlPackage.Sha256 == releaseHash
+    && htmlPackage.SetupUrl == "https://github.com" + releasePath, "GitHub asset display preserves the exact package hash and URL");
+Assert(InstallerUpdateService.ParseReleaseAssets(assetHtml.Replace("sha256:", "sha512:"), releaseTag, out _) == null,
+    "non-SHA256 display digest is rejected");
+Assert(InstallerUpdateService.ParseReleaseAssets(assetHtml.Replace(releaseHash, new string('b', 63)), releaseTag, out _) == null,
+    "truncated displayed digest is rejected");
+Assert(InstallerUpdateService.ParseReleaseAssets(assetHtml, "v1.8.1", out _) == null,
+    "a neighboring release asset cannot authorize the requested release");
+Assert(InstallerUpdateService.ParseReleaseAssets(assetHtml + assetHtml, releaseTag, out _) == null,
+    "ambiguous duplicate setup asset is rejected");
+string wrongAsset = assetHtml.Replace("DSH-Installer-Setup.exe", "another.exe");
+Assert(InstallerUpdateService.ParseReleaseAssets("<p>sha256:" + releaseHash + "</p><li><a href=\""
+    + releasePath + "\">setup</a></li>" + wrongAsset, releaseTag, out _) == null,
+    "release notes and a different asset digest cannot supply the installer SHA");
+Assert(InstallerUpdateService.ParseReleasePageTag("<a href='/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Setup/releases/tag/v9.0.0'>older</a>"
+    + "<meta content='/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Setup/releases/tag/v1.8.0' property='og:url'>") == releaseTag,
+    "canonical metadata selects the release instead of navigation or notes links");
+Assert(InstallerUpdateService.ParseReleasePageTag("<meta property='og:url' content='https://evil.test/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Setup/releases/tag/v1.8.0'>") == null,
+    "foreign canonical metadata cannot select a release");
+if (args.Length == 1)
+{
+    string publicHtml = File.ReadAllText(Path.GetFullPath(args[0]));
+    Assert(InstallerUpdateService.ParseReleasePageTag(publicHtml) == releaseTag,
+        "actual public latest HTML selects v1.8.0 from its relative canonical URL");
+}
+string apiJson = System.Text.Json.JsonSerializer.Serialize(new { tag_name = releaseTag,
+    assets = new[] { new { name = "DSH-Installer-Setup.exe", browser_download_url = "https://github.com" + releasePath,
+        digest = "sha256:" + releaseHash } } });
+Assert(InstallerUpdateService.ParseReleaseApi(apiJson, out _)?.Sha256 == releaseHash, "API asset SHA is validated as a complete package");
+Assert(InstallerUpdateService.ParseReleaseApi(apiJson.Replace("https://github.com", "https://evil.test"), out _) == null,
+    "API digest cannot authorize a foreign installer package URL");
+Assert(InstallerUpdateService.ParseReleaseApi(apiJson.Replace(releaseHash, "bad"), out _) == null,
+    "API without valid hash is rejected before installation");
+
 // ---------------------------------------------------------------- 安装器独立版本判定
 // 关键回归：启动器有新版本、安装器没有 → 安装器这一侧必须是"不用动"。
 Assert(InstallerVersionPolicy.Decide("1.5.4", "1.5.4", true) == InstallerUpdateAction.UpToDate, "same version is up to date");
@@ -75,6 +116,7 @@ Assert(!InstallerVersionReader.FilesPresent(null), "no dsh root means no install
 Assert(!InstallerVersionReader.FilesPresent(Path.GetFullPath(Path.Combine(
     fixtureParent,
     "installer-not-installed"))), "missing installer folder is reported");
+VersionChecks.Run(Assert);
 
 // ---------------------------------------------------------------- 缓存不再跟启动器版本绑定
 var cachedPackage = new InstallerUpdatePackage
@@ -115,6 +157,14 @@ Assert(InstallerUpdateService.ReadCache(true).Version == "10.0.0", "manual refre
 var offlineCached = InstallerUpdateService.FetchReleaseWithCache(() => throw new System.Net.WebException("offline"),
     () => throw new Exception("unexpected version fallback"), out error, true);
 Assert(offlineCached.Version == "10.0.0" && !String.IsNullOrWhiteSpace(error), "offline cache cannot be reported as a successful current check");
+File.Delete(Path.Combine(LauncherSettingsStore.DirectoryPath, "InstallerRelease.json"));
+var versionOnly = InstallerUpdateService.FetchReleaseWithCache(() => throw new System.Net.WebException("API unavailable"),
+    () => "10.0.1", out error, true);
+Assert(versionOnly?.Version == "10.0.1" && versionOnly.Sha256 == null && !String.IsNullOrWhiteSpace(error),
+    "redirect-only version remains visibly incomplete rather than a successful update check");
+Assert(InstallerUpdateService.ReadCache(true) == null, "redirect-only version is never cached as a verified release");
+Assert(!InstallerUpdateService.PrepareAndApply(versionOnly, "unused", null, out error)
+    && error.Contains("SHA-256"), "redirect-only version cannot trigger installation or network transfer");
 
 Console.WriteLine($"PASS: {checks} integrity regression checks; no download, update or app launch.");
 try
@@ -140,7 +190,18 @@ namespace DeepSeekHarnessLauncher
         public string UpdateSource { get; set; }
         public string MirrorSource { get; set; }
     }
-    internal static class Constants { internal const string UserAgent = "Regression-Test"; }
+    internal static class Constants
+    {
+        internal const string UserAgent = "Regression-Test";
+        internal const string Repository = "test/repo";
+    }
+    internal sealed class AcceleratorSource
+    {
+        internal string Id, Name, Prefix;
+        internal bool SupportsRaw = true, SupportsArchive = true, SupportsRanges;
+    }
+    internal sealed class AcceleratorLatencyReport { internal int For(string id) => 0; }
+    internal static class AcceleratorLatencyService { internal static AcceleratorLatencyReport Current => null; }
     internal static class ProxySupport
     {
         internal static void Apply(System.Net.WebRequest value) => throw new Exception("Unexpected network I/O");

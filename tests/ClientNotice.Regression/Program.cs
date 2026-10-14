@@ -167,8 +167,10 @@ try
  Check(messages.Count == 1 && messages[0].Id == "n", "filter already-read announcements");
  Check(messages[0].Buttons[0].Text == "Settings" && messages[0].Buttons[0].ActionTarget == "Updates", "server label/action/page contract");
  Check(messages[0].Buttons[1].ActionTarget == "https://example.test", "server URL contract");
- Check(presence?.OnlineCount == 12, "presence model");
- Check(handler.Requests.Count == 2, "feed and presence requests");
+ Check(presence?.OnlineCount == 12 && presence.WindowsOnlineCount == 12
+     && presence.MobileDataAvailable && presence.MobileOnlineCount == 0, "combined presence model and per-platform counts");
+ Check(handler.Requests.Count == 2 && handler.Requests.Last().EndsWith("/api/presence/platforms"),
+     "feed and combined presence requests");
  Check(handler.Requests[0].EndsWith("?installationId=" + Guid.Parse(id).ToString("D")), "feed identifies installation for server display filtering");
  handler.MultipleNotifications = true;
  messages.Clear();
@@ -183,7 +185,16 @@ try
  settings.TelemetryEnabled = true;
  await client.HeartbeatOnceAsync(CancellationToken.None);
  Check(handler.Requests.Last().EndsWith("installations/heartbeat"), "heartbeat endpoint");
- Check(JsonDocument.Parse(handler.LastBody).RootElement.GetProperty("installationId").GetGuid() == Guid.Parse(id), "GUID format accepted by server");
+ using (var heartbeat = JsonDocument.Parse(handler.LastBody))
+ {
+     JsonElement body = heartbeat.RootElement;
+     Check(body.GetProperty("installationId").GetGuid() == Guid.Parse(id), "GUID format accepted by server");
+     Check(body.GetProperty("platform").GetString() == "windows" && !body.TryGetProperty("client_platform", out _),
+         "PC heartbeat sends the optional platform marker using the protocol field name");
+     Check(body.EnumerateObject().Select(property => property.Name).OrderBy(name => name, StringComparer.Ordinal)
+         .SequenceEqual(new[] { "installationId", "launcherVersion", "platform" }),
+         "PC heartbeat serializes exactly installation identity, launcher version, and platform");
+ }
  await client.ReportAsync(n, "displayed", null, CancellationToken.None);
  Check(JsonDocument.Parse(handler.LastBody).RootElement.GetProperty("kind").GetString() == "Displayed", "server Displayed metric contract");
  n.Buttons.Add(new ClientNoticeButton { Text="close" });
@@ -201,7 +212,10 @@ try
  await client.PollOnceAsync(CancellationToken.None);
  Check(availability.SequenceEqual(new[] { true, false, true }), "successful poll reports backend recovery once");
  handler.PresenceFailure = true;
+ int legacyPresenceReadsBeforeFailure = handler.Requests.Count(url => new Uri(url).AbsolutePath == "/api/presence");
  try { await client.PollOnceAsync(CancellationToken.None); throw new Exception("presence failure ignored"); } catch (HttpRequestException) { checks++; }
+ Check(handler.Requests.Count(url => new Uri(url).AbsolutePath == "/api/presence") == legacyPresenceReadsBeforeFailure,
+     "combined presence falls back only on 404, not other HTTP failures");
  Check(presence == null, "presence failure clears stale online state");
  Check(availability.SequenceEqual(new[] { true, false, true, false }), "presence HTTP failure reports backend offline");
  try { await client.PollOnceAsync(CancellationToken.None); throw new Exception("repeated presence failure ignored"); } catch (HttpRequestException) { checks++; }
@@ -278,8 +292,8 @@ try
  int beforePresenceOnly = handler.Requests.Count;
  var realZero = await client.PollPresenceOnceAsync(CancellationToken.None);
  Check(realZero.OnlineCount == 0 && presence.OnlineCount == 0, "server-reported zero is preserved without a fabricated online user");
- Check(handler.Requests.Count == beforePresenceOnly + 1 && handler.Requests.Last().EndsWith("/api/presence"),
-     "presence-only refresh reads just the lightweight endpoint without messages or telemetry");
+ Check(handler.Requests.Count == beforePresenceOnly + 1 && handler.Requests.Last().EndsWith("/api/presence/platforms"),
+     "presence-only refresh reads just the combined endpoint without messages or telemetry");
  handler.PresenceCount = 12;
  string fullPresenceJson = """{"onlineCount":0,"observedAt":"2026-10-08T04:00:00Z","history":[{"observedAt":"2026-10-08T03:59:00Z","onlineCount":4},{"observedAt":"2026-10-08T04:00:00Z","onlineCount":0}],"windowHours":24,"sampleIntervalSeconds":60}""";
  var fullPresence = JsonSerializer.Deserialize<ClientNoticePresence>(fullPresenceJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
@@ -288,6 +302,165 @@ try
      "full presence history retains counts including zero");
  Check(fullPresence.WindowHours == 24 && fullPresence.SampleIntervalSeconds == 60
      && fullPresence.ObservedAt == DateTimeOffset.Parse("2026-10-08T04:00:00Z"), "presence history metadata and observation time survive JSON transport");
+ const string combinedPresenceJson = """{"onlineCount":12,"onlineInstallations":12,"onlineWindowSeconds":300,"platforms":[{"platform":"android","onlineCount":3,"versions":[{"version":"0.1.15","versionCode":17,"count":3}],"otherVersionCount":0},{"platform":"pc","onlineCount":9,"versions":[{"version":"1.7.5","versionCode":null,"count":9}],"otherVersionCount":0}]}""";
+ var combinedPresence = JsonSerializer.Deserialize<ClientNoticePresence>(combinedPresenceJson,
+     new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+ combinedPresence.Validate();
+ Check(combinedPresence.OnlineCount == 12 && combinedPresence.OnlineInstallations == 12
+     && combinedPresence.OnlineWindowSeconds == 300 && combinedPresence.WindowsOnlineCount == 9
+     && combinedPresence.MobileDataAvailable && combinedPresence.MobileOnlineCount == 3,
+     "combined response parses totals, window, PC count, and available Android count");
+ Check(combinedPresence.Platforms.Count == 2 && combinedPresence.PlatformVersionCounts.Count == 2
+     && combinedPresence.PlatformVersionCounts.Any(item => item.Platform == "android" && item.VersionCode == 17 && item.Count == 3)
+     && combinedPresence.LauncherVersions.Single().Version == "1.7.5",
+     "combined version groups flatten by platform and preserve legacy PC launcher versions");
+ Check(SettingsWindow.FormatDeveloperCenterPresence(combinedPresence) == "12 在线",
+     "presence footer displays only the combined count");
+ Check(SettingsWindow.FormatDeveloperCenterPresence(null) == "在线状态未连接"
+     && SettingsWindow.BuildServerVersionSlices(null).Count == 0,
+     "disconnected presence does not invent a count or donut sectors");
+ var chartPresence = JsonSerializer.Deserialize<ClientNoticePresence>(
+     """{"onlineCount":22,"onlineInstallations":22,"onlineWindowSeconds":300,"platforms":[{"platform":"pc","onlineCount":13,"versions":[{"version":"1.8.0","count":4},{"version":"1.7.5","count":5},{"version":"1.7.4","count":3}],"otherVersionCount":1},{"platform":"android","onlineCount":9,"versions":[{"version":"0.1.15","versionCode":17,"count":2},{"version":"0.1.15","versionCode":18,"count":3},{"version":"0.1.16","versionCode":19,"count":1}],"otherVersionCount":3}]}""",
+     new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+ chartPresence.Validate();
+ var chartSlices = SettingsWindow.BuildServerVersionSlices(chartPresence);
+ Check(chartSlices.Where(slice => slice.Platform == "PC").Select(slice => slice.Version)
+     .SequenceEqual(new[] { "1.7.4", "1.7.5", "1.8.0", "其他版本" }),
+     "PC donut sectors preserve each version and sort versions in ascending order");
+ Check(chartSlices.Where(slice => slice.Platform == "PC").Select(slice => slice.Count)
+     .SequenceEqual(new[] { 3, 5, 4, 1 }), "PC version sectors retain their real counts");
+ Check(chartSlices.Count(slice => slice.Platform == "移动端") == 1
+     && chartSlices.Last().Count == 9 && chartSlices.Last().IsAvailable,
+     "all Android versions, versionCodes, and other counts merge into one mobile sector");
+ Check(chartSlices.Sum(slice => slice.Count) == chartPresence.OnlineCount
+     && SettingsWindow.FormatDeveloperCenterPresence(chartPresence) == "22 在线",
+     "chart and footer counts agree with the same DeveloperCenter snapshot");
+ Check(chartPresence.PlatformVersionCounts.Count(item => item.Platform == "android") == 3,
+     "UI aggregation leaves raw Android versionCode groups intact");
+ SettingsWindow.LayoutServerVersionDonut(chartSlices);
+ Check(Math.Abs(chartSlices.Sum(slice => slice.SweepAngle) - 360) < 0.000001
+     && chartSlices[0].StartAngle == 0
+     && Math.Abs(chartSlices.Last().StartAngle + chartSlices.Last().SweepAngle - 360) < 0.000001,
+     "one shared donut fills a full turn with the complete PC and mobile snapshot");
+ Check(Math.Abs(chartSlices.Last().SweepAngle - 360.0 * 9 / 22) < 0.000001,
+     "mobile sector uses the aggregate platform total, including unlisted Android versions");
+ for (int i = 0; i < chartSlices.Count; i++)
+ {
+     double radians = (chartSlices[i].StartAngle + chartSlices[i].SweepAngle / 2 - 90) * Math.PI / 180;
+     Check(SettingsWindow.FindServerVersionDonutSlice(chartSlices, Math.Cos(radians) * 75,
+         Math.Sin(radians) * 75, 57, 92) == i, "each donut sector can be selected by pointer angle");
+ }
+ Check(SettingsWindow.FindServerVersionDonutSlice(chartSlices, 0, 0, 57, 92) == -1
+     && SettingsWindow.FindServerVersionDonutSlice(chartSlices, 0, -93, 57, 92) == -1
+     && SettingsWindow.FindServerVersionDonutSlice(chartSlices, Double.NaN, 0, 57, 92) == -1,
+     "donut hover excludes the center, exterior, and invalid coordinates");
+ Check(SettingsWindow.FindServerVersionDonutSlice(chartSlices, 0, -75, 57, 92) == 0
+     && SettingsWindow.FindServerVersionDonutSlice(chartSlices, -0.00001, -75, 57, 92) == chartSlices.Count - 1,
+     "hover wraps correctly on both sides of the twelve o'clock boundary");
+ var manyVersions = new ClientNoticePresence
+ {
+     OnlineCount = 6,
+     LauncherVersions = Enumerable.Range(0, 6).Select(i => new ClientNoticeVersionCount
+     { Version = "1.7." + i, Count = 1 }).ToList()
+ };
+ manyVersions.Validate();
+ Check(SettingsWindow.BuildServerVersionSlices(manyVersions).Count(slice => slice.Platform == "PC") == 6,
+     "more than four PC versions remain individually visible");
+ var manySlices = SettingsWindow.BuildServerVersionSlices(manyVersions);
+ SettingsWindow.LayoutServerVersionDonut(manySlices);
+ Check(manySlices.Count(slice => slice.SweepAngle > 0) == 6
+     && manySlices.Take(6).All(slice => slice.SweepAngle == 60),
+     "all PC versions receive donut sectors without a fixed top-four limit");
+ var zeroPresence = JsonSerializer.Deserialize<ClientNoticePresence>(
+     """{"onlineCount":0,"onlineInstallations":0,"onlineWindowSeconds":300,"platforms":[{"platform":"pc","onlineCount":0,"versions":[],"otherVersionCount":0},{"platform":"android","onlineCount":0,"versions":[],"otherVersionCount":0}]}""",
+     new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+ zeroPresence.Validate();
+ Check(SettingsWindow.BuildServerVersionSlices(zeroPresence).Single().IsAvailable
+     && SettingsWindow.BuildServerVersionSlices(zeroPresence).Single().Count == 0
+     && SettingsWindow.FormatDeveloperCenterPresence(zeroPresence) == "0 在线",
+     "available mobile zero stays distinct from unavailable mobile data");
+ var zeroSlices = SettingsWindow.BuildServerVersionSlices(zeroPresence);
+ SettingsWindow.LayoutServerVersionDonut(zeroSlices);
+ Check(zeroSlices.All(slice => slice.SweepAngle == 0)
+     && SettingsWindow.FindServerVersionDonutSlice(zeroSlices, 0, -75, 57, 92) == -1,
+     "true zero produces an empty donut with no fabricated sector or hover");
+ var unavailableSlices = SettingsWindow.BuildServerVersionSlices(null);
+ SettingsWindow.LayoutServerVersionDonut(unavailableSlices);
+ Check(SettingsWindow.FindServerVersionDonutSlice(unavailableSlices, 0, -75, 57, 92) == -1,
+     "disconnected donut has no selectable data");
+ var legacyPresence = JsonSerializer.Deserialize<ClientNoticePresence>(
+     """{"onlineCount":7,"launcherVersions":[{"version":"legacy-pc","count":7}]}""",
+     new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+ legacyPresence.Validate();
+ Check(legacyPresence.WindowsOnlineCount == 7 && legacyPresence.MobileOnlineCount == null
+     && !legacyPresence.MobileDataAvailable && legacyPresence.Platforms.Single().Platform == "pc"
+     && legacyPresence.PlatformVersionCounts.Single().Version == "legacy-pc",
+     "old presence payload maps its count and versions to PC without inventing a mobile zero");
+ var legacySlices = SettingsWindow.BuildServerVersionSlices(legacyPresence);
+ Check(legacySlices.Count == 2 && legacySlices[0].Version == "legacy-pc" && legacySlices[0].Count == 7
+     && legacySlices[1].Platform == "移动端" && !legacySlices[1].IsAvailable,
+     "legacy presence shows PC versions and an unknown mobile legend item");
+ Check(SettingsWindow.FormatDeveloperCenterPresence(legacyPresence) == "7 在线",
+     "legacy footer retains known aggregate count without a per-platform breakdown");
+ SettingsWindow.LayoutServerVersionDonut(legacySlices);
+ Check(legacySlices[0].SweepAngle == 360 && legacySlices[1].SweepAngle == 0
+     && !legacySlices[1].IsAvailable,
+     "one known PC version fills the ring while unknown mobile has no fabricated share");
+ foreach (var point in new[] { (0.0, -75.0), (75.0, 0.0), (0.0, 75.0), (-75.0, 0.0) })
+     Check(SettingsWindow.FindServerVersionDonutSlice(legacySlices, point.Item1, point.Item2, 57, 92) == 0,
+         "a single full donut remains hoverable in every quadrant");
+ var overflowSlices = new List<SettingsWindow.ServerVersionSlice>
+ {
+     new() { Platform = "PC", Version = "1.8.0", Count = Int32.MaxValue },
+     new() { Platform = "移动端", Version = "移动端", Count = Int32.MaxValue },
+     new() { Platform = "PC", Version = "zero", Count = 0 }
+ };
+ SettingsWindow.LayoutServerVersionDonut(overflowSlices);
+ Check(overflowSlices[0].SweepAngle == 180 && overflowSlices[1].SweepAngle == 180
+     && overflowSlices[2].SweepAngle == 0,
+     "donut arithmetic does not overflow when adding large real counts and skips zero");
+ Check(SettingsWindow.FindServerVersionDonutSlice(overflowSlices, 0, 75, 57, 92) == 1,
+     "a shared boundary belongs to exactly the following nonzero sector");
+  foreach (string invalid in new[]
+  {
+      combinedPresenceJson.Replace("\"platform\":\"android\"", "\"platform\":\"windows\"", StringComparison.Ordinal),
+      combinedPresenceJson.Replace("\"version\":\"0.1.15\"", "\"version\":\"" + new string('v', 65) + "\"", StringComparison.Ordinal),
+      combinedPresenceJson.Replace("\"versionCode\":17", "\"versionCode\":0", StringComparison.Ordinal),
+      combinedPresenceJson.Replace("\"versionCode\":17", "\"versionCode\":2100000001", StringComparison.Ordinal),
+      combinedPresenceJson.Replace("\"platform\":\"android\",\"onlineCount\":3", "\"platform\":\"android\",\"onlineCount\":4", StringComparison.Ordinal)
+  })
+ {
+     try
+     {
+         JsonSerializer.Deserialize<ClientNoticePresence>(invalid, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }).Validate();
+         throw new Exception("invalid combined presence accepted");
+     }
+     catch (InvalidDataException) { checks++; }
+ }
+ var fallbackHandler = new OfflineHandler
+ {
+     CombinedPresenceNotFound = true,
+     PresenceCount = 8,
+     LegacyPresenceJson = """{"onlineCount":8,"launcherVersions":[{"version":"legacy-route","count":8}]}"""
+ };
+ using (var fallbackHttp = new HttpClient(fallbackHandler))
+ {
+     var fallbackAvailability = new List<bool>();
+     var fallbackClient = new ClientNoticeClient(store, () => settings, null, null, fallbackHttp,
+         onBackendAvailability: fallbackAvailability.Add);
+     ClientNoticePresence fallback = await fallbackClient.PollPresenceOnceAsync(CancellationToken.None);
+     Check(fallbackHandler.Requests.Count == 2
+         && new Uri(fallbackHandler.Requests[0]).AbsolutePath == "/api/presence/platforms"
+         && new Uri(fallbackHandler.Requests[1]).AbsolutePath == "/api/presence",
+         "404 from combined presence retries the legacy presence route");
+     Check(fallback.WindowsOnlineCount == 8 && fallback.MobileOnlineCount == null
+         && !fallback.MobileDataAvailable && fallback.PlatformVersionCounts.Single().Version == "legacy-route"
+         && fallbackAvailability.SequenceEqual(new[] { true }),
+         "legacy fallback maps PC data and does not report an unavailable mobile count as zero");
+     Check(!SettingsWindow.BuildServerVersionSlices(fallback).Last().IsAvailable
+         && SettingsWindow.FormatDeveloperCenterPresence(fallback) == "8 在线",
+         "actual 404 fallback preserves unknown mobile chart state and compact footer text");
+ }
  foreach (string invalid in new[] { "{}", "{\"onlineCount\":0,\"history\":null}",
      "{\"onlineCount\":0,\"history\":[{\"observedAt\":\"2026-10-08T04:00:00Z\",\"onlineCount\":-1}]}",
      "{\"onlineCount\":0,\"history\":[{\"onlineCount\":2}]}" })
@@ -481,30 +654,42 @@ sealed class OfflineHandler : HttpMessageHandler
 {
  internal List<string> Requests = new List<string>();
  internal string LastBody;
+ internal string LegacyPresenceJson;
  internal int PresenceCount = 12;
- internal bool FeedFailure, PresenceFailure, MultipleNotifications, InvalidFeedJson, InvalidPresence,
+ internal bool CombinedPresenceNotFound, FeedFailure, PresenceFailure, MultipleNotifications, InvalidFeedJson, InvalidPresence,
      NetworkFailure, TransportTimeout, WaitForCancellation, LargeResponse, BrokenBody;
  protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
  {
+  string path = request.RequestUri.AbsolutePath;
+  bool feed = path.EndsWith("/messages", StringComparison.Ordinal);
+  bool combinedPresence = path.EndsWith("/api/presence/platforms", StringComparison.Ordinal);
+  bool legacyPresence = path.EndsWith("/api/presence", StringComparison.Ordinal);
+  bool presence = combinedPresence || legacyPresence;
   Requests.Add(request.RequestUri.AbsoluteUri);
   if (NetworkFailure) throw new HttpRequestException("offline fixture network failure");
   if (TransportTimeout) throw new TaskCanceledException("offline fixture transport timeout");
   if (WaitForCancellation) await Task.Delay(Timeout.InfiniteTimeSpan, token);
   if (BrokenBody) return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new BrokenNoticeStream()) };
   LastBody = request.Content == null ? "" : await request.Content.ReadAsStringAsync(token);
-  if ((FeedFailure && request.RequestUri.AbsolutePath.EndsWith("messages"))
-    || (PresenceFailure && request.RequestUri.AbsolutePath.EndsWith("presence"))) return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
-  string response = request.RequestUri.AbsolutePath.EndsWith("messages")
+  if ((FeedFailure && feed) || (PresenceFailure && presence))
+   return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+  if (combinedPresence && CombinedPresenceNotFound) return new HttpResponseMessage(HttpStatusCode.NotFound);
+  string response = feed
    ? """{"messages":[{"id":"a","kind":"Announcement","title":"read","markdown":"read"},{"id":"n","kind":"Notification","title":"new","markdown":"**new**","buttons":[{"position":0,"label":"Settings","action":"Settings","url":null,"page":"Updates"},{"position":1,"label":"Website","action":"Url","url":"https://example.test","page":null}]}]}"""
-   : "{\"onlineCount\":" + PresenceCount + "}";
-  if (MultipleNotifications && request.RequestUri.AbsolutePath.EndsWith("messages"))
+   : combinedPresence
+     ? "{\"onlineCount\":" + PresenceCount + ",\"onlineInstallations\":" + PresenceCount
+         + ",\"onlineWindowSeconds\":300,\"platforms\":[{\"platform\":\"pc\",\"onlineCount\":" + PresenceCount
+         + ",\"versions\":[],\"otherVersionCount\":" + PresenceCount
+         + "},{\"platform\":\"android\",\"onlineCount\":0,\"versions\":[],\"otherVersionCount\":0}]}"
+     : legacyPresence ? LegacyPresenceJson ?? "{\"onlineCount\":" + PresenceCount + "}" : "{}";
+  if (MultipleNotifications && feed)
    response = """{"messages":[{"id":"old","kind":"Notification","title":"old","markdown":"old","publishedAt":"2026-10-06T00:00:00Z"},{"id":"newest","kind":"Notification","title":"new","markdown":"new","publishedAt":"2026-10-07T00:00:00Z"},{"id":"unread-announcement","kind":"Announcement","title":"announcement","markdown":"announcement"}]}""";
-  if (InvalidFeedJson && request.RequestUri.AbsolutePath.EndsWith("messages")) response = "{invalid json";
-  if (request.RequestUri.AbsolutePath.EndsWith("/notifications/current"))
+  if (InvalidFeedJson && feed) response = "{invalid json";
+  if (path.EndsWith("/notifications/current", StringComparison.Ordinal))
    response = """{"message":{"id":"n","kind":"Notification","title":"current","markdown":"**current preview**","buttons":[]}}""";
-  if (InvalidPresence && request.RequestUri.AbsolutePath.EndsWith("presence")) response = "{\"onlineCount\":-1}";
-  if (LargeResponse && request.RequestUri.AbsolutePath.EndsWith("messages")) response = new string('x', 1024 * 1024 + 1);
-  return new HttpResponseMessage(HttpStatusCode.OK) { Content=new StringContent(response,Encoding.UTF8,"application/json") };
+  if (InvalidPresence && presence) response = "{\"onlineCount\":-1}";
+  if (LargeResponse && feed) response = new string('x', 1024 * 1024 + 1);
+  return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(response, Encoding.UTF8, "application/json") };
  }
 }
 sealed class SlowFeedHandler : HttpMessageHandler
@@ -522,7 +707,8 @@ sealed class SlowFeedHandler : HttpMessageHandler
          try { await Task.Delay(Timeout.InfiniteTimeSpan, token); }
          catch (OperationCanceledException) { FeedCancelled = true; throw; }
      }
-     if (request.RequestUri.AbsolutePath.EndsWith("/presence"))
+     if (request.RequestUri.AbsolutePath.EndsWith("/presence/platforms")
+         || request.RequestUri.AbsolutePath.EndsWith("/presence"))
      {
          if (Interlocked.Increment(ref PresenceReads) >= 2) SecondPresence.TrySetResult();
          return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"onlineCount\":0}", Encoding.UTF8, "application/json") };
@@ -536,7 +722,8 @@ sealed class SlowPresenceHandler : HttpMessageHandler
  internal readonly TaskCompletionSource Cancelled = new(TaskCreationOptions.RunContinuationsAsynchronously);
  protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
  {
-     if (request.RequestUri.AbsolutePath.EndsWith("/presence"))
+     if (request.RequestUri.AbsolutePath.EndsWith("/presence/platforms")
+         || request.RequestUri.AbsolutePath.EndsWith("/presence"))
      {
          Entered.TrySetResult();
          try { await Task.Delay(Timeout.InfiniteTimeSpan, token); }

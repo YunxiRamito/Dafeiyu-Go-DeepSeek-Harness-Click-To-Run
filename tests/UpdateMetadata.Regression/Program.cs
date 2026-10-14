@@ -128,6 +128,51 @@ foreach (string mirror in new[] { "Auto", "ghproxy", "gh-proxy", "ghfast", "jsde
 
 using (var server = new FixtureServer())
 {
+    string installerAssetUrl = "https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Setup/releases/download/v1.8.0/DSH-Installer-Setup.exe";
+    string installerJson = System.Text.Json.JsonSerializer.Serialize(new
+    {
+        tag_name = "v1.8.0",
+        assets = new[] { new { name = "DSH-Installer-Setup.exe", browser_download_url = installerAssetUrl,
+            digest = "sha256:" + new string('a', 64) } }
+    });
+    server.Set("/installer-incomplete", FixtureResponse.Text("{\"tag_name\":\"v1.9.0\",\"assets\":[]}"));
+    server.Set("/installer-valid", FixtureResponse.Delay(80, installerJson));
+    var installerResult = InstallerUpdateService.ReadReleaseApi(new[]
+        { server.Url("/installer-incomplete"), server.Url("/installer-valid") }, backendSettings);
+    Check(installerResult.Value?.Version == "1.8.0" && installerResult.Value.Sha256 == new string('a', 64),
+        "incomplete installer release cannot win over a complete SHA-bearing candidate");
+    Check(ReferenceEquals(ProxySupport.LastSettings, backendSettings),
+        "installer metadata request receives the caller's exact proxy settings instance");
+    var htmlRequest = (HttpWebRequest)WebRequest.Create(server.Url("/installer-valid"));
+    htmlRequest.Accept = "application/json";
+    InstallerUpdateService.ConfigureReleasePageRequest(htmlRequest, acceleratedSettings);
+    Check(htmlRequest.Accept == "text/html" && ReferenceEquals(ProxySupport.LastSettings, acceleratedSettings),
+        "release web fallback negotiates HTML rather than GitHub's incomplete JSON summary and retains settings");
+    server.Set("/installer-no-digest", FixtureResponse.Text(installerJson.Replace("sha256:" + new string('a', 64), "")));
+    Check(InstallerUpdateService.ReadReleaseApi(new[] { server.Url("/installer-no-digest") }, acceleratedSettings).Value == null,
+        "installer API without SHA cannot be accepted as installable metadata");
+    foreach (var mode in new[] { acceleratedSettings, backendSettings, new LauncherSettings { UpdateSource = "Official" } })
+    {
+        var apiUrls = InstallerUpdateService.ReleaseApiCandidates(mode);
+        var pageUrls = InstallerUpdateService.ReleasePageCandidates("latest", mode);
+        bool isBackend = BackendDownloadSource.IsSelected(mode);
+        Check(apiUrls.Count == 1 && (isBackend ? BackendDownloadSource.IsBackendUrl(apiUrls[0])
+            : apiUrls[0].StartsWith("https://api.github.com/")),
+            "installer metadata uses backend-only API or direct public API without third-party CDN prefixes");
+        Check(pageUrls.Count > 0 && pageUrls.All(url => BackendDownloadSource.IsBackendUrl(url) == isBackend),
+            "installer page fallback respects the selected engine without cross-engine fallback");
+        if (mode.UpdateSource == "Official") Check(pageUrls.Count == 1 && pageUrls[0].StartsWith("https://github.com/"),
+            "official installer page fallback stays on GitHub");
+        if (mode.UpdateSource == "Accelerated" && !isBackend) Check(pageUrls.Count > 1
+            && !pageUrls[0].StartsWith("https://github.com/"), "CDN installer page fallback includes accelerated candidates");
+    }
+    foreach (string mirror in new[] { "ghproxy", "gh-proxy", "ghfast" })
+    {
+        var selected = new LauncherSettings { UpdateSource = "Accelerated", MirrorSource = mirror };
+        Check(InstallerUpdateService.ReleasePageCandidates("latest", selected)[0]
+            .StartsWith(GitHubAccelerator.SourceById(mirror).Prefix, StringComparison.Ordinal),
+            "installer metadata retains the selected CDN mirror at the start of its candidate chain");
+    }
     server.Set("/slow", FixtureResponse.Delay(1200, ValidManifest("1.7.1")));
     server.Set("/fast", FixtureResponse.Text(ValidManifest("1.7.2")));
     var first = UpdateMetadataReader.ReadFirstValid(

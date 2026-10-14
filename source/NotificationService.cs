@@ -9,10 +9,10 @@ namespace DeepSeekHarnessLauncher
 
         internal static void Initialize(Action<ClientNoticeMessage> enqueue) { _enqueue = enqueue; }
 
-        internal static bool Show(string message, bool critical)
+        internal static bool Show(string message, bool critical, LauncherReminderKind kind = LauncherReminderKind.General)
         {
             if (String.IsNullOrWhiteSpace(message)) return true;
-            return Enqueue(critical ? "Dafeiyu-Go 提醒" : "Dafeiyu-Go 通知", message, true, null);
+            return Enqueue(critical ? "Dafeiyu-Go 提醒" : "Dafeiyu-Go 通知", message, true, null, kind);
         }
 
         internal static bool ShowPluginUpdateCompleted(int count)
@@ -22,17 +22,20 @@ namespace DeepSeekHarnessLauncher
                 {
                     new ClientNoticeButton { Text = "重启 DSH", LocalAction = Program.RestartAfterPluginUpdate },
                     new ClientNoticeButton { Text = "稍后" }
-                });
+                }, LauncherReminderKind.PluginUpdate);
         }
 
-        private static bool Enqueue(string title, string detail, bool autoDismiss, List<ClientNoticeButton> buttons)
+        private static bool Enqueue(string title, string detail, bool autoDismiss, List<ClientNoticeButton> buttons,
+            LauncherReminderKind kind)
         {
+            if (!LauncherReminderPolicy.Allows(Program.Settings, kind)) return true;
             Action<ClientNoticeMessage> enqueue = _enqueue;
             if (enqueue == null) return false;
             enqueue(new ClientNoticeMessage
             {
                 Id = "local-" + Guid.NewGuid().ToString("N"),
                 IsLocal = true,
+                ReminderKind = kind,
                 AutoDismiss = autoDismiss,
                 Title = title,
                 Markdown = detail.Length > 65536 ? detail.Substring(0, 65536) : detail,

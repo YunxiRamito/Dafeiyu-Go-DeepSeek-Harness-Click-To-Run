@@ -6,14 +6,15 @@ namespace DeepSeekHarnessLauncher
 {
     internal static class StartupBackgroundUpdates
     {
-        internal static void RunChecks(IEnumerable<Action> checks, Func<bool> canceled, Action completed)
+        internal static void RunChecks(IEnumerable<Action> checks, Func<bool> canceled, Action completed,
+            Func<bool> successful = null)
         {
             foreach (var check in checks)
             {
                 if (canceled()) return;
                 check();
             }
-            if (!canceled()) completed();
+            if (!canceled() && (successful == null || successful())) completed();
         }
 
         internal static async Task RunWhenReadyAsync(Func<bool> ready, Func<bool> canceled, Action run)

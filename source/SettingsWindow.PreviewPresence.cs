@@ -39,8 +39,8 @@ namespace DeepSeekHarnessLauncher
                 DispatcherQueue.TryEnqueue(() =>
                 {
                     if (token.IsCancellationRequested) return;
-                    _previewPresence = current; _host.RaiseNoticePresenceChanged();
-                    NoticePresenceText.Text = current == null ? "预览 · 在线状态未连接" : "预览 · " + current.OnlineCount.ToString("N0") + " 人在线";
+                    _previewPresence = current;
+                    _host.RaiseNoticePresenceChanged();
                 });
                 try { if (!await timer.WaitForNextTickAsync(token).ConfigureAwait(false)) break; }
                 catch (OperationCanceledException) { break; }

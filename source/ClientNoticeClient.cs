@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -175,7 +176,17 @@ namespace DeepSeekHarnessLauncher
             {
                 Uri root = ResolveBase(_settings());
                 if (root == null) { _onPresence?.Invoke(null); return null; }
-                var presence = await GetAsync<ClientNoticePresence>(new Uri(root, "api/presence"), token, value => available = value).ConfigureAwait(false);
+                ClientNoticePresence presence;
+                try
+                {
+                    presence = await GetAsync<ClientNoticePresence>(new Uri(root, "api/presence/platforms"), token,
+                        value => available = value).ConfigureAwait(false);
+                }
+                catch (HttpRequestException exception) when (exception.StatusCode == HttpStatusCode.NotFound)
+                {
+                    presence = await GetAsync<ClientNoticePresence>(new Uri(root, "api/presence"), token,
+                        value => available = value).ConfigureAwait(false);
+                }
                 presence.Validate();
                 if (presence.ObservedAt == default) presence.ObservedAt = DateTimeOffset.UtcNow;
                 token.ThrowIfCancellationRequested();
@@ -200,7 +211,8 @@ namespace DeepSeekHarnessLauncher
                 new ClientNoticeHeartbeat
                 {
                     InstallationId = Guid.Parse(_store.GetInstallationId()).ToString("D"),
-                    LauncherVersion = Constants.Version
+                    LauncherVersion = Constants.Version,
+                    Platform = "windows"
                 }, token).ConfigureAwait(false);
         }
         internal async Task ReportAsync(ClientNoticeMessage message, string eventName, int? buttonIndex, CancellationToken token)

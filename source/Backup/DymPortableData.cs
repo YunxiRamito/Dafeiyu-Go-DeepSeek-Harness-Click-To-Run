@@ -21,12 +21,14 @@ namespace DeepSeekHarnessLauncher.Backup
         public string[] ProviderOrder { get; set; } = Array.Empty<string>();
         public List<string> CaptureWarnings { get; } = new List<string>();
         public bool ProviderOrderCaptured { get; set; } = true;
+        public bool OfficialCredentialSnapshotKnown { get; set; }
     }
 
     public sealed class DymPortableRestorePlan
     {
         public JsonObject PcPreferences { get; set; }
         public string DeepSeekApiKey { get; set; }
+        public DymOfficialCredentialIntent OfficialCredential { get; set; } = DymOfficialCredentialIntent.Unknown();
         public string[] ProviderOrder { get; set; }
         public int HistoryRestored { get; set; }
     }
@@ -48,7 +50,8 @@ namespace DeepSeekHarnessLauncher.Backup
             if (context.PcPreferences != null) files[PcPreferencesPath] = context.PcPreferences.ToJsonString();
             JsonObject captured = null;
             try { captured = Invoke(context, root, new JsonObject { ["operation"] = "capture", ["home"] = ResolveHome(root, home),
-                ["launcherKey"] = context.DeepSeekApiKey, ["order"] = new JsonArray(context.ProviderOrder.Select(id => (JsonNode)JsonValue.Create(id)).ToArray()) }, token); }
+                ["launcherKey"] = context.DeepSeekApiKey, ["launcherKeyKnown"] = context.OfficialCredentialSnapshotKnown,
+                ["order"] = new JsonArray(context.ProviderOrder.Select(id => (JsonNode)JsonValue.Create(id)).ToArray()) }, token); }
             catch (OperationCanceledException) { throw; }
             catch { warnings.Add("DSH 提供商或凭据未完成导出；需要匹配的 Node 与 DSH 运行组件。已继续导出其他有效内容。"); }
             if (captured != null)
@@ -56,13 +59,14 @@ namespace DeepSeekHarnessLauncher.Backup
                 files[ProvidersPath] = captured["providers"].ToJsonString();
                 files[CredentialsPath] = captured["credentials"].ToJsonString();
             }
-            else if (!String.IsNullOrEmpty(context.DeepSeekApiKey))
+            else if (context.OfficialCredentialSnapshotKnown)
             {
                 // The launcher key is already decrypted by the real platform store
                 // in the detached context. No DPAPI blob or device identity leaves it.
-                files[CredentialsPath] = new JsonObject { ["version"] = 1, ["officialRef"] = "DEEPSEEK_API_KEY",
-                    ["refs"] = new JsonObject(), ["records"] = new JsonObject(), ["portableFiles"] = new JsonObject(),
-                    ["launcherDeepSeekKey"] = context.DeepSeekApiKey }.ToJsonString();
+                var credentials = new JsonObject { ["version"] = 1, ["officialRef"] = "DEEPSEEK_API_KEY",
+                    ["refs"] = new JsonObject(), ["records"] = new JsonObject(), ["portableFiles"] = new JsonObject() };
+                if (!String.IsNullOrEmpty(context.DeepSeekApiKey)) credentials["launcherDeepSeekKey"] = context.DeepSeekApiKey;
+                files[CredentialsPath] = credentials.ToJsonString();
             }
             return files;
         }
@@ -81,16 +85,10 @@ namespace DeepSeekHarnessLauncher.Backup
             catch { warnings.Add("DSH 凭据元数据无效，已保留原始文件并跳过恢复。"); }
             try
             {
-                string key = native?["credentials"]?["deepseek"]?["key"]?.GetValue<string>();
-                key ??= credentials?["launcherDeepSeekKey"]?.GetValue<string>();
-                string reference = credentials?["officialRef"]?.GetValue<string>() ?? "DEEPSEEK_API_KEY";
-                key ??= credentials?["refs"]?[reference]?.GetValue<string>();
-                if (key != null)
-                {
-                    if (key.Length == 0 || key.Length > 65536 || key.Any(character => character is '\0' or '\r' or '\n'))
-                        throw new IOException("Invalid credential.");
-                    plan.DeepSeekApiKey = key;
-                }
+                plan.OfficialCredential = DymOfficialCredentialIntent.FromDocuments(native, credentials);
+                // Retained for old consumers. Null alone is no longer a no-op:
+                // callers must inspect OfficialCredential.Known/Absent.
+                plan.DeepSeekApiKey = plan.OfficialCredential.Key;
                 if (native?["providers"] is JsonArray providers && providers.Count <= 128)
                     plan.ProviderOrder = providers.Select(item => item?["dshRoute"]?.GetValue<string>() ?? item?["id"]?.GetValue<string>()).ToArray();
             }
@@ -109,7 +107,7 @@ namespace DeepSeekHarnessLauncher.Backup
                 catch (OperationCanceledException) { throw; }
                 catch { warnings.Add("跨端 DSH 提供商、凭据或兼容会话尚待恢复：缺少匹配组件或恢复失败。原始 Android 数据已保留，可安装组件后重新导入。"); }
             }
-            if (context == null && (plan.PcPreferences != null || plan.DeepSeekApiKey != null || plan.ProviderOrder != null))
+            if (context == null && (plan.PcPreferences != null || plan.OfficialCredential.Known || plan.ProviderOrder != null))
                 warnings.Add("跨端偏好与凭据已保留，需从启动器的备份页面重新导入后应用。");
             return plan;
         }
@@ -133,7 +131,7 @@ namespace DeepSeekHarnessLauncher.Backup
                 throw new IOException("Node component is unavailable.");
             string scripts = Path.Combine(DymArchive.GetWritableCacheRoot(), "PortableAdapter");
             Directory.CreateDirectory(scripts);
-            foreach (string name in new[] { "dym-portable.mjs", "dym-persistence.mjs", "dym-configuration.mjs" })
+            foreach (string name in new[] { "dym-portable.mjs", "dym-persistence.mjs", "dym-configuration.mjs", "dym-official-selection.mjs" })
             {
                 string target = Path.Combine(scripts, name);
                 EnsureOwned(scripts, target);

@@ -74,7 +74,7 @@ namespace DeepSeekHarnessLauncher
         private const double IndicatorScaleFrom = 0.6;
         private const int ResultSwapDurationMs = 220;
 
-        /// <summary>结果（绿勾 / 红叉）停留 3 秒再向右滑出。</summary>
+        /// <summary>所有结果及自动收起通知停留 3 秒再向右滑出。</summary>
         private const int ResultHoldSeconds = 3;
 
         private const byte SuccessGreenR = 0x10;
@@ -324,6 +324,8 @@ namespace DeepSeekHarnessLauncher
                 CompositionTarget.Rendering -= OnFirstFrameRendered;
                 CompositionTarget.Rendering -= OnNoticeRendered;
                 _firstFrameTimer?.Stop();
+                StopResultTimer();
+                _slideTimer?.Stop();
                 LauncherAppearance.Unregister(_window);
                 _closed = true;
             };
@@ -579,7 +581,7 @@ namespace DeepSeekHarnessLauncher
                 || !_window.AppWindow.IsVisible || _noticeId == _displayedNoticeId) return;
             _displayedNoticeId = _noticeId;
             NoticeDisplayed?.Invoke(_noticeId);
-            if (_noticeAutoDismiss) StartResultTimer(InfoOutcome.Information);
+            if (_noticeAutoDismiss) StartResultTimer();
         }
 
         /// <summary>cubic-bezier(0.16, 1, 0.3, 1)：快进慢收，跟系统弹窗的曲线感一致。</summary>
@@ -760,7 +762,7 @@ namespace DeepSeekHarnessLauncher
             {
             }
 
-            StartResultTimer(outcome);
+            StartResultTimer();
         }
 
         /// <summary>
@@ -999,6 +1001,8 @@ namespace DeepSeekHarnessLauncher
                 try
                 {
                     _state = WindowState.Update;
+                    StopResultTimer();
+                    ResetIndicator();
                     _bar.Visibility = Visibility.Visible;
                     if (!string.IsNullOrEmpty(title))
                     {
@@ -1228,31 +1232,34 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        private void StartResultTimer(InfoOutcome outcome)
+        private void StartResultTimer()
         {
-            if (_resultTimer == null)
-            {
-                _resultTimer = _dispatcher.CreateTimer();
-                _resultTimer.IsRepeating = false;
-                _resultTimer.Tick += delegate
-                {
-                    StopResultTimer();
-                    CloseAnimated();
-                };
-            }
-
             StopResultTimer();
-            _resultTimer.Interval = TimeSpan.FromSeconds(outcome == InfoOutcome.Information ? 8 : ResultHoldSeconds);
+            _resultTimer = _dispatcher.CreateTimer();
+            _resultTimer.IsRepeating = false;
+            _resultTimer.Tick += OnResultTimer;
+            _resultTimer.Interval = TimeSpan.FromSeconds(ResultHoldSeconds);
             _resultTimer.Start();
+        }
+
+        private void OnResultTimer(DispatcherQueueTimer sender, object args)
+        {
+            if (_closed || !ReferenceEquals(sender, _resultTimer)
+                || (_state != WindowState.Result && !(_state == WindowState.Notice && _noticeAutoDismiss))) return;
+            StopResultTimer();
+            CloseAnimated();
         }
 
         private void StopResultTimer()
         {
+            var timer = _resultTimer;
+            _resultTimer = null;
             try
             {
-                if (_resultTimer != null && _resultTimer.IsRunning)
+                if (timer != null)
                 {
-                    _resultTimer.Stop();
+                    timer.Stop();
+                    timer.Tick -= OnResultTimer;
                 }
             }
             catch

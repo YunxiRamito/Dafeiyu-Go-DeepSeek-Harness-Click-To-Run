@@ -374,7 +374,8 @@ try
         if (Directory.Exists(storeFixture)) Directory.Delete(storeFixture, true);
     }
 
-    Console.WriteLine($"PASS {checks} official-plugin checks; offline, no node, no real profile writes.");
+    SkillPathChecks.Run(root, Check);
+    Console.WriteLine($"PASS {checks} official-plugin/skill-path checks; offline, no node, no real profile writes.");
 }
 finally
 {
@@ -402,6 +403,7 @@ namespace DeepSeekHarnessLauncher
         public string DshRoot { get; set; }
         public string UpdateSource { get; set; }
         public string MirrorSource { get; set; }
+        public List<string> SkillRoots { get; set; } = new();
     }
 
     // 只编译了 DshPluginCliService；这些替身保证它不会意外发起真实操作。
