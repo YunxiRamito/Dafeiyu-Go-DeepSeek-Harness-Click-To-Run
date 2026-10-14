@@ -74,7 +74,7 @@ namespace DeepSeekHarnessLauncher
         private const double IndicatorScaleFrom = 0.6;
         private const int ResultSwapDurationMs = 220;
 
-        /// <summary>所有结果及自动收起通知停留 3 秒再向右滑出。</summary>
+        /// <summary>普通结果停留 3 秒，信息及自动收起通知停留 8 秒再向右滑出。</summary>
         private const int ResultHoldSeconds = 3;
 
         private const byte SuccessGreenR = 0x10;
@@ -581,7 +581,7 @@ namespace DeepSeekHarnessLauncher
                 || !_window.AppWindow.IsVisible || _noticeId == _displayedNoticeId) return;
             _displayedNoticeId = _noticeId;
             NoticeDisplayed?.Invoke(_noticeId);
-            if (_noticeAutoDismiss) StartResultTimer();
+            if (_noticeAutoDismiss) StartResultTimer(InfoOutcome.Information);
         }
 
         /// <summary>cubic-bezier(0.16, 1, 0.3, 1)：快进慢收，跟系统弹窗的曲线感一致。</summary>
@@ -762,7 +762,7 @@ namespace DeepSeekHarnessLauncher
             {
             }
 
-            StartResultTimer();
+            StartResultTimer(outcome);
         }
 
         /// <summary>
@@ -1232,13 +1232,13 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        private void StartResultTimer()
+        private void StartResultTimer(InfoOutcome outcome)
         {
             StopResultTimer();
             _resultTimer = _dispatcher.CreateTimer();
             _resultTimer.IsRepeating = false;
             _resultTimer.Tick += OnResultTimer;
-            _resultTimer.Interval = TimeSpan.FromSeconds(ResultHoldSeconds);
+            _resultTimer.Interval = TimeSpan.FromSeconds(outcome == InfoOutcome.Information ? 8 : ResultHoldSeconds);
             _resultTimer.Start();
         }
 

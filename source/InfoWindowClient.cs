@@ -73,7 +73,7 @@ namespace DeepSeekHarnessLauncher
 
         internal bool IsClosed
         {
-            get { return _closed || (_showingResult && (DateTime.UtcNow - _resultUtc).TotalSeconds > _resultHoldSeconds + 0.3); }
+            get { return _closed || (_showingResult && _resultHoldSeconds != 8 && (DateTime.UtcNow - _resultUtc).TotalSeconds > _resultHoldSeconds + 0.3); }
         }
         internal bool IsShowingResult { get { return _showingResult; } }
         internal bool IsSuppressed => _suppressed;
@@ -540,17 +540,18 @@ namespace DeepSeekHarnessLauncher
                 if (!CanDisplay(_progressFlow)) return;
                 StopResultCloseTimer();
                 _resultUtc = DateTime.UtcNow;
-                _resultHoldSeconds = 3;
+                _resultHoldSeconds = outcome == InfoOutcome.Information ? 8 : 3;
                 _showingResult = true;
                 Send("Complete", title, detail, -1, outcome.ToString(), playChime ?? outcome == InfoOutcome.Success);
                 long generation = _resultGeneration;
-                // The helper holds every result for 3 seconds. Allow its slide-out
-                // before the client fallback closes this result's session.
+                // Information lifetime starts when the helper displays it; allow
+                // helper startup before the fallback closes this result's session.
+                int closeDelayMs = outcome == InfoOutcome.Information ? 18000 : 3500;
                 _resultCloseTimer = new Timer(_ =>
                 {
                     lock (_resultLifetimeSync)
                         if (!_closed && _showingResult && _resultGeneration == generation) Close();
-                }, null, 3500, Timeout.Infinite);
+                }, null, closeDelayMs, Timeout.Infinite);
             }
         }
         private void StopResultCloseTimer()

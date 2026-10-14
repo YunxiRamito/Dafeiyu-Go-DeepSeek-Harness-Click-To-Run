@@ -28,6 +28,8 @@ void CheckCompletion(Action<InfoWindowClient> operation, string outcome, bool pl
     Check(value.GetProperty("PlayChime").GetBoolean() == playChime, name + " explicit chime policy");
     Check((int)typeof(InfoWindowClient).GetField("_started", privateInstance).GetValue(client) == 0,
         name + " does not start helper without Show");
+    Check((double)typeof(InfoWindowClient).GetField("_resultHoldSeconds", privateInstance).GetValue(client)
+        == (outcome == "Information" ? 8 : 3), name + " preserves the historical result lifetime");
     client.Close();
 }
 
@@ -52,12 +54,12 @@ CheckCompletion(client => client.CompleteService(true, false, "started"), "Succe
 DeepSeekHarnessLauncher.Program.Settings.NotificationMuted = false;
 var replyClient = Client();
 replyClient.NotifyFeedbackReply("反馈有新回复", "收到");
-Check((double)typeof(InfoWindowClient).GetField("_resultHoldSeconds", privateInstance).GetValue(replyClient) == 3,
-    "feedback reply uses the three-second result lifetime");
-typeof(InfoWindowClient).GetField("_resultUtc", privateInstance).SetValue(replyClient, DateTime.UtcNow.AddSeconds(-2));
-Check(!replyClient.IsClosed, "reply stays active within the three-second display lifetime");
+Check((double)typeof(InfoWindowClient).GetField("_resultHoldSeconds", privateInstance).GetValue(replyClient) == 8,
+    "feedback reply holds for eight seconds");
 typeof(InfoWindowClient).GetField("_resultUtc", privateInstance).SetValue(replyClient, DateTime.UtcNow.AddSeconds(-4));
-Check(replyClient.IsClosed, "reply expires after the display and slide-out fallback lifetime");
+Check(!replyClient.IsClosed, "reply stays active beyond generic result lifetime");
+typeof(InfoWindowClient).GetField("_resultUtc", privateInstance).SetValue(replyClient, DateTime.UtcNow.AddSeconds(-9));
+Check(!replyClient.IsClosed, "reply waits for helper exit or the eighteen-second fallback instead of expiring from its timestamp");
 replyClient.Close();
 Check(replyClient.IsClosed, "closed reply allows the next queued notification");
 

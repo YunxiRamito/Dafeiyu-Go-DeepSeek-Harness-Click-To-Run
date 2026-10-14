@@ -458,7 +458,11 @@ try {
       [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty,'ServerMetricsStatusText'))
     Check ($null -ne $serverPage -and -not $serverPage.Current.IsOffscreen) 'online presence navigates directly to the server metrics page'
     $serverSettings.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern).Close()
-    Start-Sleep -Seconds 5
+    $deadline = [datetime]::UtcNow.AddSeconds(20)
+    do {
+     $helpers = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($process.Id)" | Where-Object Name -eq 'DafeiyuGo.Info.exe')
+     if ($helpers.Count) { Start-Sleep -Milliseconds 200 }
+    } while ($helpers.Count -and [datetime]::UtcNow -lt $deadline)
    }
    Confirm-Foreground $window $round
    $originalBounds = $window.Current.BoundingRectangle
