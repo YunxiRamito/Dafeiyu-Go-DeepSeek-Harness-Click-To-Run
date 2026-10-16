@@ -76,6 +76,7 @@ namespace DeepSeekHarnessLauncher
     }
     internal sealed class AriesProviderMutation
     {
+        public string MessageKind { get; set; } = String.Empty;
         public string Fingerprint { get; set; } = String.Empty;
         public string Key { get; set; } = String.Empty;
         public string Body { get; set; } = String.Empty;

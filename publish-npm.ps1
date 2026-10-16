@@ -29,7 +29,7 @@ function Test-ReleaseTarball {
     $zipCount = 0; $packageCount = 0
     try {
         while ($null -ne ($entry = $reader.GetNextEntry())) {
-            if ($entry.Name -eq "package/DeepSeekHarness-$Version.zip") {
+            if ($entry.Name -eq "package/Dafeiyu-GO $Version.zip") {
                 if ($null -eq $entry.DataStream) { throw 'ZIP is not a regular tar entry.' }
                 $sha = [Security.Cryptography.SHA256]::Create()
                 try { $actual = [Convert]::ToHexString($sha.ComputeHash($entry.DataStream)).ToLowerInvariant() }
@@ -127,7 +127,7 @@ function Invoke-LocalNpmPublish {
     $proofDir = Join-Path (Split-Path $ReceiptPath -Parent) ('mirror-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
     try {
-        $zipName = "DeepSeekHarness-$($receipt.version).zip"
+        $zipName = "Dafeiyu-GO $($receipt.version).zip"
         Write-ReleaseJson (Join-Path $stage 'package.json') ([ordered]@{
             name = $PackageName; version = $receipt.version; description = 'Dafeiyu-Go launcher distribution'
             license = 'MIT'; files = @($zipName)

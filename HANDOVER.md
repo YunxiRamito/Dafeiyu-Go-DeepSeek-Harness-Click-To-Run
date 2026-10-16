@@ -1,5 +1,38 @@
 # 交接：大肥鱼Go / Dafeiyu-Go Launcher
 
+## 2026-10-16 用户反馈修复：连接、原生窗口与本地交付
+
+本节记录新的功能修复，取代下方历史补录中“本次只改文档”的状态。本轮没有发布、推送或替换真实安装；公开 1.8.0 不因本地候选自动改变。主报告 `../Temp_SetupandLauncher/Feedback-20261016/REPORT.md` 是最终构建、原生复核、打包摘要和一键发布演练结果入口，不能用旧 Launcher 目录或旧 12 项安装测试代替。用户最后要求配对请求窗全程置顶，待允许、拒绝、关闭或撤回后结束；此要求优先于旧测试的非永久 topmost 断言。统一窗口名为“提示窗”，新增轻量 PromptWindow 承载外观、图标、标题区与置顶，配对 wrapper 保留独立审批与关闭保护。
+
+1. 连接随启动自动恢复已配置服务器与既有配对；删除独立同步/网页广播开关和任意文件夹。schema2 表示共享 DSH registry 工作区、sessions 对话和网页，默认启用，不镜像工作区文件。真实认证插件消息才置业务能力 ready，45 秒 TTL，15 秒刷新，回收旧成功 journal。
+2. 独立设备申请弹窗在设置关闭时仍可出现，只显示“有新的设备【设备名称】请求配对，是否允许？”和允许/拒绝；关闭不批准。绑定 request/node/group/generation/epoch/key/name/deadline，服务锁内刷新重核，去重和撤回保护保留。用户新增要求配对窗使用应用一致的 WinUI 3 自定义标题栏和现有图标，包含标题区和系统窗口图标；最终以新构建原生验收为准。
+3. `ConnectionPluginInstallation` 实际调用随包嵌入 helper 和固定官方 DSH 0.2.1-alpha.1 profile writer，离线/ignore-scripts 安装 web profile。Connect 0.3.1 为 205295 bytes，SHA-256 `8793C4066A7DF2E15911322090671E4F1F30BC02093FCDA55D74A0A59D835D65`，与 Android 同包。0.3.0 可升级；外来来源、篡改及不兼容 SDK 显式拒绝。配置失败保留 `.launcher-connect/profile-recovery` 的原始五文件快照，profile lease 最多 30 秒，坏包失败不阻断普通启动。不是整个 node_modules 自动回滚。
+4. 退出、停止、重启直接执行，保留互斥与真实服务清理。`WindowForeground` 恢复最小化并短暂 topmost 后 NOTOPMOST；信息/公告 keepTopmost。二次显式启动授予前台权限，不模拟 Alt、AttachThreadInput 或持续抢焦点。
+5. 主窗口三个同款菜单为“选项 / 编辑 / 关于”；设置和三类更新在选项，关于复用设置 About；F5/Ctrl+F5 统一 Reload，网页捕获取消默认避免双导航。加载行 Auto + ProgressBar.MinHeight=0，idle 时内容紧贴标题栏，主题色细条消失。
+6. 下载中心动态创建的详情/时间/错误 TextBlock 使用元素级 ThemeResource，随当前窗口深浅主题改变。搜索移除整块黄色背景和延时还原竞争，只保留祖先展开、动画滚动与程序焦点。
+7. 拖入使用 HWND 限定 HDROP→可信 loopback WebView CDP→既有附件流程；普通权限文件打开、拒 UNC/device/ADS/reparse/目录，祖先和文件只读租约，每文档 64 文件/1GiB，导航/关闭释放。17 项安全回归和真实 native File 通过；用户已反馈实测拖入可用，提权 linked-token/UAC 跨级未自动验。
+8. 已有生命周期 60、InfoWindowClient 123、原生信息窗 30、主窗 foreground 13、菜单/F5/idle gap 33、UIA 菜单 39、完整旧菜单/startup 173 项通过。实际 SDK/pnpm 安装 11，插件全套 147；生产最终 Core 的 15 项安装回归必须与 `plugin-install/csharp-report.json` 的 coreSha256 绑定。全部源输入、构建目录与本地 ZIP 的最终收据保存在主报告目录。
+
+本地候选仍为 1.8.0，预定 ZIP `../Temp_SetupandLauncher/Feedback-20261016/DeepSeekHarness-1.8.0-feedback-local.zip`；只有最终 package receipt 生成且各项一致时才视为已封包。未来正式发版入口在项目根 `一键发布.cmd`，默认下一未发布 patch，由 `tools/release/release.config.json` 控制；脚本具体演练状态以最终报告为准。
+
+未完成的验收：公网 PC/Android 真机、真实迁移/更新/FolderPicker 故障机、跨 UAC 拖放。Aries Application 尚无服务端时间 TTL，不能把本地到期或服务终态描述成服务器定时失效。Windows 可按前台锁规则拒绝激活。所有本轮隔离证据位于 G 盘；首次脚本演练的 SDK 曾输出创建 HTTPS 开发证书，后续已禁止自动生成，不删除用户既有证书。
+
+## 2026-10-16 本轮交接补录：三秒仅限主窗口信息栏
+
+本节补录 2026-10-14 已完成的修正与发版，不代表重新构建、重测、线上查询或新发版。详细发布参数和历史过程见紧随本节的正式发布记录。
+
+1. 用户最后澄清的对象是 **主 DSH 窗口标题栏下面的信息栏**，不是独立 InfoHost，也不是左下角启动日志。
+2. `source/DshWindow.cs` 的 `SetStatus` / `DismissStatusLaterAsync` 保留非 busy 提示 3000ms 后 260ms 淡出并折叠；旧 version / 旧动画完成回调不能关闭新提示，busy 不按三秒自动隐藏，关闭窗口取消待执行任务。
+3. `source/InfoWindow.cs` / `InfoWindowClient.cs` 已恢复历史独立信息窗规则：Information 与自动收起通知 8 秒，客户端 Information 兜底 18000ms；普通结果仍为 3 秒、客户端兜底 3500ms。保留 timer generation / dispose 防护。切勿再次把主窗口需求推广到 InfoHost。
+4. 两处回归相应恢复 8 秒断言，新增逐类结果生命周期检查；`tests/Window.Ui.Smoke.ps1` 将 helper 退出等待改为最长 20 秒的条件轮询，不再假定五秒内必须退出。旧 `Integration-20261014/InfoLifetime` 统一三秒结果仅供历史审计。
+5. 修正源码已包含在正式 `v1.8.0`（源码 `dadb0bd`、manifest `cdacde8`、发布交接 `2e546c4`）；最终 ZIP 在 `../Temp_SetupandLauncher/Delivery-Corrected-20261014/DeepSeekHarness-1.8.0.zip`，SHA-256 `3C892CB1ABB23F997842FFE638221AD58BDFD5A47D9A86D02F38E6D1B4A882FB`。GitHub/npm/npmmirror 和公开更新清单在发布时已校验一致，无自动 CI 构建。
+6. 最终实际 Publish、14 组回归、123 IPC、122 bootstrap、6 ownership、verify 与三轮原生窗口 126 项通过。主信息栏专项通过真实延时及旧回调/新提示/busy/关闭取消测试，精确动画边界使用模拟控件，不冒充原生计时测量；完整构建保留既有警告。
+
+后续入口：`../Temp_SetupandLauncher/Delivery-Corrected-20261014/REPORT.md`、`../Temp_SetupandLauncher/Publish-20261014/launcher-publication-receipt.json` 和 `../Temp_SetupandLauncher/StatusBarLifetime-20261014/report.json`。连接完整业务、手机公网、持续同步、官方凭据恢复、真实自更新替换仍有验收或实现缺口，不作已完成声明。
+
+本次只有交接文档补录，无功能代码、构建、安装或发布变更，未自动提交推送。
+
+
 ## 2026-10-14 启动器 1.8.0 本地构建正式发布（信息栏范围已纠正）
 
 用户明确授权按指定原文发布。Release：<https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/tag/v1.8.0>，ID `412700254`；tag 保留指向源码 `dadb0bd576493d36c53be2e1af88baf0c070e456`，manifest 发布提交 `cdacde8`。本机 ZIP `../Temp_SetupandLauncher/Delivery-Corrected-20261014/DeepSeekHarness-1.8.0.zip`，27,603,509 bytes，156 文件，SHA-256 `3C892CB1ABB23F997842FFE638221AD58BDFD5A47D9A86D02F38E6D1B4A882FB`。不使用旧 Delivery-20261014 ZIP。
@@ -13,6 +46,24 @@ GitHub 实际下载及 npm `@yunxiramito/dsh-launcher@1.8.0`、国内 npmmirror 
 最终证据：`../Temp_SetupandLauncher/Publish-20261014/launcher-acceptance.json`、`launcher-publication-receipt.json`；本地新验收 `Delivery-Corrected-20261014/REPORT.md`、`BUILD-REPORT.md`、`Launcher-native-delivery/result.json`，信息栏专项 `StatusBarLifetime-20261014/report.json`。旧统一三秒 InfoLifetime 为历史。未真实执行用户安装/卸载/UAC、自更新替换、完整 Android/公网互联或比较内存测试。共享原仓库的其他改动与 staged 均未重置。
 
 
+## 2026-10-14 19:25 启动器 1.8.0 本地 ZIP 交付
+
+用户要求整理相较 1.7.6 的更新日志、安装器升 1.8.1，并给本地 ZIP/EXE；没有授权线上发布。本轮 `CHANGELOG.md` 新增 1.8.0 待发布段落，保留互联和官方凭据恢复未完成说明，不将 1.7.6 已有能力算作新增。
+
+最终 ZIP `../Temp_SetupandLauncher/Delivery-20261014/DeepSeekHarness-1.8.0.zip`，27,603,308 bytes，SHA-256 `62C1E33AF54D82D1448F815CCE8018293A9EC4B74C824C76F9A892463C3BD7B5`。当前工作树隔离快照执行实际本地 Publish，156 个 ZIP 文件逐项哈希匹配，三个 EXE 均 1.8.0.0。verify 通过（两条既有提醒），产物外层回归 122、更新所有权 6、最终交付原生三轮窗口验收 126 项通过。来源和产物收据、失败诊断边界、更新日志位于上述目录；不替换用户安装，不提交推送或发布。
+
+## 2026-10-14 18:41 主窗口、在线指示与候选整合验收
+
+本轮正式源码已整合授权 PC QA 候选，未完成能力 gates 保留；未发布、推送或提交，不替换公开 1.7.6。详细报告 `../Temp_SetupandLauncher/Integration-20261014/REPORT.md`，互联缺口集中在该目录 `Connection/GAPS-NOTICE.md`。
+
+WinUI 3 + 系统 WebView2 主窗口保留 32 DIP 统一左侧图标/菜单；重启复用正式服务生命周期并显示准备画面，三个更新菜单仅检查、不打开设置。加载标题栏同步主题/材质，中心为鲸鱼/扫光、Dafeiyu-GO、启动中；左下英文日志逐条追加、旧条渐隐、最新保留、隐藏滚动条且长路径换行。配对下方直接显示设备详情，不再独立 tab。
+
+右上在线指示复用设置 DeveloperCenter presence 和同一轮询器；主窗口/设置页共同订阅，点击直接打开 ServerMetrics。失败传 null，隐藏整个绿点和数字，下一次有效结果恢复；正式人数没有硬编码。信息窗完成结果三秒后滑出，客户端 3.5 秒兜底可释放且有 generation 保护；新内容撤销旧计时，持久交互通知保留自身生命周期。慢 helper 启动可能受兜底缩短实际展示时间。
+
+本地入口 `../Temp_SetupandLauncher/Integration-20261014/Launcher/DeepSeek Harness.exe`；同目录 `build-source-receipt.json` 保存最终来源/产物哈希。Core/引导器完整 Release win-x64 构建 0 errors / 40 既有 warnings，InfoHost 0 warnings / 0 errors。173 窗口专项、83 策略、21 SDK enum、12 样式、248 设置矩阵、22 最终连接布局、63 信息窗计时断言通过。三种材质/主题/外观原生窗口 smoke 123 项通过，含服务器设置跳转、更新菜单、小窗、准备画面、真实 helper 收尾、正常关闭及 WebView2 释放，证据在 `WindowUi/smoke-final/result.json` 与截图。
+
+原生重启使用隔离回调，不冒充生产服务完整重启测试；无实际 Android、公网 TLS、完整对话业务或真实自更新验收。主窗口/WebView2 私有提交末次约 507/567/597 MiB，不含 Node，不作为低内存或长时稳定结论。所有本轮产物在 G 盘，未改日常身份和 profile。
+
 ## 2026-10-14 Android 主题链路对应的手机网页包 0.1.6
 
 手机主题接续任务将 canonical 及 PC `assets/dafeiyu-mobile-ui` 更新为 `dafeiyu-mobile-ui@0.1.6`，108,166 bytes，SHA-256 `bbf352c83c4da7e6d6f1fd5b975dd91735e0c41cefaed7a1bd440053ec4ff2a3`；和 Android 正式 0.1.28 内嵌包／manifest 字节一致。普通 PC 页面不启用手机主题，Android 明确宿主上下文才接收受限外观数据；Connect 冻结包、真实权限和任务协议未改变。
@@ -23,26 +74,141 @@ GitHub 实际下载及 npm `@yunxiramito/dsh-launcher@1.8.0`、国内 npmmirror 
 
 Android真实硬件WebView的浅／暗主题、恢复默认、设置往返、stop/resume和原数据保护共11项通过；正式Palette→正式Android主题页实际交接通过，详情以Android HANDOVER为准。该证据不替代PC真实窗口启动或Aries在线网页端到端测试，远程web/files/archive gate仍false。当前PC工作树有其他任务未提交文件；手机主题源码发布须选择性保留，不得把其他任务一并提交。
 
-## 2026-10-13 启动器 1.7.6 小修已发布
+## 2026-10-14 1.8.0 窗口模式与启动器自动更新验收（未发布）
 
-用户明确要求先发布 1.7.6，连接和安卓版制作中；1.8.0 保留至连接完成再发布。隔离工作区从稳定 `origin/main` 的 `17360ce` 建立，未带入原工作区未提交的 1.8.0 连接/同步/归档功能。稳定基线无 Connections 导航、搜索注册、页面路由或 Aries 启动集成，故无需在 1.8.0 源码中删掉功能。
+1.8.0 仍只做本地候选，没有发布 GitHub。窗口模式已确认是 WinUI 3 原生 `Microsoft.UI.Xaml.Window` + 系统 WebView2，不是 Electron；标题栏改为单行 WinUI 自定义标题栏，刷新/浏览器按钮与系统窗口按钮同一行，移除了原先重复的白色网页工具栏。窗口使用独立 WebView2 profile、内部 loopback 限制、外链浏览器回退、权限/下载处理及关闭后进程清理。
 
-- 本次修复启动外层及组件页对用户自行安装的 Windows App Runtime 1.8 的漏检，统一读取全局/当前用户包注册，保留最低版本和 x64 架构要求；组件页不再依赖枚举权限受限的 WindowsApps。
-- 本次启动器版本为 1.7.6 / 1.7.6.0，包含信息窗口与启动外层的版本资源；保留原鲸鱼图案并压缩图标资源。
-- 用户指定日志仅三行，见 CHANGELOG 1.7.6；Release 和公开更新清单必须保持相同文案。
-- 用户后续明确取消 GitHub CI、改为本机验收发布；该指令覆盖旧文档的 CI 产物限制。run `38352071647` 已确认取消；本次发布使用已验收本机包。后续流程为本机回归、构建、校验、npm/镜像校验、GitHub 下载校验及清单最后更新，CI 仅保留手动验证。
-- 稳定分支原 UpdateIntegrity 回归桩缺少 production Download 的 optional retries/stateChanged 参数；仅同步测试桩签名，13 组既有 CI 回归共 1197 项通过，未更改下载器生产行为。
-- 用户后续明确要求将环境检测修复也合并到原 1.8.0 源码；只合并检测与对应构建/测试接线，保留 1.8.0 版本及连接功能，不发布 1.8.0 启动器。
+- 最终本地启动器：`../Temp_SetupandLauncher/WindowAndExport-20261013/Launcher-Final5/`。
+- 本地 ZIP：`../Temp_SetupandLauncher/WindowAndExport-20261013/DeepSeekHarness-1.8.0-window-export-local-20261014.zip`，27,387,803 字节，SHA-256 `28A638EEAF346C995E68A44C2BFAB080A4FF8C23E9C7F2638B36C925CFC19CB2`；155 个文件逐项 SHA-256 匹配。
+- 真实窗口 smoke：`WindowSmoke-Final5-Workspace-20261014-004143/result.json`，93/93 通过。浅色/深色/浅色三轮均确认 WinUI 3 模块、WebView2、真正对话输入框、最小化/还原/最大化、拖拽、刷新、截图和关闭释放；每轮 7 个进程，关闭后 WebView2 子进程释放。私有工作集约 281--294 MiB，不能据此承诺固定内存节省比例。
+- 图表浅色文字回归 120/120 通过；安装器官方导出自解压 37/37，文件夹图标和界面截图通过；安装器导出 UI 中文/英文各 31/31 通过。安装器本地候选 `Installer-Final2/DSH-Installer-Setup.exe`，11,787,494 字节，SHA-256 `1F48D2A9110D99C58AE5B06F9D16364B4B6623BD102C712757FAD7FAF74D802E`。
+- 自动更新根因已修复：`EveryStart` 首次启动强制读取新 Release，不复用旧的 12 小时元数据缓存；失败不推进成功时间戳；安装器和卸载器原子替换并可回滚；安装器版本读取校验所属 DSH 和真实 `components/install-manifest.json`，切换 DSH 不转移旧安装所有权。
+- 生产代码隔离自动更新：官方源 10/10、CDN 加速 10/10；两次均使用 `manual=false`，从旧 1.7.3 缓存和旧安装器开始，真实读取 Release、下载、SHA-256 校验并替换隔离安装器和卸载器。下载设置保留三种选项：大陆 CDN 加速、GitHub 官方源、后端服务器加速；后端源严格不回退到其他源。
+- 后端源元数据读取正常，但 v1.8.0 安装器冷缓存请求只读观察到 `202 ready=false` 后转 `502`，容器健康且缓存没有该资产；服务端填充任务不公开异常阶段，诊断记录见 `../Temp_SetupandLauncher/WindowAndExport-20261013/BackendAssetDiagnosis-20261014/REPORT.md`。这条线路尚不能称为实网安装器下载通过，客户端没有掩盖该限制。
+- 回归：Startup 17、InstallerSourceDefaults 70、Window policy 44、UpdateIntegrity 80、UpdateMetadata 149、DownloadTasks 全部通过；安装器注册所有权隔离 31 项通过。自动更新成功不能用用户手动检查代替，本节证据使用自动分支。
 
-发布前验收：本地 Release/verify 通过（两条既有提醒）；真实 WinUI 6 项导航/路由/搜索检查及两张截图通过，未公开连接。编译后的 production 外层检测 122 项、production 组件检测 47 项及 verify 检测 smoke 通过，本机识别 `8000.994.2142.0`；更新所有权 6 项通过。真实用户故障机器未复测，未执行浏览器运行库安装、真实 UAC、DSH 服务启动或用户配置变更。
+## 2026-10-14 Android 手机网页插件启动接线
 
-正式发布：`https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/tag/v1.7.6`，Release id `411324734`，资产 id `636039366`；tag 保留指向源码提交 `65cdc52eadc5c8c40186bb08bde09bca5ea57142`，没有移动。资产 `DeepSeekHarness-1.7.6.zip`，24,486,857 字节，SHA-256 `129C63666D3A53E42C574E7F4658A871EF84B5456650571B3DC46D3930679354`。121 个 ZIP 文件与已验收构建逐项一致；GitHub 下载摘要及 API digest 均一致。
+Android对齐任务已授权必要跨仓库接线；本轮仍为PC开发1.8.0，未发布Windows包，未改变稳定1.7.6。`MobileUiPluginService` 调用嵌入的 `MobileUiPluginOperation.mjs`，在自有DSH服务启动前准备明确的web profile；运行服务/无法确认既有profile时不写入或重启。手机皮肤为普通PC可选能力，准备失败如实记录，普通PC服务继续；不能由磁盘验证推断实时页面或开放远程网页。
 
-`@yunxiramito/dsh-launcher@1.7.6` 已公开，npm 和 npmmirror tarball 均完整下载并验证内嵌 ZIP 与 GitHub 一致，tgz SHA-256 均为 `B555BDF8DAEE0AEC7CE25E25FAD4A0805B2F772E3095895E76E52FBE5B87EAC5`。国内地址：`https://registry.npmmirror.com/@yunxiramito/dsh-launcher/-/dsh-launcher-1.7.6.tgz`。`manifest.json` / `manifest-1.7.6.json` 在镜像验证后更新并推送，提交 `ce5657d`；Release 和清单使用用户指定三行日志。npm 发布受理后曾延迟约五分钟公开，不可将命令成功或镜像同步任务 success 当成新版本可下载。
+固定 `dafeiyu-mobile-ui@0.1.5` **94,067 bytes / SHA-256 `52da8726d0f957ed2f4ca29563684fe34e6fbde359587b762fa25c2ddce8f18e`** 随PC assets交付，和Android冻结包/manifest一致。缓存位于owning DSH `.launcher-mobile-ui/packages/<sha>/`；官方SDK 0.2.1-alpha.1（MIT、commit `5badb15009ae1756c3afe0ae0cef1faafc290ccc`）的package.json writer锁内重新核外来依赖、安装层shadow、12文件、Node/SDK解析及升级凭据。保留未知字段、patch、bundle顺序及用户禁用，不调用启用命令或重启服务。共享插件lease按profile路径串行；临时路径/包管理缓存显式位于G盘。
 
-证据与独立发布工作区位于 `Temp_SetupandLauncher/Launcher-1.7.6-20261013/`（相对 Dafeiyu-Go 父项目），见 `REPORT.md` 及 `Github-Verified` / `Npm-Verified` / `Npmmirror-Verified`。原 1.8.0 完整构建位于 `Original180-RuntimeFix-Verify/`，仅验证、不发布。
+证据在 `../Temp_SetupandLauncher/MobileUiPlugin-20261014/`：C#生产service/lease与实际嵌入helper **12/12 PASS、strict编译**；固定Node24.21.0/SDK/pnpm10.34.5真实离线profile **10/10 PASS**；实际SDK writer竞争 **2/2 PASS**，覆盖等待期间用户停用和外来依赖写入后的重新核验。PC整仓Release build **40.74s、0错误、40警告**；实际 `DeepSeek Harness.Core.dll` 的helper与来源及输出0.1.5包/manifest一致，见 `built-assets-receipt.json`。没有启动真实用户服务或修改用户profile，8787/8791保持。真实WinUI完整启动、Android/Aries网页隧道和用户视觉待验收，生产web/files/archive gates仍false；本轮源码尚未提交推送。Android正式0.1.27已在独立QA MainActivity通过27项，用户决定本轮不推PKB110，详见Android HANDOVER。
 
-本地发版流程已改造，见 `docs/LOCAL-RELEASE.md`：`release.ps1` 默认本机完整验收，`-Publish` 显式发布；已有验收使用 `publish-release.ps1 -ReceiptPath` 续跑。只构建已提交快照，14 组回归、更新所有权、编译后的运行库检测及 verify 均为必跑；依赖优先复用非 C 盘已有缓存。npm processing 有持久化发布记录，完整验证 npm/镜像/GitHub 内容后才生成清单；标签和不同哈希资产不可覆盖，不自动 stage/rebase/force。GitHub workflow 仅保留手动验证，移除 tag 触发和发布步骤。脚本语法、离线流程边界 smoke（全部外部操作为替身）及真实已下载 tgz 校验通过，证据 `local-release-smoke.log`。流程改造未改产品源码，不为新脚本重复执行整套真实产品回归或二次发布同版本。
+## 2026-10-13 运行库检测回合并与 1.7.6 本机发布
+
+用户要求先发稳定启动器 1.7.6，连接和安卓版完成后再发 1.8.0；随后明确要求取消 GitHub CI，采用本机回归和发布。1.7.6 使用独立工作树 `../Temp_SetupandLauncher/Launcher-1.7.6-20261013/worktree`，不携带当前工作区未完成的连接功能。当前 1.8.0 源码未发布。
+
+- Windows App Runtime 检测修复已回合并到此 1.8.0 工作区：外层和组件页共用 `WindowsAppRuntimeDetector.cs`，独立读取全局及当前用户注册，不依赖 WindowsApps 枚举权限；保留架构和最低版本校验。
+- 原 1.8.0 外层 122 项及组件检测 47 项通过，完整 Release 构建成功，版本仍为 1.8.0.0。检测相关构建/验证/测试接线同步，连接、同步、归档、UI 文件与任务前快照一致。
+- 1.7.6 本机包：`../Temp_SetupandLauncher/Launcher-1.7.6-20261013/DeepSeekHarness-1.7.6.zip`，24,486,857 字节；SHA-256 `129C63666D3A53E42C574E7F4658A871EF84B5456650571B3DC46D3930679354`。121 个 ZIP 文件与已验收构建逐项一致，三个可执行程序版本均为 1.7.6.0。
+- 既有 13 组回归 1197 项、外层 122 项、组件 47 项、更新所有权 6 项、真实 WinUI 导航/路由/搜索 6 项及截图通过。真实故障用户机器未复测。
+- GitHub run `38352071647` 已取消并确认完成；用户最新发布指令覆盖旧文档中“必须使用 CI 产物”的要求。GitHub 正式 Release `v1.7.6` id `411324734`、资产 id `636039366` 已发布，下载校验一致；npm 与 npmmirror 1.7.6 均完整下载验证内嵌 ZIP 一致，清单提交 `ce5657d` 已推 main。详细证据见独立工作树 HANDOVER / 本任务 REPORT。
+- 本机发版流程已同步到本工作区并推送远端：代码提交 `099a757`，合并保留并发公告更新后 main 为 `6bd9e23`。GitHub 仅保留手动验证，推 tag 不再自动发包；`release.ps1` 默认完整本机验收，`-Publish` 发布，已有验收使用 `publish-release.ps1 -ReceiptPath` 续跑。全量脚本离线边界 smoke、真实 1.7.6 tgz 校验和日志原文校验通过；见 `docs/LOCAL-RELEASE.md`。本次 1.7.6 tag 和包未随流程提交移动或重建。
+
+## 2026-10-13 安装器选择、Skill 目录与图标压缩本地包
+
+本节只说明安装器迁移配套的本地编译包；没有发布启动器或更新公开 manifest。其他任务的连接/归档改动保留，本次编译不替代其端到端验收。
+
+- 本地入口：`../Temp_SetupandLauncher/OfficialMigration-20261013/Launcher-180/DeepSeek Harness.exe`，1.8.0.0。
+- ZIP：`../Temp_SetupandLauncher/OfficialMigration-20261013/DeepSeekHarness-1.8.0-migration-local-20261013.zip`，27,258,023 字节；SHA-256 `F29E88922412D9959BB7CCFACEFF138235744DAC0E9BDC3A0C63E47FDFC2EC82`。
+- Release 构建通过，40 条既有警告；verify 通过，两条提醒为注释示例路径和未指定 DSH 目录。ZIP 153 个文件逐项 SHA-256 与编译目录一致。
+- Skill 读取/写入复用 DshPluginCliService.ResolveDshHome，npm 使用所选本体 .dsh/skills，共享 Skill 使用 DSH_AGENTS_HOME 或 ~/.agents/skills。官方内置 office-skills 为独立只读 provider；本轮不直接适配官方启动，仅支持官方用户数据迁移至新 npm 实例。
+- 安装器 schema2 选择按 LauncherRoot/SelectionId 消费一次，尊重后续手动选择；本体切换更新相邻 launcher.json 的有效 Node 路径，仅清理旧本体 API key 缓存。稳定线上 1.7.5 的兼容由安装器精确备份原用户设置后更新根路径完成，运行中不强写。
+- 图案保持：主 ICO 59,483B、Info ICO 22,169B，各9尺寸；PNG 512px，148,387B，原 5,088,686B。不要因 PNG 时间戳重新生成已优化 ICO。来源/Node 62、插件/Skill 115、Windows 原生 ICO 27 帧验证通过。
+- source/Backup 与安装器的 DshDataImportService / DshDataDiscoveryService 已核对一致；迁移包括 sessions/storages/attachments、可携带插件及用户 Skill，保留源和目标冲突项，不迁移根凭据、环境配置及桌面应用包。
+
+综合报告：`../Temp_SetupandLauncher/OfficialMigration-20261013/REPORT.md`。官方真实数据未导入，用户设置和配对身份未改。
+
+## 2026-10-13 Android 对齐接续：归档启动保护
+
+新增 `source/ConnectionArchivePreload.cs`，在 `WinUIProgram.cs` 实际 DSH 启动入口配置固定 Connect包的 `--import`；Provider远程操作白名单加入归档 prepare/commit，未加入bulk可回收方法。helper核 frozen tgz大小/SHA、生产package validator和完整实际安装树，Windows路径转file URL，环境仅固定 owning DSH anchor及private生命周期目录。任何 `archive-deletion.json` 存在均要求已验证保护，缺包/旧包/变更库不得绕过持久删除；可选保护首次未就绪时保留普通DSH能力，不宣称永久删除可用。
+
+helper 已同步冻结 **200,430 bytes / SHA-256 `4f3657730459197835a014b7f7433b44cc652e5b32480cdb37c061b160e75bf2`**，与 Android/PC QA 的 0.3.0 逐字节一致；`../Temp_Android/qa-pc-archive-startup-r3.log` strict **0 warning/0 error、10/10 PASS**。实际 Windows Node24/DSH0.2.1-alpha.1 的 CLI Loader专项 `../Temp_Android/qa/pc-archive-native-precli/run-6aa046a4-9e46-498a-a588-926c53dcb137/result.json` **11 PASS**：真实 zstd JSONL/SQLite 删除、同票据幂等、独立冷 CLI 防复活和损坏/未知 journal 在 CLI 前拒绝，paid=0；没有使用合成 CLI/service。
+
+Android 同包 r12 的实际 PRoot/CLI 专项 **9/9 PASS**，另核对 POSIX session.lock inode/device 保留。上述分别证明实际 Windows/Android 原生服务，不代表用户 WinUI launcher实际启动或 Android/Aries/Host 全链删除已验收。生产 archive/web/files gate 仍 false，feed、真实用户安装和公开提交待本批联调；原配置/身份/未提交工作保留。最新 Android 与公网状态见移动端 HANDOVER。
+
+## 2026-10-13 Android 对齐接续：分块消费回执
+
+Android 对齐请求已授权必要的 PC/Connect 改动与联调；本节只记录这部分新源码，未重新交付 Windows 启动器或修改真实用户身份。新增 `source/AriesProviderBulk.cs`，接入 Provider 与 DPAPI schema 的可选字段。仅 artifact.list/read/close、attachment.write/status 的已认证请求、精确终态 ciphertext、对端加密消费 ACK 及宿主本地 ACK 都匹配才回收相应分块回执；其他任务/prepare/commit/settings 意图保留。消费区间不跨未知或未确认外来消息；旧版 state 缺新字段按空集合读取，不更换设备身份。
+
+`../Temp_Android/qa-pc-bulk-retirement-r3-long.log` 为实际 production 源码 strict **0 warning/0 error + 19 PASS**，使用真实内容签名/加解密、DPAPI和合成 HTTP handler。含连续1100个64KiB结果 POST、有界 journal、冷游标与实例重建、越界/迟到ACK、未知bulkACK不清普通任务、真实文件系统回收提交失败后回滚及重试；不代表真实 Aries 或 Android 传输通过。Connect 0.3.0 候选仍须双端统一冻结和公网验收；源码提交推送、正式Android包/QA/PKB110交付状态以移动端 HANDOVER 的最新段落为准。
+
+## 2026-10-12 配对按钮、二维码与全流程验证（本节优先）
+
+最新本地客户端入口 `../Temp_SetupandLauncher/Revision180-20261011/Connection-7-Pairing-20261012/Launcher/DeepSeek Harness.exe`，1.8.0.0。ZIP `../Temp_SetupandLauncher/Revision180-20261011/DeepSeekHarness-1.8.0-pairing-verified-20261012.zip`，36,772,610 字节；SHA-256 `5C48F197482F1477EE21722409D465C82932CB1272AA887CA5A10018447EDCDE`。Release/verify、222源码输入、153ZIP文件核对通过，保留既有警告和两条verify提醒；未发布/部署。
+
+已配对按钮为“取消配对”，点击确认；未配对为“配对”。QR图片与刷新按钮都能刷新，开窗先读新状态，忙时去重、到期禁复制，关闭/切页拒绝迟到结果。已配对不再展示误导的禁用邀请控件。服务端不支持unpair时明确提示且保留配对。真实GUI发现失败提示在viewport外，现已自动滚入；177/0真实WinUI检查、38外部UIA/键盘操作、19截图通过（受控连接服务，非真实手机/Aries unpair）。
+
+真实本地Go配对服务27检查通过；未来unpair协议15模拟检查通过，共42/0。真实Provider76、最终共享tgz/双生产pipe/本地Go/工作区28、Go wire12通过；Go全量106 PASS事件（含子测试）/5测试包与vet通过。原生缓存修复数组解析/分批/稳定幂等恢复，optional缓存不可用不阻断配对，统计由服务器刷新；原生专项50/0，含真实101传输按100+1清理及真实提交后丢响应/重启恢复，错误分支为明确注入。证据与未覆盖项见 `../Temp_SetupandLauncher/Revision180-20261012/REPORT.md`。
+
+集中Aries通知：`../Dafeiyu-GO-Aries/docs/LAUNCHER-CAPABILITY-AUDIT-2026-10-12.md`。本地服务已支持申请、登记公钥、device_name能力数组及签名heartbeat名称；下方“没有名称”的记录为历史。仍缺安全原子双端unpair、sender读取recipient真实ack状态等；新unpair需精确group_id/device_id/status成功回包与稳定幂等，当前仅客户端未来合同已接入。用户指定任务通讯工具仍报Invalid app tool request，MD不是送达或部署证明。
+
+手机接续通知 `../Dafeiyu-Go-DeepSeek-Harness-Mobile/docs/CONNECTION-PAIRING-NOTICE-2026-10-12.md`；手机实现由他人负责，网页最后做。Connection-5/6及下方测试记载保留为历史，不应替代本节最终包和各自测试边界。
+
+## 2026-10-12 设备名称和审批能力修正（本节优先）
+
+新本地候选 `../Temp_SetupandLauncher/Revision180-20261011/Connection-5-Names-20261012/Launcher/DeepSeek Harness.exe`，版本 1.8.0.0；ZIP `../Temp_SetupandLauncher/Revision180-20261011/DeepSeekHarness-1.8.0-device-names-final-20261012.zip`，36,767,275 字节，SHA-256 `C2B3FB49966F258D1AF4167A7C7A3E90778799B6AFA000044EAA28E7520314F1`。Release/verify、222 输入、153 ZIP 文件核对通过；保留既有警告和 verify 两条提醒，未发布/部署。
+
+服务器描述改为“连接互联服务器”，移除 node_id 可见输出，内部固定/校验不变。members/applications.device_name 接入配对摘要、连接状态、请求和密钥确认；缺名称显示“对方尚未共享设备名称”，不使用 dev_xxx 代替。合法空 applications 列表视为可用；缺 public_key 的任何申请禁审批，非法列表拒绝，404/405 仍如实提示缺接口。
+
+任务通讯工具返回 Invalid app tool request，未成功联系用户指定的 Aries 任务。通知 `../Dafeiyu-GO-Aries/docs/LAUNCHER-PAIRING-REQUEST-2026-10-12.md` 描述申请接口、名称响应与安全兼容的名称上传需求；本轮未编辑 Aries 内核。旧服务器无名称时客户端显示缺失提示；正式名称联调和部署待服务端负责人处理。
+
+本轮报告：`../Temp_SetupandLauncher/Revision180-20261012/REPORT.md`；专项测试：`../Temp_SetupandLauncher/Revision180-20261012/Connections/`，236 PASS、0 FAIL（120 基线+116 新检查）。顶层数组解析遗漏已修复，Connection-4 为历史，最终包采用 Connection-5。手机端/网页仍暂停本任务修改。
+
+## 2026-10-11 1.8.0 连接插件集成本地候选（本节优先）
+
+用户最新要求：客户端和插件先完成；网页暂停最后做；手机端由其他负责人处理，仅提供通知 MD。未发布、推送、部署或更新公开 manifest。
+
+- 入口：`../Temp_SetupandLauncher/Revision180-20261011/Connection-3/Launcher/DeepSeek Harness.exe`，1.8.0.0。
+- 包：`../Temp_SetupandLauncher/Revision180-20261011/DeepSeekHarness-1.8.0-connection-local.zip`，36,766,637 字节；SHA-256 `CB9E411A7625077549E399929F0E9B6D9DFBD87CB4E0B2CD7C972534D419EA4C`。Release/verify、222 输入及 153 ZIP 文件核对通过；保留既有警告和两条 verify 提醒。
+- 搜索 Win10 直角/Win11 胶囊，页脚合计在线；同一圆环显示 PC 各版本与全部 Android 合并的移动端。
+- 连接仅显示远端，完整 URL 包含端口，无独立端口。设备详情/缓存折叠，工作区、偏好与插件更新接入真实保存和 DSH CLI。
+- `ConnectionProviderHost` 后台维护 Aries，`ConnectionPipeServer` 提供随机名称、同用户访问的本地管道和同一 DSH_HOME descriptor；host 创建/切换/退出使用生命周期锁。
+- `AriesConnectionService.Provider.cs`、`AriesProviderProtocol.cs` 实现当前组加密消息/文件、幂等恢复、DPAPI 状态、缓存统计与清理。消息 ack 为本地持久消费，文件 ack 为真实 Aries 接口。
+- `ConnectionPluginPreferences` 空 root 写 null，启动器与 DSH CLI 共用 home。`ConnectionPluginUpdateService` 核对管理后端包协议/平台/最低版本/大小/哈希/安全归档，再走 CLI 安装；生产 feed 不可用时如实提示。
+- Provider 76、Go wire 12、真实 Node/生产 pipe/本地 Aries E2E 28 项通过。连接专项 120、启动生命周期 141、搜索 GUI 632、圆环/连接 GUI 1085 项通过。
+- 共享插件最终包 `../Dafeiyu-GO-Connect-Plugin/Temp/Runtime-20261011/package/dafeiyu-go-connect-0.2.0.tgz`，88,680 字节，SHA-256 `9DF7085CD5FA9ECF0E6F9A31AACE8D0272EF60C4A9AEF12A2EA96EFAFDF6AA1B`；官方 DSH CLI/Loader、74 个安装文件核对、34 现有测试及源码/lib 各 22 定向测试通过。
+- 最终 tgz 后端/Windows 下载器 33 项通过，本地管理后端准备目录 `../Temp_SetupandLauncher/ConnectionIntegration-20261011/Prepared-Releases-Final/0.2.0/` 已生成且核验，未切换 current 或上线。
+- 最终 tgz 真实 Node/生产双管道/本地 Aries 复测 28 PASS、0 FAIL，另有 2 项身份/管道检查通过；证据 `../Temp_SetupandLauncher/ConnectionIntegration-20261011/PCProvider/runs/20261011-164145/`。测试服务与端口已停止。
+- 未实测物理 Win10、真实 UAC/安装/自更新替换或桌面双击浏览器冷启动计时。Android 草稿保留，旧 APK 不代表最新源码验收。
+
+报告：`../Temp_SetupandLauncher/Revision180-20261011/REPORT.md`。
+手机通知：`../Dafeiyu-Go-DeepSeek-Harness-Mobile/docs/CONNECTION-PLUGIN-NOTICE-2026-10-11.md`。
+
+## 2026-10-11 当前开发规范（按最新用户要求）
+
+窗口风格、首次系统默认、官方导航图标来源与禁止自绘、Win10 零圆角矩形、连接状态仅显示对端，以及 DeveloperCenter/Aries 服务边界统一见 [UI-DESIGN-STANDARDS.md](docs/UI-DESIGN-STANDARDS.md)。后续 UI 编程须遵循该规范。Win11 连接图标已采用微软官方 Phone Laptop 24 Color；切换 Win10 使用官方 regular，资源来源/哈希记在各目录 ATTRIBUTION.md。
+
+## 2026-10-11 当前本地开发交接（优先于历史发版记录）
+
+本轮只做本地开发、构建和隔离验收，未发布、未推送、未部署。当前最终测试包：
+
+- `G:\DeepSeek DSH\DSH Works\Project\Dafeiyu-Go\Temp_SetupandLauncher\AriesConnection-20261011\Candidate-16-Final-Compile\Launcher\DeepSeek Harness.exe`
+- `build-winui.ps1` Release 构建通过，`verify.ps1` 通过；产物 153 个文件。
+- DeveloperCenter 客户端回归 `PASS 196`；窗口风格/图标/圆角/连接页 GUI 隔离验收 74 项通过。
+- 仅有既有提醒：未指定 DSH 目标目录，因此 `verify.ps1` 跳过目标 DSH 目录检查。
+
+### 当前实现
+
+- 设置导航顺序：主页、通用、连接、模型、拓展、核心、更新、关于。
+- 连接页只展示被连接设备信息；未配对或对端未共享信息时不读取、不展示本机硬件数据。
+- Aries 客户端支持私有 CA：`certs/download-ca.crt`，CA SHA-256 `EC28390FC1D00344F8E95810A15D6CD8D67890DC9B0C7C12FA7D0AF7204429CC`。严格验证链、有效期和 IP/DNS SAN，不跳过 TLS 校验。
+- DeveloperCenter 客户端优先读取 `/api/presence/platforms`，将 PC 显示为「PC」、Android 显示为「移动端」；新接口 404 时回退 `/api/presence`，旧接口移动端显示「未知」。PC 心跳发送 `platform:"windows"`，但当前本地 DeveloperCenter `HeartbeatInput` 尚未持久化该附加字段。
+- Windows10/Windows11 外观支持系统首次默认、用户显式选择持久化和运行中切换；Windows10 矩形控件为直角，Windows11 使用统一圆角资源。
+- 导航图标只使用 Microsoft Fluent UI System Icons。连接项使用官方 Phone Laptop 24 Color/Regular 资源，来源和 SHA 见 `source/assets/SettingsNavIcons*/ATTRIBUTION.md`。
+
+### 当前未完成真实验收
+
+- 真实 Aries 双设备注册、配对、申请批准、密钥确认和远端 presence 联调。
+- 真实 DeveloperCenter 新分平台接口生产端到端统计。
+- 真实安装、UAC、自更新替换、Android 真机安装恢复和 FCM 离线通知。
+- 本地测试包不代表正式发布，不更新公开 manifest 或 npm。
+
+编程规范统一见父目录 [docs/UI-DESIGN-STANDARDS.md](docs/UI-DESIGN-STANDARDS.md) 和本项目 [AGENTS.md](AGENTS.md)。
+
+
+本轮开发与验证总交接：[HANDOVER-1.7.5-2026-10-10.md](../HANDOVER-1.7.5-2026-10-10.md)。下方 23:30 发版记录保留最新状态；后面的本地测试/未发布章节为此前历史。本次只更新交接文档，不重新发布。
 
 ## 2026-10-10 23:30 v1.7.5 已发布（本节优先）
 

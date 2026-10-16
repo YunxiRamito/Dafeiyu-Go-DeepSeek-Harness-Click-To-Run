@@ -13,10 +13,10 @@ namespace DeepSeekHarnessLauncher
     /// <summary>Only the verified shared package may install the first-party archive admission before the CLI.</summary>
     internal static class ConnectionArchivePreload
     {
-        internal const string Version = "0.3.0";
+        internal const string Version = ConnectionPluginInstallation.Version;
         // Updated together with the Android/PC frozen package, never a mutable latest tag.
-        internal const long PackageBytes = 200430;
-        internal const string PackageSha256 = "4f3657730459197835a014b7f7433b44cc652e5b32480cdb37c061b160e75bf2";
+        internal const long PackageBytes = ConnectionPluginInstallation.PackageBytes;
+        internal const string PackageSha256 = ConnectionPluginInstallation.PackageSha256;
         private const string PackageName = "dafeiyu-go-connect";
 
         internal static void Configure(ProcessStartInfo startInfo, string dshBin, string dshHome,

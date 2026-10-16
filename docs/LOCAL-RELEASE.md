@@ -75,9 +75,13 @@ Publication then checks GitHub conflicts and source commit availability, publish
 verifies npm, downloads and hashes the actual mirrored tarball's embedded ZIP, creates
 an immutable tag and draft Release if missing, uploads without replacing assets, verifies
 the asset download, publishes the draft, then downloads the public GitHub URL and hashes
-those bytes. Only then are `manifest-<version>.json` and finally `manifest.json` written.
+those bytes. Only then are `manifests/versions/manifest-<version>.json` and finally the root `manifest.json` written. Historical manifests are archived under `manifests/versions/`; the root feed URL remains stable.
 Release body is the corresponding CHANGELOG section body, without the version heading
 or appended receipt metadata. Existing Release bodies are retained when resuming.
+
+The public launcher asset is named `Dafeiyu-GO <version>.zip`. The build receipt and
+the npm package use this same filename. Older `DeepSeekHarness-<version>.zip` names
+are historical only.
 
 Both manifests remain local for review. The script prints explicit `git add --` and
 `git commit --only` commands naming just those two files, followed by a normal push.

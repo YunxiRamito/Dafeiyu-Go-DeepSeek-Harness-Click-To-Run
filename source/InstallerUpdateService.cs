@@ -185,11 +185,13 @@ namespace DeepSeekHarnessLauncher
                 string version = (tag.GetString() ?? String.Empty)
                     .TrimStart('v', 'V');
 
-                InstallerUpdatePackage package =
-                    new InstallerUpdatePackage
-                    {
-                        Version = version
-                    };
+                if (!ProductVersion.IsValid(version))
+                {
+                    error = "安装器 Release 版本无效。";
+                    return null;
+                }
+                InstallerUpdatePackage package = null;
+                var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (JsonElement asset in assets.EnumerateArray())
                 {
                     JsonElement name;
@@ -198,15 +200,12 @@ namespace DeepSeekHarnessLauncher
                         || name.ValueKind != JsonValueKind.String
                         || !asset.TryGetProperty("browser_download_url", out url)
                         || url.ValueKind != JsonValueKind.String
-                        || !String.Equals(
-                            name.GetString(),
-                            SetupAssetName,
-                            StringComparison.OrdinalIgnoreCase))
+                        || !IsExpectedAssetName(name.GetString(), tag.GetString()))
                     {
                         continue;
                     }
 
-                    package.SetupUrl = url.GetString();
+                    var candidate = new InstallerUpdatePackage { Version = version, SetupUrl = url.GetString() };
                     JsonElement digest;
                     if (asset.TryGetProperty("digest", out digest)
                         && digest.ValueKind == JsonValueKind.String)
@@ -217,15 +216,22 @@ namespace DeepSeekHarnessLauncher
                             "sha256", StringComparison.OrdinalIgnoreCase))
                         {
                             string hash = separator >= 0 ? value.Substring(separator + 1) : value;
-                            package.Sha256 = IsValidSha256(hash) ? hash : null;
+                            candidate.Sha256 = IsValidSha256(hash) ? hash : null;
                         }
                     }
 
-                    break;
+                    if (!seenNames.Add(name.GetString()) || !IsValidSha256(candidate.Sha256)
+                        || !IsExpectedAssetUrl(candidate.SetupUrl, tag.GetString(), name.GetString())
+                        || (package != null && !String.Equals(package.Sha256, candidate.Sha256, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        error = "安装器 Release 资产不匹配、重复或 SHA-256 不一致。";
+                        return null;
+                    }
+                    if (package == null || !String.Equals(name.GetString(), SetupAssetName, StringComparison.OrdinalIgnoreCase))
+                        package = candidate;
                 }
 
-                if (!ProductVersion.IsValid(version) || !IsValidSha256(package.Sha256)
-                    || !IsExpectedAssetUrl(package.SetupUrl, tag.GetString()))
+                if (package == null)
                 {
                     error = "安装器 Release 缺少有效版本、匹配的安装器资产或 SHA-256。";
                     return null;
@@ -297,29 +303,41 @@ namespace DeepSeekHarnessLauncher
         {
             error = "Release 页面缺少匹配的安装器资产或 SHA-256。";
             if (!ProductVersion.IsValid(tag?.TrimStart('v', 'V'))) return null;
-            string expectedPath = "/" + Repository + "/releases/download/" + tag + "/" + SetupAssetName;
             InstallerUpdatePackage package = null;
+            var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             // Digests belong to their asset list item; another asset's digest or
             // a hash pasted into release notes must never authorize this EXE.
             foreach (Match item in Regex.Matches(html ?? String.Empty, @"<li\b[^>]*>(.*?)</li\s*>",
                 RegexOptions.IgnoreCase | RegexOptions.Singleline, TimeSpan.FromSeconds(1)))
             {
-                bool assetLink = false;
+                string assetName = null;
+                string assetUrl = null;
                 foreach (Match link in Regex.Matches(item.Value, @"<a\b[^>]*>", RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1)))
-                    if (HtmlAttribute(link.Value, "href") == expectedPath) assetLink = true;
-                if (!assetLink) continue;
+                {
+                    string href = HtmlAttribute(link.Value, "href");
+                    string url = href.StartsWith("/", StringComparison.Ordinal) ? "https://github.com" + href : href;
+                    if (!Uri.TryCreate(url, UriKind.Absolute, out Uri uri)) continue;
+                    string name = Uri.UnescapeDataString(uri.Segments[uri.Segments.Length - 1]);
+                    if (!IsExpectedAssetName(name, tag) || !IsExpectedAssetUrl(url, tag, name)) continue;
+                    if (assetName != null && !String.Equals(assetName, name, StringComparison.OrdinalIgnoreCase)) return null;
+                    assetName = name;
+                    assetUrl = uri.AbsoluteUri;
+                }
+                if (assetName == null) continue;
                 string hash = null;
                 foreach (Match copy in Regex.Matches(item.Value, @"<clipboard-copy\b[^>]*>", RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1)))
                 {
-                    if (HtmlAttribute(copy.Value, "aria-label") != "Copy to clipboard digest for " + SetupAssetName) continue;
+                    if (HtmlAttribute(copy.Value, "aria-label") != "Copy to clipboard digest for " + assetName) continue;
                     string digest = HtmlAttribute(copy.Value, "value");
                     if (!digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)
                         || !IsValidSha256(digest.Substring(7)) || hash != null) return null;
                     hash = digest.Substring(7);
                 }
-                if (hash == null || package != null) return null;
-                package = new InstallerUpdatePackage { Version = tag.TrimStart('v', 'V'),
-                    SetupUrl = "https://github.com" + expectedPath, Sha256 = hash };
+                if (hash == null || !seenNames.Add(assetName)
+                    || (package != null && !String.Equals(package.Sha256, hash, StringComparison.OrdinalIgnoreCase))) return null;
+                if (package == null || !String.Equals(assetName, SetupAssetName, StringComparison.OrdinalIgnoreCase))
+                    package = new InstallerUpdatePackage { Version = tag.TrimStart('v', 'V'),
+                        SetupUrl = assetUrl, Sha256 = hash };
             }
             if (package != null) error = null;
             return package;
@@ -332,12 +350,23 @@ namespace DeepSeekHarnessLauncher
             return attribute.Success ? WebUtility.HtmlDecode(attribute.Groups[2].Value) : String.Empty;
         }
 
-        private static bool IsExpectedAssetUrl(string url, string tag)
+        private static bool IsExpectedAssetName(string name, string tag)
         {
-            return Uri.TryCreate(url, UriKind.Absolute, out Uri uri) && uri.Scheme == "https"
+            string version = tag?.TrimStart('v', 'V');
+            return ProductVersion.IsValid(version)
+                && (String.Equals(name, SetupAssetName, StringComparison.OrdinalIgnoreCase)
+                    || String.Equals(name, "Dafeiyu-GO-Setup " + version + ".exe", StringComparison.OrdinalIgnoreCase)
+                    || String.Equals(name, "Dafeiyu-GO-Setup." + version + ".exe", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsExpectedAssetUrl(string url, string tag, string assetName)
+        {
+            return IsExpectedAssetName(assetName, tag)
+                && Uri.TryCreate(url, UriKind.Absolute, out Uri uri) && uri.Scheme == "https"
                 && uri.Host == "github.com" && uri.IsDefaultPort && uri.UserInfo.Length == 0
                 && uri.Query.Length == 0 && uri.Fragment.Length == 0
-                && uri.AbsolutePath == "/" + Repository + "/releases/download/" + tag + "/" + SetupAssetName;
+                && uri.AbsolutePath == "/" + Repository + "/releases/download/"
+                    + Uri.EscapeDataString(tag) + "/" + Uri.EscapeDataString(assetName);
         }
 
         /// <summary>

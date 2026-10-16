@@ -23,9 +23,9 @@
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <DefineConstants>DISABLE_XAML_GENERATED_MAIN</DefineConstants>
-    <Version>1.8.0</Version>
-    <AssemblyVersion>1.8.0.0</AssemblyVersion>
-    <FileVersion>1.8.0.0</FileVersion>
+    <Version>1.8.1</Version>
+    <AssemblyVersion>1.8.1.0</AssemblyVersion>
+    <FileVersion>1.8.1.0</FileVersion>
     <Product>Dafeiyu-Go</Product>
     <Title>Dafeiyu-Go</Title>
     <AssemblyTitle>Dafeiyu-Go</AssemblyTitle>
@@ -84,6 +84,8 @@
          byte before invoking the official SDK operation under its native lock. -->
     <Content Include="assets\dafeiyu-mobile-ui\**" CopyToOutputDirectory="PreserveNewest" />
     <EmbeddedResource Include="MobileUiPluginOperation.mjs" LogicalName="DeepSeekHarnessLauncher.MobileUiPluginOperation.mjs" />
+    <Content Include="assets\dafeiyu-go-connect\**" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="ConnectionPluginOperation.mjs" LogicalName="DeepSeekHarnessLauncher.ConnectionPluginOperation.mjs" />
     <Content Include="assets\sounds\notify_F4_F5_v2.mp3" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="certs-download-ca.crt" Link="certs\download-ca.crt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

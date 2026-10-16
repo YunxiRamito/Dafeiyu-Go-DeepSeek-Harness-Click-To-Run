@@ -139,6 +139,7 @@ namespace DeepSeekHarnessLauncher
                     CreateNoWindow = true,
                     WorkingDirectory = directory
                 });
+                if (_process != null) WindowForeground.AllowProcess(_process.Id);
                 ObserveHelperExit();
                 if (_process.HasExited) { _closed = true; _messages.CompleteAdding(); return; }
                 }
@@ -226,6 +227,7 @@ namespace DeepSeekHarnessLauncher
             }
             _cacheDirectory = directory;
             _process = process;
+            WindowForeground.AllowProcess(process.Id);
             ObserveHelperExit();
         }
 

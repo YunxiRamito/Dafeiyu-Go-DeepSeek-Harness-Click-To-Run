@@ -86,14 +86,14 @@ namespace DeepSeekHarnessLauncher
                 listener.Start();
                 server = ServeAsync(listener, cancellation.Token);
                 string url = "http://127.0.0.1:" + ((IPEndPoint)listener.LocalEndpoint).Port + "/?token=menu-fixture";
-                int settings = 0, launcher = 0, dsh = 0, plugins = 0, restarts = 0, serverSettings = 0;
+                int settings = 0, launcher = 0, dsh = 0, plugins = 0, restarts = 0, serverSettings = 0, about = 0;
                 string browser = null;
                 LauncherAppearance.SetTheme(ElementTheme.Light);
                 LauncherAppearance.SetMaterial(LauncherMaterialKind.Solid);
                 window = new DshWindow(null, new LauncherSettings(), Console.WriteLine, value => browser = value,
                     () => settings++, () => launcher++, () => dsh++, () => plugins++,
                     () => { restarts++; window.BeginStartup(null, "Restart requested by the host."); },
-                    () => serverSettings++);
+                    () => serverSettings++, () => about++);
                 window.AppWindow.Show(false);
                 await Task.Delay(200);
                 Check(window.IsStartupLoading && !window.IsClosed && Field<WebView2>(window, "_webView") == null
@@ -339,7 +339,7 @@ namespace DeepSeekHarnessLauncher
                 {
                     CornerRadiusHelper.SetWindowStyle(style);
                     await Task.Delay(300);
-                    Check(Field<Button>(window, "_settingsButton").CornerRadius.TopLeft == (style == "Windows10" ? 0 : 4),
+                    Check(Field<Button>(window, "_optionsMenu").CornerRadius.TopLeft == (style == "Windows10" ? 0 : 4),
                         "Actual window menu follows " + style + " shared control radius");
                     await CaptureNativeAsync(window, qa, "startup-native-" + style + ".png");
                 }
@@ -457,21 +457,32 @@ namespace DeepSeekHarnessLauncher
                     var brush = Field<Grid>(window, "_titleBar").Background as Microsoft.UI.Xaml.Media.SolidColorBrush;
                     Check(brush != null && brush.Color.R == (rgb.Contains("18") ? 18 : 245), "Real page computed color reaches native title bar");
                 }
-                Invoke(Field<Button>(window, "_settingsButton"));
+                var optionsButton = Field<Button>(window, "_optionsMenu");
+                var optionsFlyout = (MenuFlyout)optionsButton.Flyout;
+                optionsFlyout.ShowAt(optionsButton);
+                await Task.Delay(80);
+                Invoke(Field<MenuFlyoutItem>(window, "_settingsItem"));
                 await Task.Delay(50);
+                optionsFlyout.Hide();
                 Check(settings == 1 && launcher + dsh + plugins == 0, "Settings callback is separate");
-                var updateButton = Field<Button>(window, "_updateButton");
-                var updateFlyout = (MenuFlyout)updateButton.Flyout;
-                Check(updateFlyout.Items.Count == 3, "Three update choices");
-                foreach (var item in updateFlyout.Items)
+                var updateChoices = Field<MenuFlyoutSubItem>(window, "_updateMenu");
+                Check(updateChoices.Items.Count == 3, "Three update choices");
+                foreach (var item in updateChoices.Items)
                 {
-                    updateFlyout.ShowAt(updateButton);
+                    optionsFlyout.ShowAt(optionsButton);
                     await Task.Delay(80);
                     Invoke(item);
                     await Task.Delay(50);
-                    updateFlyout.Hide();
+                    optionsFlyout.Hide();
                 }
                 Check(launcher == 1 && dsh == 1 && plugins == 1 && settings == 1, "Update choices invoke only their own callback");
+                var aboutButton = Field<Button>(window, "_aboutMenu");
+                var aboutFlyout = (MenuFlyout)aboutButton.Flyout;
+                aboutFlyout.ShowAt(aboutButton);
+                await Task.Delay(80);
+                Invoke(aboutFlyout.Items[0]);
+                aboutFlyout.Hide();
+                Check(about == 1 && settings == 1, "About menu uses the existing About navigation callback");
                 window.SetOnlinePresence(new ClientNoticePresence { OnlineCount = 12 });
                 foreach (int width in new[] { 1280, 640, 1000, 720, 1280 })
                 {
@@ -480,7 +491,7 @@ namespace DeepSeekHarnessLauncher
                     var regions = InputNonClientPointerSource.GetForWindowId(window.AppWindow.Id).GetRegionRects(NonClientRegionKind.Passthrough);
                     Check(regions.Length == 2, "Left menu and online indicator passthrough after resize " + width);
                     double scale = Field<Grid>(window, "_surface").XamlRoot.RasterizationScale;
-                    foreach (FrameworkElement element in new FrameworkElement[] { Field<StackPanel>(window, "_menus"), Field<Button>(window, "_settingsButton"), updateButton, presenceButton })
+                    foreach (FrameworkElement element in new FrameworkElement[] { Field<StackPanel>(window, "_menus"), optionsButton, aboutButton, presenceButton })
                     {
                         var point = element.TransformToVisual(Field<Grid>(window, "_surface")).TransformPoint(
                             new Windows.Foundation.Point(element.ActualWidth / 2, element.ActualHeight / 2));
@@ -492,7 +503,7 @@ namespace DeepSeekHarnessLauncher
                     }
                 }
                 await core.ExecuteScriptAsync("edit.focus(); edit.value='alpha beta'; edit.setSelectionRange(0,0)");
-                Field<Button>(window, "_settingsButton").Focus(FocusState.Programmatic);
+                optionsButton.Focus(FocusState.Programmatic);
                 var editButton = Field<Button>(window, "_editMenu");
                 var editFlyout = (MenuFlyout)editButton.Flyout;
                 editFlyout.ShowAt(editButton);

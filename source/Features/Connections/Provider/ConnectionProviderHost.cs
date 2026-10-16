@@ -1,5 +1,6 @@
-using System;
+﻿using System;
 using System.Linq;
+using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
@@ -24,6 +25,7 @@ namespace DeepSeekHarnessLauncher
         private Task background;
         private Task cancelling;
         private Task<bool> pipeCleanup;
+        private readonly HashSet<Task> pairingDecisions = new();
         private bool tasksJoined;
         private int state;
         internal string DshHome { get; }
@@ -93,6 +95,7 @@ namespace DeepSeekHarnessLauncher
                 stop.Token.ThrowIfCancellationRequested();
                 await Pipe.StartAsync().ConfigureAwait(false);
                 stop.Token.ThrowIfCancellationRequested();
+                SafeLog("设备连接通道已就绪，正在自动连接服务器并恢复现有配对。");
                 background = Task.Run(MaintainAsync);
                 ownership.Track(background);
                 lock (stateSync) { if (state != 1) throw new OperationCanceledException(stop.Token); state = 2; }
@@ -110,6 +113,26 @@ namespace DeepSeekHarnessLauncher
             // The pipe owner awaits this real operation even if it ignores cancel.
             return await service.DispatchProviderAsync(method, parameters, hostCancel).ConfigureAwait(false);
         }, token);
+        internal Task<AriesConnectionState> DecidePairingPromptAsync(ConnectionPairingPrompt prompt, bool allow)
+        {
+            lock (stateSync)
+            {
+                if (state != 2) throw new OperationCanceledException();
+                var operation = RunOperationAsync(token => service.DecidePairingPromptAsync(prompt, allow, token), stop.Token);
+                pairingDecisions.Add(operation);
+                ownership.Track(operation);
+                return CompletePairingDecisionAsync(operation);
+            }
+        }
+        private async Task<AriesConnectionState> CompletePairingDecisionAsync(Task<AriesConnectionState> operation)
+        {
+            try { return await operation.ConfigureAwait(false); }
+            finally
+            {
+                lock (stateSync)
+                    if (pairingDecisions.Remove(operation)) ownership.ForgetCompleted(operation);
+            }
+        }
         private Task<T> RunOperationAsync<T>(Func<CancellationToken, Task<T>> operation, CancellationToken token)
             => Task.Run(() =>
         {
@@ -151,13 +174,17 @@ namespace DeepSeekHarnessLauncher
                             return true;
                         }, stop.Token).ConfigureAwait(false);
                         deadline.Succeeded(server);
+                        if (action == ConnectionProviderMaintenanceAction.Connect)
+                            SafeLog(service.Snapshot.PairingStatus == AriesPairingStatus.Paired
+                                ? "设备连接已自动恢复，DSH 工作区、对话与网页通道等待连接插件就绪。"
+                                : "已自动连接互联服务器，等待配对确认。");
                     }
                 }
                 catch (OperationCanceledException) when (stop.IsCancellationRequested) { break; }
                 catch (Exception)
                 {
                     deadline.Failed(server);
-                    SafeLog("设备连接等待服务器恢复。");
+                    SafeLog("设备连接暂不可用，60 秒后自动重试；可在连接页查看状态或手动重试。");
                 }
                 // Observe configuration changes promptly without increasing the
                 // online heartbeat rate or shortening the reconnect deadline.
@@ -195,12 +222,17 @@ namespace DeepSeekHarnessLauncher
                     catch (Exception) when (starting?.IsCompleted == true) { }
                     // Starting has really ended, so all initialization/background
                     // Tasks are now known and cannot be added after this snapshot.
-                    Task[] pending = new[] { initialized, background, cancelling, pipeCleanup }.Where(task => task != null).ToArray();
+                    Task[] pending;
+                    lock (stateSync) pending = new[] { initialized, background, cancelling, pipeCleanup }
+                        .Where(task => task != null).Concat(pairingDecisions).ToArray();
                     try { await Task.WhenAll(pending).WaitAsync(timeout).ConfigureAwait(false); }
                     catch (TimeoutException) { return false; }
                     catch (Exception) when (pending.All(task => task.IsCompleted)) { }
                     if (!pipeCleanup.IsCompletedSuccessfully || !pipeCleanup.Result) return false;
-                    foreach (Task task in pending) ownership.ForgetCompleted(task);
+                    lock (stateSync)
+                        foreach (Task task in pending)
+                            if (task == initialized || task == background || task == cancelling || task == pipeCleanup
+                                || pairingDecisions.Remove(task)) ownership.ForgetCompleted(task);
                     if (starting != null) ownership.ForgetCompleted(starting);
                     tasksJoined = true;
                 }
@@ -219,57 +251,5 @@ namespace DeepSeekHarnessLauncher
         }
     }
 
-    internal enum ConnectionProviderMaintenanceAction { None, Connect, Refresh }
 
-    internal sealed class ConnectionProviderMaintenanceDeadline
-    {
-        private readonly TimeProvider clock;
-        private string server;
-        private bool firstConnect, hasHeartbeat, hasFailure;
-        private long heartbeat, failure;
-
-        internal ConnectionProviderMaintenanceDeadline(TimeProvider clock)
-        {
-            this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
-        }
-
-        internal ConnectionProviderMaintenanceAction Next(string configuredServer, bool connected, string actualServer)
-        {
-            string selected = Normalize(configuredServer);
-            if (!SameServer(server, selected))
-            {
-                server = selected;
-                firstConnect = true;
-                hasHeartbeat = hasFailure = false;
-            }
-            if (selected.Length == 0) return ConnectionProviderMaintenanceAction.None;
-            if (firstConnect || !connected || !SameServer(selected, Normalize(actualServer)))
-            {
-                if (hasFailure && clock.GetElapsedTime(failure) < TimeSpan.FromSeconds(60))
-                    return ConnectionProviderMaintenanceAction.None;
-                return ConnectionProviderMaintenanceAction.Connect;
-            }
-            return !hasHeartbeat || clock.GetElapsedTime(heartbeat) >= TimeSpan.FromSeconds(15)
-                ? ConnectionProviderMaintenanceAction.Refresh : ConnectionProviderMaintenanceAction.None;
-        }
-
-        internal void Succeeded(string attemptedServer)
-        {
-            if (!SameServer(server, Normalize(attemptedServer))) return;
-            firstConnect = false;
-            hasFailure = false;
-            heartbeat = clock.GetTimestamp();
-            hasHeartbeat = true;
-        }
-
-        internal void Failed(string attemptedServer)
-        {
-            if (!SameServer(server, Normalize(attemptedServer))) return;
-            failure = heartbeat = clock.GetTimestamp();
-            hasFailure = hasHeartbeat = true;
-        }
-
-        private static string Normalize(string value) => (value ?? String.Empty).Trim().TrimEnd('/');
-        private static bool SameServer(string left, string right) => String.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-    }
 }

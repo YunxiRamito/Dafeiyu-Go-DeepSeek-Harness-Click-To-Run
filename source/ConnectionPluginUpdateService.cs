@@ -18,14 +18,12 @@ namespace DeepSeekHarnessLauncher
         private const int MaximumPackageBytes = 16 * 1024 * 1024;
         internal static async Task<DshPluginCliService.CliResult> InstallAsync(LauncherSettings settings, Action<string> log, CancellationToken token)
         {
-            Uri backend = ClientNoticeClient.ResolveBase(ClientNoticeStore.ForLauncher().LoadSettings())
-                ?? throw new InvalidOperationException("尚未配置管理后端。");
-            using var http = NoticeTransport.CreateHttpClient(TimeSpan.FromSeconds(60));
-            string path = await DownloadVerifiedPackageAsync(http, backend,
-                Path.Combine(LauncherSettingsStore.DirectoryPath, "connection-plugin-packages"), token).ConfigureAwait(false);
-            return await Task.Run(() => DshPluginCliService.Install(settings, path, 120000, log,
-                cancelled: () => token.IsCancellationRequested), token).ConfigureAwait(false);
+            return await Task.Run(() => EnsureInstalled(settings, log, token), token).ConfigureAwait(false);
         }
+
+        internal static DshPluginCliService.CliResult EnsureInstalled(LauncherSettings settings,
+            Action<string> log, CancellationToken token = default)
+            => ConnectionPluginInstallation.EnsureInstalled(settings, log, token);
 
         internal static async Task<string> DownloadVerifiedPackageAsync(HttpClient http, Uri backend,
             string cacheRoot, CancellationToken token)

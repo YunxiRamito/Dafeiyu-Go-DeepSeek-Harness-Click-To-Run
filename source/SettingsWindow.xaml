@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Window
     x:Class="DeepSeekHarnessLauncher.SettingsWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -1461,45 +1461,8 @@
                         <Border x:Name="ConnectionSyncCard" Grid.Row="6" Style="{StaticResource SettingsCardStyle}" Padding="20,16">
                             <StackPanel Spacing="16">
                                 <TextBlock FontSize="16" FontWeight="SemiBold" Text="同步与广播" />
-                                <Grid ColumnSpacing="12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock x:Name="ConnectionWorkspaceRootText" Text="尚未选择工作区" TextWrapping="Wrap"
-                                               VerticalAlignment="Center" Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                    <Button x:Name="ConnectionWorkspaceRootButton" Grid.Column="1" Content="选择工作区…"
-                                            Click="ConnectionWorkspaceRoot_Click" />
-                                </Grid>
-                                <Grid Style="{StaticResource SettingsRowGridStyle}" ColumnSpacing="16">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Spacing="4">
-                                        <TextBlock Text="同步工作区" Style="{StaticResource SettingsRowTitleTextStyle}" />
-                                        <TextBlock Text="仅同步所选文件夹；冲突保留并等待确认。"
-                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                    </StackPanel>
-                                    <ToggleSwitch x:Name="ConnectionWorkspaceToggle" Grid.Column="1" IsOn="False" IsEnabled="False"
-                                                  OnContent="开" OffContent="关" VerticalAlignment="Center"
-                                                  AutomationProperties.Name="同步工作区" Toggled="ConnectionPreferences_Toggled" />
-                                </Grid>
-                                <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
-                                <Grid Style="{StaticResource SettingsRowGridStyle}" ColumnSpacing="16">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Spacing="4">
-                                        <TextBlock Text="DSH 网页广播" Style="{StaticResource SettingsRowTitleTextStyle}" />
-                                        <TextBlock Text="接收与发送经确认的网页链接和文本。"
-                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                    </StackPanel>
-                                    <ToggleSwitch x:Name="ConnectionBroadcastToggle" Grid.Column="1" IsOn="False" IsEnabled="False"
-                                                  OnContent="开" OffContent="关" VerticalAlignment="Center"
-                                                  AutomationProperties.Name="DSH 网页广播" Toggled="ConnectionPreferences_Toggled" />
-                                </Grid>
+                                <TextBlock Text="连接后自动同步本机 DSH 的工作区与对话，并广播 DSH 网页。"
+                                           Style="{StaticResource SettingsRowDescriptionTextStyle}" />
                                 <Grid ColumnSpacing="12">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
@@ -1510,7 +1473,7 @@
                                     <Button x:Name="ConnectionPluginUpdateButton" Grid.Column="1" Content="安装 / 更新插件"
                                             Click="ConnectionPluginUpdate_Click" />
                                 </Grid>
-                                <TextBlock x:Name="ConnectionPreferencesHintText" Text="同步和广播默认关闭。"
+                                <TextBlock x:Name="ConnectionPreferencesHintText" Text="自动连接已配对设备；同步与网页广播随连接启用。"
                                            Style="{StaticResource SettingsPageDescriptionTextStyle}" />
                             </StackPanel>
                         </Border>

@@ -26,6 +26,7 @@ namespace DeepSeekHarnessLauncher
             IsWindows11Build(_windowsBuild);
         private static string _windowStyle =
             GetDefaultWindowStyleForBuild(_windowsBuild);
+        internal static event Action WindowStyleChanged;
 
         internal static bool IsWindows11
         {
@@ -101,13 +102,16 @@ namespace DeepSeekHarnessLauncher
 
         internal static void SetWindowStyle(string value)
         {
-            _windowStyle = NormalizeWindowStyle(value);
+            string normalized = NormalizeWindowStyle(value);
+            bool changed = _windowStyle != normalized;
+            _windowStyle = normalized;
             if (Application.Current != null)
             {
                 ApplyApplicationResources(Application.Current.Resources);
             }
 
             LauncherAppearance.ApplyWindowFrames();
+            if (changed) WindowStyleChanged?.Invoke();
         }
 
         internal static void ApplyWindowFrame(IntPtr windowHandle)

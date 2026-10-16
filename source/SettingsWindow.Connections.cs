@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,68 +12,6 @@ using Windows.ApplicationModel.DataTransfer;
 
 namespace DeepSeekHarnessLauncher
 {
-    internal interface ISettingsConnectionClient
-    {
-        bool IsAvailable { get; }
-        bool SupportsPairing { get; }
-        bool SupportsPairingApprovals { get; }
-        bool CanUnpair { get; }
-        bool CanClearCurrentPairCache { get; }
-        Task<ConnectionStateSnapshot> GetStateAsync(CancellationToken token);
-        Task<ConnectionStateSnapshot> SaveServerUriAsync(string uri, CancellationToken token);
-        Task<ConnectionStateSnapshot> DetectServerAsync(CancellationToken token);
-        Task<ConnectionPairingInvitation> CreatePairingInvitationAsync(CancellationToken token);
-        Task<ConnectionStateSnapshot> RequestPairingAsync(string code, CancellationToken token);
-        Task<ConnectionStateSnapshot> ApprovePairingAsync(string requestId, string fingerprint, bool keyDelivery, CancellationToken token);
-        Task<ConnectionStateSnapshot> RejectPairingAsync(string requestId, CancellationToken token);
-        Task<ConnectionStateSnapshot> UnpairAsync(string expectedPairId, CancellationToken token);
-        Task ClearCurrentPairCacheAsync(string expectedPairId, CancellationToken token);
-        Task SavePreferencesAsync(bool workspace, bool broadcast, CancellationToken token);
-    }
-
-    internal sealed class ConnectionStateSnapshot
-    {
-        public bool ServerOnline { get; set; }
-        public string ServerUri { get; set; }
-        public string ServerIdentity { get; set; }
-        public string PairId { get; set; }
-        public string PairedDeviceName { get; set; }
-        public bool HasRemotePeer { get; set; }
-        public bool HasPairMembership { get; set; }
-        public bool CanCancelPairing { get; set; }
-        public bool AwaitingKeyConfirmation { get; set; }
-        public string PairingDescription { get; set; }
-        public string ApprovalHint { get; set; }
-        public ConnectionPairingRequest PendingRequest { get; set; }
-        public bool SyncWorkspace { get; set; }
-        public bool WebBroadcast { get; set; }
-        public string PeerStatus { get; set; }
-        public string CacheSummary { get; set; }
-        public string PeerDeviceId { get; set; }
-        public string PeerClientVersion { get; set; }
-        public string PeerSystem { get; set; }
-        public string PeerCpu { get; set; }
-        public string PeerMemory { get; set; }
-        public string PeerGpu { get; set; }
-        public string PeerNetwork { get; set; }
-        public string PeerStorage { get; set; }
-    }
-
-    internal sealed class ConnectionPairingInvitation
-    {
-        public string DisplayCode { get; set; }
-        public DateTimeOffset ExpiresAt { get; set; }
-        public byte[] QrPng { get; set; }
-    }
-
-    internal sealed class ConnectionPairingRequest
-    {
-        public string RequestId { get; set; }
-        public string DeviceName { get; set; }
-        public string Fingerprint { get; set; }
-        public bool KeyDelivery { get; set; }
-    }
-
     internal sealed partial class SettingsWindow
     {
         private ISettingsConnectionClient _connectionsClient;
@@ -104,23 +42,9 @@ namespace DeepSeekHarnessLauncher
         {
             if (_connectionServerSummary != null) return;
             var sync = (StackPanel)ConnectionSyncCard.Child;
-            ((TextBlock)sync.Children[0]).Text = "同步工作区";
+            ((TextBlock)sync.Children[0]).Text = "连接服务";
             var status = (StackPanel)((Grid)((StackPanel)ConnectionStatusCard.Child).Children[0]).Children[1];
             ((TextBlock)status.Children[0]).Text = "设备详情";
-            // Parent is not populated until Loaded; the XAML children are available now.
-            var broadcastParent = sync;
-            Grid broadcast = null;
-            foreach (var child in broadcastParent.Children)
-                if (child is Grid row && row.Children.Contains(ConnectionBroadcastToggle))
-                {
-                    broadcast = row;
-                    break;
-                }
-            if (broadcast == null) throw new InvalidOperationException("The broadcast settings row was not found.");
-            int broadcastIndex = broadcastParent.Children.IndexOf(broadcast);
-            broadcastParent.Children.Remove(broadcast);
-            if (broadcastIndex > 0 && broadcastParent.Children[broadcastIndex - 1] is Border divider && divider.Height == 1)
-                broadcastParent.Children.Remove(divider);
             foreach (var card in new[] { ConnectionPairingCard, ConnectionStatusCard, ConnectionSyncCard, ConnectionServerCard })
                 ConnectionsPage.Children.Remove(card);
             ConnectionsPage.Children.Remove(ConnectionActionNotice);
@@ -137,7 +61,6 @@ namespace DeepSeekHarnessLauncher
             sections.Children.Add(ConnectionSyncCard);
             var advancedContent = new StackPanel { Spacing = 16 };
             advancedContent.Children.Add(ConnectionServerCard);
-            advancedContent.Children.Add(broadcast);
             sections.Children.Add(new Expander { Header = "高级设置", HorizontalAlignment = HorizontalAlignment.Stretch,
                 HorizontalContentAlignment = HorizontalAlignment.Stretch, Content = advancedContent });
             sections.Children.Add(ConnectionActionNotice);
@@ -170,14 +93,7 @@ namespace DeepSeekHarnessLauncher
             _connectionsClient = new SettingsConnectionClient(_host.AriesService, _settings);
             ConnectionServerUriBox.Text = _settings.AriesServerUrl ?? String.Empty;
             ConnectionDeviceNameText.Text = "尚未连接其他设备";
-            _applyingConnectionState = true;
-            ConnectionWorkspaceToggle.IsOn = _settings.AriesSyncWorkspaceEnabled;
-            ConnectionBroadcastToggle.IsOn = _settings.DshWebBroadcastEnabled;
-            ConnectionWorkspaceRootText.Text = String.IsNullOrWhiteSpace(_settings.AriesSyncWorkspace)
-                ? "尚未选择工作区" : _settings.AriesSyncWorkspace;
-            ConnectionPreferencesHintText.Text = String.IsNullOrWhiteSpace(_settings.AriesSyncWorkspace)
-                ? "尚未选择同步工作区" : String.Empty;
-            _applyingConnectionState = false;
+            ConnectionPreferencesHintText.Text = "连接后自动同步本机 DSH 工作区与对话，并广播 DSH 网页。";
             _connectionsInitialized = true;
             UpdateConnectionsControls();
         }
@@ -276,7 +192,9 @@ namespace DeepSeekHarnessLauncher
                     ConnectionOnlineText.Text = HasConnectionPeer ? "在线状态未知" : "尚未连接其他设备";
                     if (_connectionState != null) _connectionState.PeerStatus = "在线状态未知";
                     ConnectionPairSummaryText.Text = HasConnectionPeer ? "被连接设备 · 在线状态未知" : "尚未配对";
-                    ConnectionServerHintText.Text = "无法读取服务器状态，请检查地址或稍后重试。";
+                    ConnectionServerHintText.Text = "连接暂不可用，正在自动重试；也可检查地址后点击连接。";
+                    if (_connectionServerSummary != null)
+                        _connectionServerSummary.Text = "服务器 · 连接暂不可用，正在自动重试";
                 }
                 _host.Log("连接页读取状态失败：" + exception.Message);
             }
@@ -315,10 +233,7 @@ namespace DeepSeekHarnessLauncher
             ConnectionRejectButton.IsEnabled = approvals && _connectionState?.PendingRequest != null && !_connectionState.PendingRequest.KeyDelivery;
             ConnectionUnpairButton.IsEnabled = editable && CanCancelConnectionPair;
             ConnectionClearCacheButton.IsEnabled = editable && HasConnectionPeer && _connectionsClient.CanClearCurrentPairCache;
-            ConnectionWorkspaceToggle.IsEnabled = editable;
-            ConnectionWorkspaceRootButton.IsEnabled = editable;
             ConnectionPluginUpdateButton.IsEnabled = editable;
-            ConnectionBroadcastToggle.IsEnabled = editable;
             ConnectionCacheHintText.Text = available && _connectionsClient.CanClearCurrentPairCache
                 ? HasConnectionPeer ? "只清理当前连接的文件缓存。" : "配对后可清理当前连接的文件缓存。"
                 : "当前服务器暂不支持清理配对文件缓存。";
@@ -375,17 +290,20 @@ namespace DeepSeekHarnessLauncher
                     ? "被连接设备客户端版本 · " + state.PeerClientVersion + " · 连接状态每 3 秒刷新"
                     : "仅显示被连接设备的信息 · 连接状态每 3 秒刷新";
                 ConnectionServerHintText.Text = String.IsNullOrWhiteSpace(state.ServerUri)
-                    ? "请填写你的 Aries 服务器地址。" : state.ServerOnline ? "已连接 Aries 服务器。" : "地址已保存，点击连接或检测。";
+                    ? "请填写你的 Aries 服务器地址。" : state.ServerOnline ? "已连接 Aries 服务器。" : "正在自动连接；失败后会自动重试，也可点击连接或检测。";
                 if (_connectionServerSummary != null)
-                    _connectionServerSummary.Text = state.ServerOnline ? "服务器 · 已连接" : "服务器 · 尚未连接";
+                    _connectionServerSummary.Text = state.ServerOnline ? "服务器 · 已连接"
+                        : "服务器 · 正在自动连接，失败后自动重试";
+                if (!state.ServerOnline && !String.IsNullOrWhiteSpace(state.ErrorMessage))
+                    ConnectionServerHintText.Text = state.ErrorMessage + " 正在自动重试，也可检查地址后点击连接。";
                 ConnectionCacheHintText.Text = state.CacheSummary ?? "缓存统计暂不可用";
-                ConnectionApprovalPanel.Visibility = !String.IsNullOrWhiteSpace(state.ApprovalHint) || state.PendingRequest != null
+                ConnectionPreferencesHintText.Text = String.IsNullOrWhiteSpace(state.DshServicesStatus)
+                    ? "正在等待 DSH 工作区、对话与网页服务。" : state.DshServicesStatus;
+                ConnectionApprovalPanel.Visibility = state.PendingRequest?.KeyDelivery == true
                     ? Visibility.Visible : Visibility.Collapsed;
                 ConnectionApprovalText.Text = state.PendingRequest != null
-                    ? "设备“" + ConnectionValue(state.PendingRequest.DeviceName) + "”请求连接。\n安全指纹：" + ConnectionValue(state.PendingRequest.Fingerprint)
-                    : state.ApprovalHint;
-                ConnectionWorkspaceToggle.IsOn = state.SyncWorkspace;
-                ConnectionBroadcastToggle.IsOn = state.WebBroadcast;
+                    ? "有新的设备【" + ConnectionPairingPrompt.SafeDeviceName(state.PendingRequest.DeviceName) + "】请求配对，是否允许？"
+                    : String.Empty;
                 if (HasConnectionPair) ClearConnectionInvitation();
             }
             finally { _applyingConnectionState = false; }
@@ -663,9 +581,8 @@ namespace DeepSeekHarnessLauncher
         {
             var request = _connectionState?.PendingRequest;
             if (!ConnectionClientAvailable || !_connectionsClient.SupportsPairingApprovals || HasConnectionPeer || request == null) return;
-            if (!await ConfirmConnectionActionAsync(request.KeyDelivery ? "确认配对设备？" : "批准这台设备连接？",
-                "将与“" + ConnectionValue(request.DeviceName) + "”连接。请核对另一台设备显示的安全指纹：\n"
-                + ConnectionValue(request.Fingerprint), "确认配对")) return;
+            if (!await ConfirmConnectionActionAsync("设备配对",
+                "有新的设备【" + ConnectionPairingPrompt.SafeDeviceName(request.DeviceName) + "】请求配对，是否允许？", "允许")) return;
             if (HasConnectionPeer || _connectionState?.PendingRequest?.RequestId != request.RequestId) return;
             await RunConnectionActionAsync((client, token) => client.ApprovePairingAsync(
                 request.RequestId, request.Fingerprint, request.KeyDelivery, token),
@@ -748,55 +665,6 @@ namespace DeepSeekHarnessLauncher
             }, "已提交缓存清理请求，磁盘清理进度以服务器统计为准。");
         }
 
-        private async void ConnectionPreferences_Toggled(object sender, RoutedEventArgs args)
-        {
-            if (!_connectionsInitialized || _applyingConnectionState || _initializing || !ConnectionClientAvailable || !ConnectionReady) return;
-            bool workspace = ConnectionWorkspaceToggle.IsOn, broadcast = ConnectionBroadcastToggle.IsOn;
-            if (workspace && !Directory.Exists(_settings.AriesSyncWorkspace))
-            {
-                _applyingConnectionState = true;
-                ConnectionWorkspaceToggle.IsOn = false;
-                _applyingConnectionState = false;
-                ShowConnectionNotice("请先选择要同步的工作区文件夹。", InfoBarSeverity.Warning);
-                return;
-            }
-            bool saved = false;
-            await RunConnectionActionAsync(async (client, token) =>
-            {
-                await client.SavePreferencesAsync(workspace, broadcast, token);
-                saved = true;
-                return null;
-            }, "设置已保存。");
-            if (!ConnectionReady) return;
-            if (saved)
-            {
-                if (_connectionState != null) { _connectionState.SyncWorkspace = workspace; _connectionState.WebBroadcast = broadcast; }
-                ConnectionPreferencesHintText.Text = "设置已保存，插件运行时会读取此配置。";
-            }
-            else if (_connectionState != null) ApplyConnectionState(_connectionState);
-        }
-
-        private void ConnectionWorkspaceRoot_Click(object sender, RoutedEventArgs args)
-        {
-            if (!ConnectionReady || ConnectionControlsBusy) return;
-            string directory = NativeFolderPicker.Pick(_windowHandle, "选择要同步的工作区");
-            if (String.IsNullOrWhiteSpace(directory)) return;
-            string previous = _settings.AriesSyncWorkspace;
-            try
-            {
-                _settings.AriesSyncWorkspace = Path.GetFullPath(directory);
-                ConnectionPluginPreferences.Save(_settings);
-                LauncherSettingsStore.Save(_settings);
-                ConnectionWorkspaceRootText.Text = _settings.AriesSyncWorkspace;
-            }
-            catch (Exception)
-            {
-                _settings.AriesSyncWorkspace = previous;
-                try { ConnectionPluginPreferences.Save(_settings); } catch { }
-                ShowConnectionNotice("工作区设置保存失败。", InfoBarSeverity.Error);
-            }
-        }
-
         private async void ConnectionPluginUpdate_Click(object sender, RoutedEventArgs args)
         {
             if (!ConnectionReady || ConnectionControlsBusy) return;
@@ -804,7 +672,7 @@ namespace DeepSeekHarnessLauncher
             var cancellation = _connectionsCancellation.Token;
             await RunConnectionActionAsync(async (_, token) =>
             {
-                ConnectionPluginStatusText.Text = "正在读取管理后端并验证插件包…";
+                ConnectionPluginStatusText.Text = "正在验证并安装内置连接插件…";
                 var result = await ConnectionPluginUpdateService.InstallAsync(_settings, _host.Log, token);
                 if (result.Cancelled) throw new OperationCanceledException(token);
                 if (result.Failed || !result.Started || result.ExitCode != 0)

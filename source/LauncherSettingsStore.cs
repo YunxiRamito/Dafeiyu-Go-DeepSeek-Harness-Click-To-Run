@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -483,7 +483,11 @@ namespace DeepSeekHarnessLauncher
             if (settings.AriesDeviceName.Length > 120)
                 settings.AriesDeviceName = settings.AriesDeviceName.Substring(0, 120);
             settings.AriesDeviceId ??= String.Empty;
-            settings.AriesSyncWorkspace ??= String.Empty;
+            // Connection owns DSH workspace/session access and web broadcasting.
+            // Retired folder-sync toggles must not disable an existing pairing.
+            settings.AriesSyncWorkspace = String.Empty;
+            settings.AriesSyncWorkspaceEnabled = true;
+            settings.DshWebBroadcastEnabled = true;
             settings.PortMode = NormalizeChoice(
                 settings.PortMode,
                 "Fixed",

@@ -11,6 +11,7 @@ namespace DeepSeekHarnessLauncher
     }
     internal sealed record AriesPairingApplication
     {
+        public DateTimeOffset? ExpiresAt { get; init; }
         public string ApplicationId { get; init; } = String.Empty; public string DeviceId { get; init; } = String.Empty; public string DeviceName { get; init; } = String.Empty; public string PublicKey { get; init; } = String.Empty; public string Fingerprint { get; init; } = String.Empty; public string Status { get; init; } = String.Empty;
     }
     internal sealed record AriesPendingKeyDelivery

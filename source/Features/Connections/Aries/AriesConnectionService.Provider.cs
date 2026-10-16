@@ -17,6 +17,45 @@ namespace DeepSeekHarnessLauncher
     internal sealed partial class AriesConnectionService
     {
         private long providerRevision;
+        private sealed record PublishedHostCapabilities(string GroupId, string NodeId, string DeviceId,
+            DateTimeOffset PublishedAt, bool Directory, bool Sessions, bool Web);
+        private volatile PublishedHostCapabilities publishedHostCapabilities;
+
+        internal string DshServicesStatus
+        {
+            get
+            {
+                var current = state;
+                var published = publishedHostCapabilities;
+                if (!current.ServerConnected || current.PairingStatus != AriesPairingStatus.Paired)
+                    return "连接后自动同步本机 DSH 工作区与对话，并广播 DSH 网页。";
+                if (published == null || published.GroupId != current.GroupId || published.NodeId != current.NodeId
+                    || published.DeviceId != current.LocalDevice?.DeviceId
+                    || DateTimeOffset.UtcNow - published.PublishedAt > TimeSpan.FromSeconds(45))
+                    return "已配对，正在等待 DSH 连接插件；若持续未就绪，可重试安装并重启 DSH。";
+                return "DSH 工作区：" + (published.Directory ? "已就绪" : "等待服务")
+                    + "；对话：" + (published.Sessions ? "已就绪" : "等待服务")
+                    + "；网页广播：" + (published.Web ? "已就绪" : "等待服务") + "。";
+            }
+        }
+
+        private void ObservePublishedHostCapabilities(string kind, JsonElement body)
+        {
+            if (kind != "dsh_remote_capabilities" || body.ValueKind != JsonValueKind.Object
+                || StringValue(body, "protocol") != RemoteDshProtocol
+                || StringValue(body, "device_id") != binding.DeviceId
+                || !Guid.TryParse(StringValue(body, "generation"), out _)
+                || !body.TryGetProperty("capabilities", out var available) || available.ValueKind != JsonValueKind.Array
+                || available.GetArrayLength() > 32) return;
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var value in available.EnumerateArray())
+            {
+                if (value.ValueKind != JsonValueKind.String) return;
+                names.Add(value.GetString());
+            }
+            publishedHostCapabilities = new(binding.GroupId, binding.NodeId, binding.DeviceId, DateTimeOffset.UtcNow,
+                names.Contains("remote_directory"), names.Contains("remote_task"), names.Contains("remote_web_tunnel"));
+        }
         private AriesProviderStore providerStore;
         private const int ProviderChunkOverhead = 92;
         private const int ProviderChunkLimit = 512 * 1024;
@@ -526,6 +565,7 @@ namespace DeepSeekHarnessLauncher
         {
             string kind = Required(p, "kind"), operation = Required(p, "idempotency_key");
             if (!p.TryGetProperty("body", out var body)) throw ProviderError("protocol_error");
+            if (kind == "dsh_remote_capabilities") RetirePublishedCapabilityReceipts();
             byte[] plain = JsonSerializer.SerializeToUtf8Bytes(new { kind, body }, AriesCrypto.Json);
             try
             {
@@ -540,10 +580,37 @@ namespace DeepSeekHarnessLauncher
                             return JsonSerializer.Serialize(new { epoch = binding.Epoch, ciphertext = content }, AriesCrypto.Json);
                         }
                         finally { CryptographicOperations.ZeroMemory(key); }
-                    }, token, entry => BulkObserveEvent(kind, operation, body, entry)).ConfigureAwait(false);
+                    }, token, entry =>
+                    {
+                        entry.MessageKind = kind;
+                        BulkObserveEvent(kind, operation, body, entry);
+                    }).ConfigureAwait(false);
+                // This is observability of the loaded local host, not a grant of
+                // remote permissions. Only a successful authenticated send may
+                // mark the current group/device services as ready.
+                if (!String.IsNullOrWhiteSpace(StringValue(response, "message_id")))
+                    ObservePublishedHostCapabilities(kind, body);
                 return new { message_id = StringValue(response, "message_id") };
             }
             finally { CryptographicOperations.ZeroMemory(plain); }
+        }
+
+        private void RetirePublishedCapabilityReceipts()
+        {
+            // Capability advertisements are replaceable observations, refreshed
+            // every 15 seconds. They must not exhaust the durable intent journal.
+            // Failed sends and every other message/task/transfer remain untouched.
+            var successful = providerStore.Mutations.Where(item => item.Value.MessageKind == "dsh_remote_capabilities"
+                && !String.IsNullOrEmpty(item.Value.Response)).ToArray();
+            var retired = successful.Take(Math.Max(0, successful.Length - 8)).ToArray();
+            if (retired.Length == 0) return;
+            foreach (var item in retired) providerStore.Mutations.Remove(item.Key);
+            try { SaveProviderStore(); }
+            catch
+            {
+                foreach (var item in retired) providerStore.Mutations.Add(item.Key, item.Value);
+                throw;
+            }
         }
 
         private async Task<object> ProviderMessages(JsonElement p, CancellationToken token)

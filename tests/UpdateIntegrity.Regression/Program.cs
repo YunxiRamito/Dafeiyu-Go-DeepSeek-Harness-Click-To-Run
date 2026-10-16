@@ -71,6 +71,64 @@ Assert(InstallerUpdateService.ParseReleaseApi(apiJson.Replace("https://github.co
 Assert(InstallerUpdateService.ParseReleaseApi(apiJson.Replace(releaseHash, "bad"), out _) == null,
     "API without valid hash is rejected before installation");
 
+const string versionedAsset = "Dafeiyu-GO-Setup 1.8.0.exe";
+string versionedPath = releasePath.Replace("DSH-Installer-Setup.exe", Uri.EscapeDataString(versionedAsset));
+string versionedHtml = assetHtml.Replace(releasePath, versionedPath)
+    .Replace("DSH-Installer-Setup.exe", versionedAsset);
+string versionedApi = System.Text.Json.JsonSerializer.Serialize(new { tag_name = releaseTag,
+    assets = new[] { new { name = versionedAsset, browser_download_url = "https://github.com" + versionedPath,
+        digest = "sha256:" + releaseHash } } });
+Assert(InstallerUpdateService.ParseReleaseApi(versionedApi, out _)?.SetupUrl == "https://github.com" + versionedPath,
+    "API accepts the exact versioned installer asset with escaped spaces");
+Assert(InstallerUpdateService.ParseReleaseAssets(versionedHtml, releaseTag, out _)?.SetupUrl == "https://github.com" + versionedPath,
+    "HTML accepts versioned installer links and binds their displayed digest");
+Assert(InstallerUpdateService.ParseReleaseAssets(versionedHtml.Replace("%20", " "), releaseTag, out _)?.Sha256 == releaseHash,
+    "HTML normalizes literal asset spaces to escaped URL spaces");
+Assert(InstallerUpdateService.ParseReleaseAssets(assetHtml + versionedHtml, releaseTag, out _)?.SetupUrl == "https://github.com" + versionedPath,
+    "matching legacy and versioned compatibility assets select the versioned asset");
+Assert(InstallerUpdateService.ParseReleaseAssets(versionedHtml + assetHtml, releaseTag, out _)?.SetupUrl == "https://github.com" + versionedPath,
+    "versioned asset preference is independent of HTML ordering");
+string bothApi = System.Text.Json.JsonSerializer.Serialize(new { tag_name = releaseTag, assets = new[] {
+    new { name = "DSH-Installer-Setup.exe", browser_download_url = "https://github.com" + releasePath, digest = "sha256:" + releaseHash },
+    new { name = versionedAsset, browser_download_url = "https://github.com" + versionedPath, digest = "sha256:" + releaseHash } } });
+Assert(InstallerUpdateService.ParseReleaseApi(bothApi, out _)?.SetupUrl == "https://github.com" + versionedPath,
+    "API supports same-hash compatibility assets and prefers the versioned name");
+Assert(InstallerUpdateService.ParseReleaseApi(bothApi.Replace("DSH-Installer-Setup.exe", versionedAsset), out _) == null,
+    "API rejects duplicate recognized asset names");
+Assert(InstallerUpdateService.ParseReleaseAssets(versionedHtml + versionedHtml, releaseTag, out _) == null,
+    "HTML rejects duplicate versioned installer assets");
+Assert(InstallerUpdateService.ParseReleaseAssets(assetHtml + versionedHtml.Replace(releaseHash, new string('c', 64)), releaseTag, out _) == null,
+    "HTML refuses compatibility assets with differing hashes");
+foreach (string invalidPath in new[] {
+    versionedPath.Replace("Setup%201.8.0", "Setup%201.8.1"),
+    versionedPath.Replace("/v1.8.0/", "/v1.8.1/"),
+    versionedPath.Replace("%20", "%2520"),
+    versionedPath + "?download=1", versionedPath + "#other",
+    versionedPath.Replace("Dafeiyu-GO-Setup%20", "other%2FDafeiyu-GO-Setup%20") })
+{
+    Assert(InstallerUpdateService.ParseReleaseApi(versionedApi.Replace(versionedPath, invalidPath), out _) == null,
+        "API rejects mismatched version, tag, double encoding, query, fragment and encoded path: " + invalidPath);
+    Assert(InstallerUpdateService.ParseReleaseAssets(versionedHtml.Replace(versionedPath, invalidPath), releaseTag, out _) == null,
+        "HTML rejects mismatched or unsafe versioned asset URL: " + invalidPath);
+}
+foreach (string origin in new[] { "http://github.com", "https://evil.test", "https://github.com:8443", "https://user@github.com" })
+    Assert(InstallerUpdateService.ParseReleaseApi(versionedApi.Replace("https://github.com", origin), out _) == null,
+        "versioned asset enforces the official HTTPS origin: " + origin);
+Assert(InstallerUpdateService.ParseReleaseApi(versionedApi.Replace("1.8.0.exe", "1.8.1.exe"), out _) == null,
+    "API installer filename must match its release version");
+string normalizedAsset = "Dafeiyu-GO-Setup.1.8.0.exe";
+string normalizedPath = versionedPath.Replace(Uri.EscapeDataString(versionedAsset), normalizedAsset);
+string normalizedApi = System.Text.Json.JsonSerializer.Serialize(new { tag_name = releaseTag,
+    assets = new[] { new { name = normalizedAsset, browser_download_url = "https://github.com" + normalizedPath,
+        digest = "sha256:" + releaseHash } } });
+Assert(InstallerUpdateService.ParseReleaseApi(normalizedApi, out _)?.SetupUrl == "https://github.com" + normalizedPath,
+    "API accepts GitHub's bounded dot-normalized versioned asset name");
+string normalizedHtml = versionedHtml.Replace(versionedPath, normalizedPath).Replace(versionedAsset, normalizedAsset);
+Assert(InstallerUpdateService.ParseReleaseAssets(normalizedHtml + assetHtml, releaseTag, out _)?.SetupUrl == "https://github.com" + normalizedPath,
+    "HTML accepts normalized asset and same-hash legacy alias");
+Assert(InstallerUpdateService.ParseReleaseApi(normalizedApi.Replace("Setup.1.8.0", "Setup.1.8.1"), out _) == null,
+    "normalized asset filename also must match the exact release version");
+
 // ---------------------------------------------------------------- 安装器独立版本判定
 // 关键回归：启动器有新版本、安装器没有 → 安装器这一侧必须是"不用动"。
 Assert(InstallerVersionPolicy.Decide("1.5.4", "1.5.4", true) == InstallerUpdateAction.UpToDate, "same version is up to date");

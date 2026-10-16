@@ -1,5 +1,18 @@
 {
   "schemaVersion": 1,
-  "updatedAtUtc": "2026-10-13T05:55:04.0330512Z",
-  "items": []
+  "updatedAtUtc": "2026-10-08T11:48:37.8767650Z",
+  "items": [
+    {
+      "id": "a1246120180",
+      "title": "加入我们的官方QQ群吧~",
+      "body": "在这里获取更新，最新动态以及骚扰群友：1125143450",
+      "tag": "公告",
+      "date": "2026-09-27",
+      "publishedAt": null,
+      "expiresAt": null,
+      "pinned": true,
+      "url": "https://qm.qq.com/cgi-bin/qm/qr?_wv=1027&k=IcQmzin0x5MKi41A06uViek_3s6d9C1K&authKey=dB6A4vaDfiCaHrTh%2BRDTFh3MMdULHKfEnAXnOSLkvSYwP1dgsf8MvvOLIf8QFzNE&noverify=0&group_code=1125143450",
+      "order": 0
+    }
+  ]
 }

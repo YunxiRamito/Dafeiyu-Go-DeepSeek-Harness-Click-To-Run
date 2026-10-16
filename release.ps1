@@ -151,7 +151,7 @@ function Assert-LocalReleaseReceipt {
     Assert-ReleaseClean $Root $receipt.commit
     [xml]$project = Get-Content -LiteralPath (Join-Path $Root 'source/DeepSeekHarness.csproj') -Raw
     if ($project.SelectSingleNode('/Project/PropertyGroup/Version').InnerText -cne $receipt.version) { throw 'Receipt/source version mismatch.' }
-    if ((Split-Path $receipt.zipPath -Leaf) -cne "DeepSeekHarness-$($receipt.version).zip" -or
+    if ((Split-Path $receipt.zipPath -Leaf) -cne "Dafeiyu-GO $($receipt.version).zip" -or
         (Get-FileHash -LiteralPath $receipt.zipPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $receipt.sha256) {
         throw 'ZIP changed after acceptance.'
     }
@@ -220,7 +220,7 @@ function Invoke-LocalReleaseBuild {
             Invoke-ReleaseNative $pwsh @('-NoProfile', '-File', 'verify.ps1', '-Dist', $dist, '-Version', $version)
             $checks += 'verify'
             Assert-ReleaseClean $Root $commit
-            $zip = Join-Path $run "DeepSeekHarness-$version.zip"
+            $zip = Join-Path $run "Dafeiyu-GO $version.zip"
             Compress-Archive -Path (Join-Path $dist '*') -DestinationPath $zip -CompressionLevel Optimal
             $receipt = [ordered]@{ schema = 1; version = $version; commit = $commit; checks = $checks
                 zipPath = $zip; sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()

@@ -18,13 +18,14 @@ namespace DeepSeekHarnessLauncher
             {
                 File.WriteAllText(temporary, JsonSerializer.Serialize(new
                 {
-                    schema_version = 1,
+                    schema_version = 2,
                     workspace_sync = new
                     {
-                        enabled = settings.AriesSyncWorkspaceEnabled,
-                        root = String.IsNullOrWhiteSpace(settings.AriesSyncWorkspace) ? null : settings.AriesSyncWorkspace
+                        enabled = true,
+                        kind = "dsh",
+                        dsh_home = Path.GetFullPath(home)
                     },
-                    web_broadcast = new { enabled = settings.DshWebBroadcastEnabled }
+                    web_broadcast = new { enabled = true }
                 }), new UTF8Encoding(false));
                 File.Move(temporary, path, true);
             }

@@ -81,6 +81,7 @@ namespace DeepSeekHarnessLauncher
                 connectionStop = new CancellationTokenSource();
                 baseUri = uri;
                 binding = null;
+                publishedHostCapabilities = null;
                 SetState(new AriesConnectionState { ServerUrl = uri.ToString().TrimEnd('/'), LocalDevice = LocalDevice() });
                 JsonElement node = await SendAsync(HttpMethod.Get, "/node", null, false, null, cancellationToken).ConfigureAwait(false);
                 string nodeId = StringValue(node, "node_id");
@@ -185,7 +186,7 @@ namespace DeepSeekHarnessLauncher
             finally { gate.Release(); }
         }
 
-        public async Task<AriesConnectionState> ApproveApplicationAsync(string applicationId, string expectedFingerprint, CancellationToken cancellationToken = default)
+        public async Task<AriesConnectionState> ApproveApplicationAsync(string applicationId, string expectedFingerprint, CancellationToken cancellationToken = default, ConnectionPairingPrompt expectedPrompt = null)
         {
             EnsureConnected(); if (!binding.IsCreator) throw new AriesServiceException("creator_required", "只有创建者可批准本配对申请。");
             string expectedNodeId = binding.NodeId, expectedGroupId = binding.GroupId;
@@ -194,8 +195,10 @@ namespace DeepSeekHarnessLauncher
             {
                 EnsureConnected();
                 AssertApprovalScope(expectedNodeId, expectedGroupId);
+                if (expectedPrompt != null) AssertPairingPromptCurrent(expectedPrompt);
                 await RefreshCoreAsync(cancellationToken).ConfigureAwait(false);
                 AssertApprovalScope(expectedNodeId, expectedGroupId);
+                if (expectedPrompt != null) AssertPairingPromptCurrent(expectedPrompt);
                 string deliveryPath = GroupPath("/applications/" + Escape(applicationId) + "/key-delivery");
                 binding.Mutations.TryGetValue("POST " + deliveryPath, out AriesMutation pendingDelivery);
                 AriesPairingApplication app = state.PendingApplications.FirstOrDefault(x => x.ApplicationId == applicationId);
@@ -291,10 +294,20 @@ namespace DeepSeekHarnessLauncher
             finally { gate.Release(); }
         }
 
-        public async Task<AriesConnectionState> RejectApplicationAsync(string applicationId, CancellationToken cancellationToken = default)
+        public async Task<AriesConnectionState> RejectApplicationAsync(string applicationId, CancellationToken cancellationToken = default, ConnectionPairingPrompt expectedPrompt = null)
         {
             EnsureConnected(); await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try { await RequestMutationAsync(HttpMethod.Post, "/groups/" + binding.GroupId + "/applications/" + applicationId + "/approvals", "{\"approve\":false}", cancellationToken).ConfigureAwait(false); await RefreshCoreAsync(cancellationToken).ConfigureAwait(false); return state; }
+            try
+            {
+                if (expectedPrompt != null)
+                {
+                    AssertPairingPromptCurrent(expectedPrompt);
+                    await RefreshCoreAsync(cancellationToken).ConfigureAwait(false);
+                    AssertPairingPromptCurrent(expectedPrompt);
+                }
+                await RequestMutationAsync(HttpMethod.Post, GroupPath("/applications/" + Escape(applicationId) + "/approvals"), "{\"approve\":false}", cancellationToken).ConfigureAwait(false);
+                await RefreshCoreAsync(cancellationToken).ConfigureAwait(false); return state;
+            }
             catch (Exception ex) { SetError(ex); throw; }
             finally { gate.Release(); }
         }
@@ -534,7 +547,7 @@ namespace DeepSeekHarnessLauncher
                             { applicationsPublicKeyAvailable = false; code = "application_public_key_unavailable"; message = "申请缺少 public_key，无法验证指纹或投递密钥。"; continue; }
                             AriesCrypto.CheckIdentity(id, pub);
                             applications.Add(new AriesPairingApplication { ApplicationId = StringValue(a, "application_id"),
-                                DeviceId = id, DeviceName = StringValue(a, "device_name"), PublicKey = pub, Fingerprint = AriesCrypto.Fingerprint(pub), Status = StringValue(a, "status") });
+                                DeviceId = id, DeviceName = StringValue(a, "device_name"), PublicKey = pub, Fingerprint = AriesCrypto.Fingerprint(pub), Status = StringValue(a, "status"), ExpiresAt = OptionalTime(StringValue(a, "expires_at")) });
                         }
                     }
                     catch (AriesServiceException ex) when (ex.StatusCode == HttpStatusCode.NotFound || ex.StatusCode == HttpStatusCode.MethodNotAllowed)
@@ -742,6 +755,11 @@ namespace DeepSeekHarnessLauncher
         private AriesDeviceInfo LocalDevice() { string pub = AriesCrypto.PublicKey(seed); return new AriesDeviceInfo { DeviceId = AriesCrypto.DeviceId(pub), DeviceName = settings?.AriesDeviceName ?? Environment.MachineName, PublicKey = pub, Fingerprint = AriesCrypto.Fingerprint(pub), IsLocal = true, IsPaired = !String.IsNullOrEmpty(binding?.ContentKey) && !String.IsNullOrEmpty(binding?.PeerDeviceId) }; }
         private void SetState(AriesConnectionState next)
         {
+            if (state.ServerConnected != next.ServerConnected || state.NodeId != next.NodeId
+                || state.GroupId != next.GroupId || state.ServerUrl != next.ServerUrl
+                || state.LocalDevice?.DeviceId != next.LocalDevice?.DeviceId
+                || (state.PairingStatus == AriesPairingStatus.Revoked) != (next.PairingStatus == AriesPairingStatus.Revoked))
+                Interlocked.Increment(ref pairingContextVersion);
             state = next;
             Interlocked.Increment(ref providerRevision);
             foreach (Action<AriesConnectionState> subscriber in StateChanged.GetInvocationList())

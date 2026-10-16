@@ -18,7 +18,7 @@
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>..\DeepSeekHarness.ico</ApplicationIcon>
-    <Version>1.8.0</Version>
+    <Version>1.8.1</Version>
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="obj\**;obj-*\**;bin\**;bin-*\**;dist-*\**" />
@@ -27,6 +27,7 @@
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260804001" />
     <PackageReference Include="Markdig" Version="0.37.0" />
     <Compile Include="..\InfoWindow.cs" Link="InfoWindow.cs" />
+    <Compile Include="..\WindowForeground.cs" Link="WindowForeground.cs" />
     <Compile Include="..\NoticeMarkdownRenderer.cs" Link="NoticeMarkdownRenderer.cs" />
     <Compile Include="..\LauncherAppearance.cs" Link="LauncherAppearance.cs" />
     <Compile Include="..\CornerRadiusHelper.cs" Link="CornerRadiusHelper.cs" />

@@ -470,7 +470,7 @@ namespace DeepSeekHarnessLauncher
                     {
                         if (_settingsClosed || _dshDataCancellation != cancellation) return;
                         DshDataImportDetailText.Text = text;
-                        DshDataImportProgress.Value = Math.Clamp(percent, 0, 100);
+                        SetBackupProgressValue(DshDataImportProgress, percent);
                         ReportBackupOperationProgress(text, percent);
                     }), cancellation.Token));
                 if (_settingsClosed) return;
@@ -559,7 +559,7 @@ namespace DeepSeekHarnessLauncher
                     {
                         if (_settingsClosed || _dshDataCancellation != cancellation) return;
                         DshDataExportDetailText.Text = text;
-                        DshDataExportProgress.Value = Math.Clamp(percent, 0, 100);
+                        SetBackupProgressValue(DshDataExportProgress, percent);
                         ReportBackupOperationProgress(text, percent);
                     }), cancellation.Token));
                 if (_settingsClosed) return;
@@ -804,12 +804,19 @@ namespace DeepSeekHarnessLauncher
             _backupOperationDialog.IsPrimaryButtonEnabled = !_backupBusy && !_dshDataBusy && selected;
         }
 
+        private static void SetBackupProgressValue(ProgressBar progress, double percent)
+        {
+            bool known = ProgressValue.TryNormalize(percent, out double value);
+            progress.IsIndeterminate = !known;
+            if (known) progress.Value = value;
+        }
+
         private void ReportBackupOperationProgress(string message, double percent)
         {
             if (_settingsClosed || _backupOperationProgress == null || _backupOperationFinished) return;
-            _backupOperationProgress.IsIndeterminate = false;
-            _backupOperationProgress.Value = Math.Clamp(percent, 0, 100);
-            _backupOperationStatus.Text = Math.Clamp(percent, 0, 100).ToString("0.#") + "% · " + message;
+            SetBackupProgressValue(_backupOperationProgress, percent);
+            _backupOperationStatus.Text = ProgressValue.TryNormalize(percent, out double value)
+                ? value.ToString("0.#") + "% · " + message : message;
         }
 
         private void ShowBackupOperationResult(InfoBarSeverity severity, string message)

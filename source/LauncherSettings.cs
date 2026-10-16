@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace DeepSeekHarnessLauncher
 {
@@ -90,7 +90,7 @@ namespace DeepSeekHarnessLauncher
         public string AriesDeviceId { get; set; } = String.Empty;
         public string AriesSyncWorkspace { get; set; } = String.Empty;
         public bool AriesSyncWorkspaceEnabled { get; set; } = true;
-        public bool DshWebBroadcastEnabled { get; set; }
+        public bool DshWebBroadcastEnabled { get; set; } = true;
 
         public string DeveloperCenterBaseUrl { get; set; } = "https://202.189.21.218:8787";
 

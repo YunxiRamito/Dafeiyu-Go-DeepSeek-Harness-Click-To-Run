@@ -41,8 +41,8 @@ internal static class PcOfficialLaunchCaptureAssets
 
     internal static void AssertKnownArchivePreload(string specifier, ProcessStartInfo launch, DymOfficialRecoveryScope scope)
     {
-        // These three bytes are from the already frozen 200430-byte Connect
-        // 0.3.0 package, SHA256 4f3657730459197835a014b7f7433b44cc652e5b32480cdb37c061b160e75bf2.
+        // These three admission files are unchanged in the frozen 205295-byte Connect
+        // 0.3.1 package, SHA256 8793c4066a7df2e15911322090671e4f1f30bc02093fcda55d74a0a59d835d65.
         // The actual factory still calls ConnectionArchivePreload.Configure,
         // which validates the entire installed package against that archive.
         if (!Uri.TryCreate(specifier, UriKind.Absolute, out Uri uri) || !uri.IsFile

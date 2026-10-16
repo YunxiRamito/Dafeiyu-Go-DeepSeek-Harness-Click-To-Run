@@ -43,7 +43,7 @@ namespace DeepSeekHarnessLauncher
     {
         public const string Title = "Dafeiyu-Go";
         public const string EnglishTitle = "Dafeiyu-Go";
-        public const string Version = "1.8.0";
+        public const string Version = "1.8.1";
         public const string Repository = "YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run";
         public const string LegacyRepository = "YunxiRamito/DSH-Launcher";
         public const string UserAgent = "Dafeiyu-Go/" + Version;
@@ -344,6 +344,21 @@ namespace DeepSeekHarnessLauncher
                     new DispatcherQueueSynchronizationContext(previewDispatcher));
                 EnsureXamlControlsResources();
 
+                if (String.Equals(_settingsPreviewPage, "PairingRequest", StringComparison.OrdinalIgnoreCase))
+                {
+                    LauncherContext.ApplyWindowAppearance(Settings);
+                    async Task ShowPairingPreviewAsync()
+                    {
+                        var dialog = new ConnectionPairingRequestDialog(Environment.GetEnvironmentVariable("DAFEIYU_PAIRING_PREVIEW_DEVICE_NAME") ?? "测试手机");
+                        bool? choice = await dialog.ShowAsync();
+                        LauncherLog.Write(Path.Combine(LauncherSettingsStore.DirectoryPath, "pairing-preview.log"),
+                            "Pairing prompt choice: " + (choice.HasValue ? choice.Value ? "allow" : "deny" : "closed"));
+                        _application.Exit();
+                    }
+                    _ = ShowPairingPreviewAsync();
+                    return;
+                }
+
                 if (String.Equals(_settingsPreviewPage, "ApplicationWindow", StringComparison.OrdinalIgnoreCase)
                     || String.Equals(_settingsPreviewPage, "ApplicationStartup", StringComparison.OrdinalIgnoreCase))
                 {
@@ -364,7 +379,8 @@ namespace DeepSeekHarnessLauncher
                         () => ShowApplicationPreviewUpdate("DSH"),
                         () => ShowApplicationPreviewUpdate("插件"),
                         () => RestartApplicationPreview(previewUrl),
-                        () => ShowApplicationPreviewSettings("ServerMetrics"));
+                        () => ShowApplicationPreviewSettings("ServerMetrics"),
+                        () => ShowApplicationPreviewSettings("About"));
                     _applicationPreviewWindow.SetOnlinePresence(new ClientNoticePresence { OnlineCount = 17 });
                     _applicationPreviewWindow.Closed += delegate { _applicationPreviewWindow = null; ExitProcess(0); };
                     _applicationPreviewWindow.SetStartupProgressVisible(Settings?.ProgressReminder == true);
@@ -432,7 +448,8 @@ namespace DeepSeekHarnessLauncher
                     () => _currentContext?.CheckUpdatesFromApplicationWindow("DSH"),
                     () => _currentContext?.CheckUpdatesFromApplicationWindow("插件"),
                     () => _currentContext?.RestartFromApplicationWindow(),
-                    () => _currentContext?.OpenServerSettingsFromApplicationWindow());
+                    () => _currentContext?.OpenServerSettingsFromApplicationWindow(),
+                    () => _currentContext?.OpenAboutFromApplicationWindow());
                 _startupApplicationWindow.Closed += delegate
                 {
                     _startupApplicationWindow = null;
@@ -850,6 +867,9 @@ namespace DeepSeekHarnessLauncher
 
         private static void SignalExistingInstance()
         {
+            // The named event does not expose the owner PID. Grant only at this
+            // explicit second-launch gesture; no timer repeatedly takes focus.
+            WindowForeground.AllowAnyProcess();
             try
             {
                 using (EventWaitHandle openPageEvent = EventWaitHandle.OpenExisting(OpenPageEventName))
@@ -1464,7 +1484,7 @@ namespace DeepSeekHarnessLauncher
         }
     }
 
-    internal sealed class LauncherContext
+    internal sealed partial class LauncherContext
     {
         private readonly DispatcherQueue _dispatcherQueue;
         private readonly EventWaitHandle _openPageEvent;
@@ -1818,6 +1838,7 @@ namespace DeepSeekHarnessLauncher
         internal void CheckUpdatesFromApplicationWindow(string target) => CheckUpdatesFromWindow(target);
         internal void RestartFromApplicationWindow() => RestartItemClick();
         internal void OpenServerSettingsFromApplicationWindow() => ShowSettings("ServerMetrics");
+        internal void OpenAboutFromApplicationWindow() => ShowSettings("About");
 
         internal void SetStartupApplicationWindow(DshWindow window)
         {
@@ -4699,19 +4720,6 @@ namespace DeepSeekHarnessLauncher
         private void RestartItemClick()
         {
             bool wasRunning = _serviceRunning;
-            if (wasRunning)
-            {
-                WinFormsDialogResult result = WinFormsMessageBox.Show(
-                    "确定要重启 DSH 服务吗？当前网页连接会暂时中断。",
-                    Constants.Title,
-                    WinFormsMessageBoxButtons.OKCancel,
-                    WinFormsMessageBoxIcon.Question,
-                    System.Windows.Forms.MessageBoxDefaultButton.Button2);
-                if (result != WinFormsDialogResult.OK)
-                {
-                    return;
-                }
-            }
 
             if (!TryBeginServiceRestart(false))
             {
@@ -4777,17 +4785,6 @@ namespace DeepSeekHarnessLauncher
 
         private void ForceStopItemClick()
         {
-            WinFormsDialogResult result = WinFormsMessageBox.Show(
-                "确定要强行终止 DSH 服务吗？",
-                Constants.Title,
-                WinFormsMessageBoxButtons.OKCancel,
-                WinFormsMessageBoxIcon.Warning,
-                System.Windows.Forms.MessageBoxDefaultButton.Button2);
-            if (result != WinFormsDialogResult.OK)
-            {
-                return;
-            }
-
             if (StopService())
             {
                 SetTrayState(false, Constants.Title + " 已停止");
@@ -5299,17 +5296,6 @@ namespace DeepSeekHarnessLauncher
         {
             if (_serviceRunning)
             {
-                WinFormsDialogResult result = WinFormsMessageBox.Show(
-                    "退出 Dafeiyu-Go 将同时停止 DSH 服务。是否继续？",
-                    Constants.Title,
-                    WinFormsMessageBoxButtons.OKCancel,
-                    WinFormsMessageBoxIcon.Question,
-                    System.Windows.Forms.MessageBoxDefaultButton.Button2);
-                if (result != WinFormsDialogResult.OK)
-                {
-                    return;
-                }
-
                 if (!StopService())
                 {
                     ShowNotification("DSH 服务尚未完成停止，请稍后重试退出。", true, LauncherReminderKind.Service);
@@ -5824,6 +5810,12 @@ namespace DeepSeekHarnessLauncher
             }
 
             if (!TryPrepareServicePort(false, out failureMessage)) return false;
+            // The shared connection plugin must be composed into the explicit web
+            // profile before the owned DSH process starts. Never patch a running
+            // service or silently restart an externally owned process.
+            var connectionPlugin = ConnectionPluginUpdateService.EnsureInstalled(_settings, WriteLog);
+            if (connectionPlugin.Failed || connectionPlugin.Cancelled || !connectionPlugin.Started || connectionPlugin.ExitCode != 0)
+                WriteLog("连接插件尚未就绪，DSH 将继续启动；可在连接页重试安装。");
             if (!PrepareMobileUiForOwnedLaunch(out failureMessage)) return false;
             // Recheck after package preparation; another process may have claimed
             // the configured port while the SDK/profile lease was busy.
@@ -6274,6 +6266,7 @@ namespace DeepSeekHarnessLauncher
         private void OpenServicePage()
         {
             WriteLog("Open page requested.");
+            if (_dshWindow != null && !_dshWindow.IsClosed) _dshWindow.Activate();
             _autoOpenPageTimer?.Stop();
             _pendingOpenAfterStartup = false;
             if (_startupInProgress || _dshUpdateInProgress || !_serviceRunning)
@@ -6432,6 +6425,7 @@ namespace DeepSeekHarnessLauncher
 
         private ConnectionProviderHost EnsureConnectionProviderHost()
         {
+            EnsurePairingPromptNotifications();
             lock (_connectionProviderLock)
             {
                 if (_exiting) return null;
@@ -6884,7 +6878,7 @@ namespace DeepSeekHarnessLauncher
                             () => CheckUpdatesFromWindow("DSH"),
                             () => CheckUpdatesFromWindow("插件"),
                             RestartFromApplicationWindow,
-                            OpenServerSettingsFromApplicationWindow);
+                            OpenServerSettingsFromApplicationWindow, OpenAboutFromApplicationWindow);
                         _dshWindow = window;
                         _dshWindowOrigin = origin;
                         window.SetOnlinePresence(_noticePresence);

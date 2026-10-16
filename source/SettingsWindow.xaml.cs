@@ -1201,7 +1201,7 @@ namespace DeepSeekHarnessLauncher
                     {
                     }
 
-                    FlashSearchAnchor(anchor);
+                    FocusSearchAnchor(anchor);
                 });
         }
 
@@ -1227,17 +1227,9 @@ namespace DeepSeekHarnessLauncher
             }
         }
 
-        /// <summary>短暂高亮目标行，并把键盘焦点交过去。</summary>
-        private void FlashSearchAnchor(FrameworkElement anchor)
+        /// <summary>把键盘焦点交给搜索目标，保留页面自身的主题背景。</summary>
+        private static void FocusSearchAnchor(FrameworkElement anchor)
         {
-            Panel panel = anchor as Panel;
-            Brush original = panel == null ? null : panel.Background;
-            if (panel != null)
-            {
-                panel.Background = new SolidColorBrush(
-                    Windows.UI.Color.FromArgb(56, 255, 185, 0));
-            }
-
             try
             {
                 anchor.Focus(FocusState.Programmatic);
@@ -1246,37 +1238,6 @@ namespace DeepSeekHarnessLauncher
             {
             }
 
-            if (panel == null)
-            {
-                return;
-            }
-
-            DispatcherQueueTimer timer = DispatcherQueue.CreateTimer();
-            timer.Interval = TimeSpan.FromMilliseconds(1400);
-            timer.IsRepeating = false;
-            var highlight = new SearchAnchorHighlight(new WeakReference<Panel>(panel), original);
-            timer.Tick += highlight.Restore;
-            timer.Start();
-        }
-
-        private sealed class SearchAnchorHighlight
-        {
-            private readonly WeakReference<Panel> _panel;
-            private Brush _original;
-
-            internal SearchAnchorHighlight(WeakReference<Panel> panel, Brush original)
-            {
-                _panel = panel;
-                _original = original;
-            }
-
-            internal void Restore(DispatcherQueueTimer sender, object args)
-            {
-                sender.Stop();
-                sender.Tick -= Restore;
-                if (_panel.TryGetTarget(out Panel panel)) panel.Background = _original;
-                _original = null;
-            }
         }
 
         private void SettingsRoot_ActualThemeChanged(
@@ -12915,8 +12876,7 @@ namespace DeepSeekHarnessLauncher
                     {
                             if (_settingsClosed || _backupCancellation != cancellation) return;
                             if (!String.IsNullOrWhiteSpace(text)) BackupExportDetail.Text = text;
-                            BackupExportProgress.Value =
-                                Math.Max(0, Math.Min(100, percent));
+                            SetBackupProgressValue(BackupExportProgress, percent);
                             ReportBackupOperationProgress(BackupExportDetail.Text, percent);
                     }),
                     _host.Log,
@@ -13148,8 +13108,7 @@ namespace DeepSeekHarnessLauncher
                                 BackupImportDetail.Text = text;
                             }
 
-                            BackupImportProgress.Value =
-                                Math.Max(0, Math.Min(100, percent));
+                            SetBackupProgressValue(BackupImportProgress, percent);
                             ReportBackupOperationProgress(BackupImportDetail.Text, percent);
                     }),
                     _host.Log,

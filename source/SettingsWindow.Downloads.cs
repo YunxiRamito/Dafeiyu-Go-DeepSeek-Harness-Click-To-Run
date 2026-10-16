@@ -4,8 +4,7 @@ using System.Linq;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
-using Windows.UI;
+using Microsoft.UI.Xaml.Markup;
 
 namespace DeepSeekHarnessLauncher
 {
@@ -202,13 +201,12 @@ namespace DeepSeekHarnessLauncher
             row.Root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             for (int i = 0; i < 5; i++) row.Root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             row.Name = new TextBlock { FontSize = 14, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
-            row.Detail = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap };
-            row.Detail.Foreground = DownloadBrush("TextFillColorSecondaryBrush", Color.FromArgb(255, 170, 170, 170));
+            row.Detail = CreateDownloadText("TextFillColorSecondaryBrush", 12);
             row.Progress = new ProgressBar { Minimum = 0, Maximum = 100, Height = 4, HorizontalAlignment = HorizontalAlignment.Stretch };
-            row.Error = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap, MaxLines = 3, TextTrimming = TextTrimming.CharacterEllipsis };
-            row.Error.Foreground = DownloadBrush("SystemFillColorCriticalBrush", Color.FromArgb(255, 196, 43, 28));
-            row.Time = new TextBlock { FontSize = 11, TextWrapping = TextWrapping.Wrap };
-            row.Time.Foreground = DownloadBrush("TextFillColorSecondaryBrush", Color.FromArgb(255, 170, 170, 170));
+            row.Error = CreateDownloadText("SystemFillColorCriticalBrush", 12);
+            row.Error.MaxLines = 3;
+            row.Error.TextTrimming = TextTrimming.CharacterEllipsis;
+            row.Time = CreateDownloadText("TextFillColorSecondaryBrush", 11);
             row.Root.Children.Add(row.Name);
             // Keep the action buttons clear of the detail line (the buttons span rows 0-1).
             Place(row.Root, row.Detail, 1, 1);
@@ -230,23 +228,16 @@ namespace DeepSeekHarnessLauncher
             return row;
         }
 
-        private static Brush DownloadBrush(string key, Color fallback)
+        private static TextBlock CreateDownloadText(string brushKey, double fontSize)
         {
-            try
-            {
-                ResourceDictionary resources = Application.Current?.Resources;
-                if (resources != null && resources.TryGetValue(key, out object resource)
-                    && resource is Brush brush)
-                {
-                    return brush;
-                }
-            }
-            catch
-            {
-                // Theme resources vary between WinAppSDK runtime versions. The
-                // row remains usable with a fixed readable fallback brush.
-            }
-            return new SolidColorBrush(fallback);
+            // Keep a ThemeResource expression on each element: looking a brush up
+            // in Application.Resources pins it to the application's theme instead
+            // of this window's requested theme and misses subsequent theme changes.
+            var text = (TextBlock)XamlReader.Load(
+                "<TextBlock xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\""
+                + " Foreground=\"{ThemeResource " + brushKey + "}\" TextWrapping=\"Wrap\" />");
+            text.FontSize = fontSize;
+            return text;
         }
 
         private static void Place(Grid root, FrameworkElement child, int row, int columnSpan = 2)

@@ -11,7 +11,7 @@
 3. 使用 `./release.ps1 -Publish` 一次完成本机验收和发布，或将已有验收记录传给 `./publish-release.ps1 -ReceiptPath '<acceptance.json 完整路径>'`。脚本核对提交、版本、ZIP 哈希及全部验收项，拒绝复用被修改的包。
 4. 先发布或核验 npm 的不可变版本，完整下载 npmmirror tgz 并验证内嵌 ZIP SHA-256。npm 命令成功后仍可能有处理延迟，镜像同步任务成功也不等于新版本已可下载。
 5. 创建新 tag 或确认已有 tag 指向验收提交；上传同一 ZIP 至 GitHub，完整下载校验后公开 Release。同名不同哈希资产及不同提交的已有 tag 均停止，不覆盖、不移动。
-6. 最后生成 `manifest.json` 与 `manifest-<版本>.json`，审阅后仅提交这两份清单并推送；回读线上清单及 Release 日志，并记录 HANDOVER。清单的 sha256 始终是最终 ZIP 哈希，不是 tgz 哈希。
+6. 最后生成根目录 `manifest.json` 与 `manifests/versions/manifest-<版本>.json`，审阅后仅提交这两份清单并推送；回读线上清单及 Release 日志，并记录 HANDOVER。清单的 sha256 始终是最终 ZIP 哈希，不是 tgz 哈希。
 
 脚本把构建快照、缓存、临时文件及验收产物放到项目 `Temp_SetupandLauncher`，默认代理为本机 7890，可通过参数指定。GitHub workflow 仅允许手动验证和保存产物；推 main / tag 均不会触发自动发 npm 或 Release。现有签名状态见 SIGNING，不把本机校验称作数字签名。
 
@@ -42,7 +42,7 @@
 2. 本地验证：`.\release.ps1 -NoManifest` + `.\verify.ps1 -Dist .\source\dist-<版本> -Version <版本>`。
 3. **同步 HTML 交互预览**（下一节，硬要求）：任何一次更新或补丁发版都必须做，做完要重新生成单文件并跑 `verify.mjs` 全绿。
 4. 推本次新 tag（不强推历史 tag），确认 CI 成功。
-5. 确认 npm / npmmirror 实际可下载，解出包内 ZIP 并核对 SHA-256 与 GitHub Release 一致，再更新 `manifest.json` 与 `manifest-<版本>.json`；不得填本地验证包的哈希。
+5. 确认 npm / npmmirror 实际可下载，解出包内 ZIP 并核对 SHA-256 与 GitHub Release 一致，再更新根目录 `manifest.json` 与 `manifests/versions/manifest-<版本>.json`；不得填本地验证包的哈希。
 6. **编辑 GitHub Release 的标题和正文**：写入产品更新说明，保留下载文件名、实际 SHA-256、签名状态及已验证的镜像状态。npm 失败时不能宣称镜像已同步。
 7. **通过 GitHub 页面或 API 读回 Release**，确认版本、标题、更新日志、文件名、哈希、限制说明均正确。只改仓库 CHANGELOG 不算完成 GitHub 更新日志。
 8. 将发布结果、CI 链接、镜像核验和未测事项回填 `HANDOVER.md`，提交推送文档。全部完成后才能宣布发布完成。
@@ -95,7 +95,7 @@
 | 默认分支 | `main` |
 | 本地仓库 | `G:\DeepSeek DSH\DSH Works\Project\Dafeiyu-Go\Dafeiyu-Go-DeepSeek-Harness-Click-To-Run` |
 | 当前版本 | `1.7.0`（收尾中，未发布） |
-| 安装器读取的清单 | 仓库根目录 `manifest.json`（公开版本仍为 1.6.0；旧 `manifest-1.6.1.json` 是草稿，不得作为正式入口） |
+| 安装器读取的清单 | 仓库根目录 `manifest.json`（固定更新入口；历史版本清单位于 `manifests/versions/`） |
 | 补丁清单 | `patches.json`（正式）/ `patches-preview.json`（内测） |
 | 更新日志 | `CHANGELOG.md`（发版脚本会把对应小节写进 `manifest.json` 的 `notes`） |
 
@@ -118,7 +118,7 @@ deepseek-harness-launcher          本仓库 = DeepSeek Starter(启动器)
   ├─ manifest.json                  ← 安装器读的发布清单(必须放仓库根目录)
   ├─ release.ps1                    一键发版脚本
   ├─ .github\workflows\release.yml  打 tag 自动出包
-  └─ Releases                       DeepSeekHarness-<版本>.zip
+  └─ Releases                       Dafeiyu-GO <版本>.zip
 
 dsh-installer                      另一个仓库 = 安装程序
   └─ 装着的时候:读 launcher 仓库的 manifest.json → 下 zip → 解开
@@ -211,26 +211,26 @@ DeepSeek Harness.Core.exe   ← WinUI3 主程序
 zip **根目录直接就是文件**,不要多套一层文件夹:
 
 ```
-DeepSeekHarness-1.3.9.zip
+Dafeiyu-GO 1.3.9.zip
 ├─ DeepSeek Harness.exe
 ├─ DeepSeek Harness.Core.exe
 └─ ...
 ```
 
 ```powershell
-Compress-Archive -Path '.\dist-1.3.9\*' -DestinationPath '.\DeepSeekHarness-1.3.9.zip'
+Compress-Archive -Path '.\dist-1.3.9\*' -DestinationPath '.\Dafeiyu-GO 1.3.9.zip'
 ```
 
 ### 4. 算 SHA256
 
 ```powershell
-(Get-FileHash '.\DeepSeekHarness-1.3.9.zip' -Algorithm SHA256).Hash.ToLower()
+(Get-FileHash '.\Dafeiyu-GO 1.3.9.zip' -Algorithm SHA256).Hash.ToLower()
 ```
 
 ### 5. 发 Release
 
 - tag:`v1.3.9`
-- 资产:`DeepSeekHarness-1.3.9.zip`
+- 资产:`Dafeiyu-GO 1.3.9.zip`
 - 说明:写这一版改了什么
 
 ### 6. 更新仓库根目录的 `manifest.json`
@@ -241,7 +241,7 @@ Compress-Archive -Path '.\dist-1.3.9\*' -DestinationPath '.\DeepSeekHarness-1.3.
   "sha256": "把上一步的哈希粘这里",
   "subDirectory": "",
   "assets": {
-    "github": "https://github.com/<owner>/deepseek-harness-launcher/releases/download/v1.3.9/DeepSeekHarness-1.3.9.zip",
+    "github": "https://github.com/<owner>/deepseek-harness-launcher/releases/download/v1.3.9/Dafeiyu-GO%201.3.9.zip",
     "mirrors": []
   },
   "notes": "开机自启动菜单项 + 浅色模式高亮修复"

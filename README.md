@@ -12,6 +12,8 @@
 
 <sub>A Windows tray launcher and manager for DeepSeek Harness.</sub>
 
+[参与贡献](CONTRIBUTING.md) · [按功能查找代码](docs/CONTRIBUTION-MAP.md)
+
 <br>
 
 [![launcher release](https://img.shields.io/github/v/release/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run?label=launcher&style=flat-square&color=111113)](https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/latest)
@@ -40,9 +42,7 @@
 
 <br>
 
-**1.6.0 已发布（2026-10-07）**：设置界面重新分组为六项并支持顶部搜索；插件可粘贴 GitHub 仓库链接安装；技能与插件说明可翻译成中文；安装器与启动器各自独立更新。官方包未签名，见 [签名说明](SIGNING.md)。
-
-**1.7.0 收尾中（未发布）**：信息窗口、公告与通知、Markdown 编辑器、在线人数/服务器监控和页面/资源补丁正在验收。下文预览可能包含这些开发中内容，当前下载仍是正式 1.6.0。
+正式发行包与版本说明见 [Releases](https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/latest) 和 [更新日志](CHANGELOG.md)。运行与签名信息见 [运行要求](#运行要求与权限) 和 [签名说明](SIGNING.md)。
 
 ## 在线体验
 
@@ -71,7 +71,7 @@
 - 不要输入真实 API Key
 - 只有点「立即下载」才会打开 GitHub 发布页
 
-预览跟随开发中的版本，个别界面可能比当前 Release 更新。
+交互预览用于了解操作流程；实际可用功能与界面以所安装的发行包为准。
 
 </td>
 </tr>
@@ -107,7 +107,7 @@
 </tr>
 </table>
 
-<sub>动图录制自在线交互预览，数据为样例。信息窗口里的服务启动 / 重启状态与「更新 → 补丁」属于开发中的 1.7.0（未发布）。</sub>
+<sub>动图录制自在线交互预览，数据为样例；实际界面以所安装的发行包为准。</sub>
 
 ## 功能导览
 
@@ -124,7 +124,7 @@
 - 查询账户余额，设置余额与消费告警。
 - 安装内置统计插件后，查看近 7 / 15 / 30 天 Token 用量与花费估算，悬停看明细。
 - 花费按模型单价估算；余额变化是观测差额，不是完整账单。
-- 公告集中显示，可一键全部已读；开发中的 1.7.0 将公告和通知接入 Markdown 信息窗口，按钮动作仅在点击并确认后执行。
+- 公告集中显示，可一键全部已读；公告与通知通过 Markdown 信息窗口呈现。
 
 </details>
 
@@ -187,7 +187,7 @@
 - DSH 通道与更新策略：自动下载安装、仅检查或关闭。
 - 安装器与启动器各自比对版本，互不阻塞；可在这里「修复安装器」。
 - 进度、速度与历史在侧栏左下角的「下载任务」里，可暂停 / 继续 / 重试 / 取消。
-- 「补丁」子页属于开发中的 1.7.0，尚未发布；仅页面和资源补丁可应用，脚本和程序文件补丁即使确认也拒绝安装。
+- 「补丁」子页用于页面和资源更新；程序文件与脚本补丁不在支持范围，见 [补丁说明](PATCHES.md)。
 
 </details>
 
@@ -210,7 +210,7 @@
 
 ```mermaid
 flowchart LR
-    S["安装器<br/>DSH-Installer-Setup.exe"] -->|部署 DSH 与便携组件| D["DSH 本体<br/>Node.js 服务"]
+    S["安装器<br/>Dafeiyu-GO-Setup 版本.exe"] -->|部署 DSH 与便携组件| D["DSH 本体<br/>Node.js 服务"]
     S -->|部署启动器| L["Dafeiyu-Go 启动器<br/>托盘 + 设置窗口"]
     L -->|启动 / 重启 / 停止| D
     L -->|读取发布清单| M[("manifest.json<br/>GitHub raw · jsDelivr 等")]
@@ -232,7 +232,7 @@ flowchart LR
 
 ## 三步开始
 
-1. **下载**：[安装器最新版](https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Setup/releases/latest)负责部署环境与启动器；手动安装则下载 [启动器最新版](https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/latest)的 `DeepSeekHarness-<版本>.zip`。
+1. **下载**：[安装器最新版](https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Setup/releases/latest)（文件名为 `Dafeiyu-GO-Setup <版本>.exe`）负责部署环境与启动器；手动安装则下载 [启动器最新版](https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/latest)的 `Dafeiyu-GO <版本>.zip`。
 2. **安装 / 解压**：按安装器向导操作，或将 ZIP **完整解压**到 `<DSH 根目录>\DeepSeek Harness\`，保留所有依赖文件。
 3. **启动**：双击 `DeepSeek Harness.exe`，同意 UAC。服务就绪后打开网页；右键托盘图标进入菜单与设置。
 

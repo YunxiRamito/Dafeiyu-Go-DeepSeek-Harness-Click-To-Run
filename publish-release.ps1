@@ -83,8 +83,8 @@ function Get-LocalGitHubRelease {
 
 function Test-GitHubReleaseAsset {
     param([string]$Repository, $Release, $Receipt, [hashtable]$Headers, [string]$Proxy, [string]$Directory)
-    $name = "DeepSeekHarness-$($Receipt.version).zip"
-    $assets = @($Release.assets | Where-Object name -CEQ $name)
+    $name = "Dafeiyu-GO $($Receipt.version).zip"
+    $assets = @($Release.assets | Where-Object { $_.name -ceq $name -or $_.name -ceq $name.Replace(' ','.') })
     if ($assets.Count -gt 1) { throw 'Duplicate release assets are forbidden.' }
     if (-not $assets.Count) { return $false }
     $path = Join-Path $Directory ('github-' + [guid]::NewGuid().ToString('N') + '.zip')
@@ -117,7 +117,10 @@ function Get-LocalReleaseNotes {
 
 function Write-LocalReleaseManifests {
     param([string]$Root, $Receipt, [string]$AssetUrl, [string]$Notes)
-    $paths = @((Join-Path $Root "manifest-$($Receipt.version).json"), (Join-Path $Root 'manifest.json'))
+    if ($Receipt.version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?$') { throw 'Invalid manifest version.' }
+    $versioned = "manifests/versions/manifest-$($Receipt.version).json"
+    $paths = @((Join-Path $Root $versioned), (Join-Path $Root 'manifest.json'))
+    New-Item -ItemType Directory -Path (Split-Path $paths[0] -Parent) -Force | Out-Null
     $manifest = [ordered]@{ version = $Receipt.version; sha256 = $Receipt.sha256; subDirectory = ''
         assets = [ordered]@{ github = $AssetUrl; mirrors = @() }; notes = $Notes; releasedAt = [DateTime]::UtcNow.ToString('o') }
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($manifest | ConvertTo-Json -Depth 10))
@@ -142,9 +145,9 @@ function Write-LocalReleaseManifests {
     }
     Write-Host 'Both local manifests now describe fully downloaded and verified distribution bytes.'
     Write-Host 'Review, stage ONLY the two manifests, then explicitly commit and push them:'
-    Write-Host "git add -- manifest.json manifest-$($Receipt.version).json"
-    Write-Host "git diff --cached -- manifest.json manifest-$($Receipt.version).json"
-    Write-Host "git commit --only -m 'release: manifests v$($Receipt.version)' -- manifest.json manifest-$($Receipt.version).json"
+    Write-Host "git add -- manifest.json $versioned"
+    Write-Host "git diff --cached -- manifest.json $versioned"
+    Write-Host "git commit --only -m 'release: manifests v$($Receipt.version)' -- manifest.json $versioned"
     Write-Host 'git push origin HEAD'
 }
 
@@ -200,9 +203,9 @@ function Invoke-LocalGitHubPublish {
             }
         }
         $hasAsset = Test-GitHubReleaseAsset $Repository $release $receipt $headers $Proxy $directory
-        $zipName = "DeepSeekHarness-$($receipt.version).zip"
+        $zipName = "Dafeiyu-GO $($receipt.version).zip"
         if (-not $hasAsset) {
-            $upload = "https://uploads.github.com/repos/$Repository/releases/$($release.id)/assets?name=$([uri]::EscapeDataString($zipName))"
+            $upload = "https://uploads.github.com/repos/$Repository/releases/$($release.id)/assets?name=$([uri]::EscapeDataString($zipName))&label=$([uri]::EscapeDataString($zipName))"
             $response = Invoke-ReleaseHttp -Uri $upload -Method POST -Headers $headers -Proxy $Proxy -InFile $receipt.zipPath -ContentType 'application/zip'
             if ($response.Status -ne 201) { throw "Asset upload failed (HTTP $($response.Status)); existing assets are never deleted." }
         }
@@ -212,7 +215,9 @@ function Invoke-LocalGitHubPublish {
             $release = Invoke-LocalGitHubApi $Repository "releases/$($release.id)" $headers $Proxy 'PATCH' @{ draft = $false }
         }
         if ($release.prerelease) { throw 'Stable manifests cannot point to a prerelease.' }
-        $assetUrl = "https://github.com/$Repository/releases/download/$tag/$zipName"
+        $publicAsset = @($release.assets | Where-Object { $_.name -ceq $zipName -or $_.name -ceq $zipName.Replace(' ','.') })
+        if ($publicAsset.Count -ne 1) { throw 'Expected one accepted public launcher asset.' }
+        $assetUrl = "https://github.com/$Repository/releases/download/$tag/$([uri]::EscapeDataString($publicAsset[0].name))"
         $publicZip = Join-Path $directory 'public.zip'
         $response = Invoke-ReleaseHttp -Uri $assetUrl -OutFile $publicZip -Proxy $Proxy
         if ($response.Status -ne 200 -or (Get-FileHash $publicZip -Algorithm SHA256).Hash.ToLowerInvariant() -cne $receipt.sha256) {

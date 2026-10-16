@@ -14,10 +14,15 @@ namespace DeepSeekHarnessLauncher
         private readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
         private bool _initialized;
         private bool _approvalUnavailable;
+        private readonly TimeProvider _clock;
+        private string _retryServer;
+        private long _failedAt;
+        private bool _hasConnectFailure;
 
-        internal SettingsConnectionClient(AriesConnectionService service, LauncherSettings settings)
+        internal SettingsConnectionClient(AriesConnectionService service, LauncherSettings settings, TimeProvider clock = null)
         {
             _service = service;
+            _clock = clock ?? TimeProvider.System;
             _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         }
 
@@ -55,8 +60,30 @@ namespace DeepSeekHarnessLauncher
             return WithServiceAsync(async cancellation =>
             {
                 AriesConnectionState state = _service.Snapshot;
-                if (state.ServerConnected)
-                    state = await _service.RefreshAsync(cancellation);
+                string server = _settings.AriesServerUrl;
+                if (!String.Equals(_retryServer, server, StringComparison.OrdinalIgnoreCase))
+                {
+                    _retryServer = server;
+                    _hasConnectFailure = false;
+                }
+                bool connected = state.ServerConnected && String.Equals(server?.TrimEnd('/'), state.ServerUrl?.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
+                bool retryReady = !_hasConnectFailure || _clock.GetElapsedTime(_failedAt) >= TimeSpan.FromSeconds(60);
+                try
+                {
+                    if (connected) state = await _service.RefreshAsync(cancellation);
+                    else if (retryReady && !String.IsNullOrWhiteSpace(server))
+                    {
+                        state = await _service.ConnectAsync(server, cancellation);
+                        _hasConnectFailure = false;
+                    }
+                }
+                catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { throw; }
+                catch
+                {
+                    _failedAt = _clock.GetTimestamp();
+                    _hasConnectFailure = true;
+                    throw;
+                }
                 return MapState(state);
             }, token);
         }
@@ -166,28 +193,6 @@ namespace DeepSeekHarnessLauncher
             }, token).ConfigureAwait(false);
         }
 
-        public async Task SavePreferencesAsync(bool workspace, bool broadcast, CancellationToken token)
-        {
-            await _gate.WaitAsync(token);
-            bool previousWorkspace = _settings.AriesSyncWorkspaceEnabled;
-            bool previousBroadcast = _settings.DshWebBroadcastEnabled;
-            try
-            {
-                _settings.AriesSyncWorkspaceEnabled = workspace;
-                _settings.DshWebBroadcastEnabled = broadcast;
-                await Task.Run(() => ConnectionPluginPreferences.Save(_settings), token);
-                await Task.Run(() => LauncherSettingsStore.Save(_settings), token);
-            }
-            catch
-            {
-                _settings.AriesSyncWorkspaceEnabled = previousWorkspace;
-                _settings.DshWebBroadcastEnabled = previousBroadcast;
-                try { ConnectionPluginPreferences.Save(_settings); } catch { }
-                throw;
-            }
-            finally { _gate.Release(); }
-        }
-
         private ConnectionStateSnapshot MapState(AriesConnectionState state)
         {
             var candidates = state.Members.Where(member => !member.IsLocal
@@ -245,10 +250,10 @@ namespace DeepSeekHarnessLauncher
                         ? state.PendingKeyDelivery != null ? "请核对另一台设备的安全指纹并确认连接。"
                             : "密钥已投递，等待另一台设备核对指纹并确认连接。"
                         : "与另一台设备配对，连接请求需要你确认。",
-                SyncWorkspace = _settings.AriesSyncWorkspaceEnabled,
-                WebBroadcast = _settings.DshWebBroadcastEnabled,
                 PeerStatus = remote == null ? "尚未连接其他设备" : DescribePeer(state, remote),
-                CacheSummary = DescribeCache(state.CacheStats)
+                CacheSummary = DescribeCache(state.CacheStats),
+                ErrorMessage = state.LastErrorMessage,
+                DshServicesStatus = _service.DshServicesStatus
             };
         }
 

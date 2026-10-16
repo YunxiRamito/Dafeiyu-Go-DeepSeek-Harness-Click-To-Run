@@ -36,7 +36,7 @@ New-Item -ItemType Directory -Path (Join-Path $fakeRoot 'source') -Force | Out-N
 [IO.File]::WriteAllText((Join-Path $fakeRoot 'source/DeepSeekHarness.csproj'), '<Project><PropertyGroup><Version>9.8.7</Version></PropertyGroup></Project>')
 [IO.File]::WriteAllText((Join-Path $fakeRoot 'CHANGELOG.md'), "## 9.8.7`nOffline fixture")
 [IO.File]::WriteAllText((Join-Path $fakeRoot 'check-release-gate.ps1'), 'param($Version, $Root)')
-$fixtureZip = Join-Path $fixtureRoot 'DeepSeekHarness-9.8.7.zip'
+$fixtureZip = Join-Path $fixtureRoot 'Dafeiyu-GO 9.8.7.zip'
 [IO.File]::WriteAllBytes($fixtureZip, [byte[]](1, 2, 3, 4, 5))
 $fixtureHash = (Get-FileHash $fixtureZip -Algorithm SHA256).Hash.ToLowerInvariant()
 $testReceipt = Join-Path $fixtureRoot 'acceptance.json'
@@ -51,7 +51,7 @@ function New-FixtureTar([string]$Path, [byte[]]$ZipBytes) {
     $writer = [System.Formats.Tar.TarWriter]::new($gzip, $true)
     try {
         foreach ($item in @(@('package/package.json', [Text.Encoding]::UTF8.GetBytes('{"name":"@yunxiramito/dsh-launcher","version":"9.8.7"}')),
-            @('package/DeepSeekHarness-9.8.7.zip', $ZipBytes))) {
+            @('package/Dafeiyu-GO 9.8.7.zip', $ZipBytes))) {
             $entry = [System.Formats.Tar.PaxTarEntry]::new([System.Formats.Tar.TarEntryType]::RegularFile, $item[0])
             $entry.DataStream = [IO.MemoryStream]::new([byte[]]$item[1])
             try { $writer.WriteEntry($entry) } finally { $entry.DataStream.Dispose() }
@@ -64,6 +64,21 @@ New-FixtureTar $fixtureTar ([IO.File]::ReadAllBytes($fixtureZip))
 New-FixtureTar $badTar ([byte[]](9, 9, 9))
 
 try {
+    $manifestRoot = Join-Path $fixtureRoot 'manifest-layout'
+    New-Item -ItemType Directory -Path $manifestRoot -Force | Out-Null
+    Write-LocalReleaseManifests $manifestRoot $fixtureReceipt 'https://example.invalid/accepted.zip' 'Accepted fixture'
+    $archivedManifest = Join-Path $manifestRoot 'manifests/versions/manifest-9.8.7.json'
+    $currentManifest = Join-Path $manifestRoot 'manifest.json'
+    Assert ((Get-FileHash $archivedManifest).Hash -ceq (Get-FileHash $currentManifest).Hash) 'Archived and current manifests differ'
+    Assert (-not (Test-Path -LiteralPath (Join-Path $manifestRoot 'manifest-9.8.7.json'))) 'Versioned manifest leaked into repository root'
+    $manifestHash = (Get-FileHash $currentManifest).Hash
+    Write-LocalReleaseManifests $manifestRoot $fixtureReceipt 'https://example.invalid/accepted.zip' 'Retry must preserve archived bytes'
+    Assert ((Get-FileHash $currentManifest).Hash -ceq $manifestHash) 'Retry changed immutable manifest bytes'
+    Assert-Throws { Write-LocalReleaseManifests $manifestRoot $fixtureReceipt 'https://example.invalid/conflict.zip' 'Conflicting release' } 'conflicts'
+    Assert ((Get-FileHash $currentManifest).Hash -ceq $manifestHash) 'Conflicting archive changed current feed'
+    Assert-Throws { Write-LocalReleaseManifests $manifestRoot ([pscustomobject]@{version='../escape'}) '' '' } 'Invalid manifest version'
+    Write-Host 'PASS versioned manifests stay under archive with immutable retry and conflict checks'
+
     Assert-Throws { Get-LocalReleaseWorkRoot $fakeRoot 'C:/Temp_SetupandLauncher/release' } 'non-C'
     Assert-Throws { Get-LocalReleaseWorkRoot $fakeRoot 'G:/other-release' } 'Temp_SetupandLauncher'
     Assert-Throws { Remove-ReleaseScratch $fakeRoot (Join-Path $fixtureRoot 'other') } 'outside scratch'
@@ -230,7 +245,7 @@ try {
             $script:tagExists = $scenario -ne 'new'
             $script:currentRelease = if ($scenario -eq 'new') { $null } else {
                 [pscustomobject]@{ id = 42; tag_name = 'v9.8.7'; draft = ($scenario -eq 'draft'); prerelease = $false
-                    assets = @([pscustomobject]@{ id = 43; name = 'DeepSeekHarness-9.8.7.zip' }) }
+                    assets = @([pscustomobject]@{ id = 43; name = 'Dafeiyu-GO 9.8.7.zip' }) }
             }
             function Assert-LocalReleaseReceipt { param($Root, $ReceiptPath) $fixtureReceipt }
             function Get-LocalGitHubToken { param($Root) 'test-secret' }
@@ -258,7 +273,7 @@ try {
                     return @{ Status = 200 }
                 }
                 if ($Uri -match 'uploads.github.com') {
-                    $script:currentRelease.assets = @([pscustomobject]@{ id = 43; name = 'DeepSeekHarness-9.8.7.zip' })
+                    $script:currentRelease.assets = @([pscustomobject]@{ id = 43; name = 'Dafeiyu-GO 9.8.7.zip' })
                     return @{ Status = 201; Body = '{}' }
                 }
                 if ($Uri -match '/releases$' -and $Method -eq 'POST') {

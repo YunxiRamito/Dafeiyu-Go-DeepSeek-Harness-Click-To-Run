@@ -14,6 +14,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -27,7 +28,7 @@ using Windows.UI.ViewManagement;
 
 namespace DeepSeekHarnessLauncher
 {
-    internal sealed class DshWindow : Window
+    internal sealed partial class DshWindow : Window
     {
         private DshWindowPolicy _policy;
         private DshWindowNavigationState _navigation;
@@ -75,8 +76,10 @@ namespace DeepSeekHarnessLauncher
         private readonly MenuFlyoutItem _back;
         private readonly MenuFlyoutItem _forward;
         private readonly MenuFlyoutItem _restartService;
-        private readonly Button _settingsButton;
-        private readonly Button _updateButton;
+        private readonly Button _optionsMenu;
+        private readonly Button _aboutMenu;
+        private readonly MenuFlyoutItem _settingsItem;
+        private readonly MenuFlyoutSubItem _updateMenu;
         private readonly Button _onlinePresence;
         private readonly TextBlock _onlinePresenceText;
         private readonly Microsoft.UI.Xaml.Shapes.Ellipse _onlinePresenceDot;
@@ -106,7 +109,7 @@ namespace DeepSeekHarnessLauncher
         internal DshWindow(string url, LauncherSettings settings, Action<string> log, Action<string> browserFallback,
             Action openSettings = null, Action checkLauncherInstallerUpdates = null,
             Action checkDshUpdates = null, Action checkPluginUpdates = null, Action restartService = null,
-            Action openServerSettings = null)
+            Action openServerSettings = null, Action openAbout = null)
         {
             if (url != null)
             {
@@ -127,8 +130,14 @@ namespace DeepSeekHarnessLauncher
                     ? ElementTheme.Light : ElementTheme.Default;
             _surface.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             _surface.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            _surface.RowDefinitions.Add(new RowDefinition { Height = new GridLength(2) });
+            _surface.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             _surface.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            foreach (var modifiers in new[] { Windows.System.VirtualKeyModifiers.None, Windows.System.VirtualKeyModifiers.Control })
+            {
+                var refresh = new KeyboardAccelerator { Key = Windows.System.VirtualKey.F5, Modifiers = modifiers };
+                refresh.Invoked += (_, args) => { args.Handled = true; Reload(); };
+                _surface.KeyboardAccelerators.Add(refresh);
+            }
             AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Standard;
             _titleBar = new Grid { Height = 32, ColumnSpacing = 4 };
             _titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -144,10 +153,11 @@ namespace DeepSeekHarnessLauncher
             _menus = new StackPanel { Height = 32, Orientation = Orientation.Horizontal, Spacing = 2,
                 VerticalAlignment = VerticalAlignment.Center };
             AutomationProperties.SetName(_menus, "应用菜单栏");
-            var applicationMenu = CaptionButton("应用", "DshWindow.ApplicationMenu");
+            _optionsMenu = CaptionButton("选项", "DshWindow.OptionsMenu");
             var applicationFlyout = new MenuFlyout();
-            applicationMenu.Flyout = applicationFlyout;
+            _optionsMenu.Flyout = applicationFlyout;
             _reload = MenuCommand("刷新", "DshWindow.Reload", Reload);
+            _reload.KeyboardAcceleratorTextOverride = "F5";
             AutomationProperties.SetName(_reload, "重新加载");
             _back = MenuCommand("上一步", "DshWindow.Back", () => NavigateHistory(false));
             _forward = MenuCommand("下一步", "DshWindow.Forward", () => NavigateHistory(true));
@@ -162,8 +172,28 @@ namespace DeepSeekHarnessLauncher
             _restartService.IsEnabled = restartService != null;
             applicationFlyout.Items.Add(_restartService);
             applicationFlyout.Items.Add(new MenuFlyoutSeparator());
+            _settingsItem = MenuCommand("设置", "DshWindow.Settings", () => InvokeHostCommand(_openSettings, "设置"));
+            _settingsItem.IsEnabled = _openSettings != null;
+            applicationFlyout.Items.Add(_settingsItem);
+            _updateMenu = new MenuFlyoutSubItem { Text = "检查更新" };
+            AutomationProperties.SetName(_updateMenu, "检查更新");
+            AutomationProperties.SetAutomationId(_updateMenu, "DshWindow.CheckUpdates");
+            foreach (var update in new[] {
+                ("检查启动器/安装器更新", "DshWindow.CheckLauncherInstaller", checkLauncherInstallerUpdates),
+                ("检查 DSH 更新", "DshWindow.CheckDsh", checkDshUpdates),
+                ("检查插件更新", "DshWindow.CheckPlugins", checkPluginUpdates) })
+            {
+                Action callback = update.Item3;
+                string label = update.Item1;
+                var item = MenuCommand(label, update.Item2, () => InvokeHostCommand(callback, label));
+                item.IsEnabled = callback != null;
+                _updateMenu.Items.Add(item);
+            }
+            _updateMenu.IsEnabled = checkLauncherInstallerUpdates != null || checkDshUpdates != null || checkPluginUpdates != null;
+            applicationFlyout.Items.Add(_updateMenu);
+            applicationFlyout.Items.Add(new MenuFlyoutSeparator());
             applicationFlyout.Items.Add(MenuCommand("关闭窗口", "DshWindow.Close", Close));
-            _menus.Children.Add(applicationMenu);
+            _menus.Children.Add(_optionsMenu);
             _editMenu = CaptionButton("编辑", "DshWindow.EditMenu");
             var editFlyout = new MenuFlyout();
             _editMenu.Flyout = editFlyout;
@@ -179,27 +209,13 @@ namespace DeepSeekHarnessLauncher
             _menus.Children.Add(_editMenu);
             Grid.SetColumn(_menus, 1);
             _titleBar.Children.Add(_menus);
-            _settingsButton = CaptionButton("设置", "DshWindow.Settings");
-            _settingsButton.IsEnabled = _openSettings != null;
-            _settingsButton.Click += delegate { InvokeHostCommand(_openSettings, "设置"); };
-            AutomationProperties.SetAutomationId(_settingsButton, "DshWindow.Settings");
-            _updateButton = CaptionButton("更新", "DshWindow.CheckUpdates");
-            var updateMenu = new MenuFlyout();
-            foreach (var update in new[] {
-                ("检查启动器/安装器更新", "DshWindow.CheckLauncherInstaller", checkLauncherInstallerUpdates),
-                ("检查 DSH 更新", "DshWindow.CheckDsh", checkDshUpdates),
-                ("检查插件更新", "DshWindow.CheckPlugins", checkPluginUpdates) })
-            {
-                Action callback = update.Item3;
-                string label = update.Item1;
-                var item = MenuCommand(label, update.Item2, () => InvokeHostCommand(callback, label));
-                item.IsEnabled = callback != null;
-                updateMenu.Items.Add(item);
-            }
-            _updateButton.Flyout = updateMenu;
-            _updateButton.IsEnabled = checkLauncherInstallerUpdates != null || checkDshUpdates != null || checkPluginUpdates != null;
-            _menus.Children.Add(_settingsButton);
-            _menus.Children.Add(_updateButton);
+            _aboutMenu = CaptionButton("关于", "DshWindow.AboutMenu");
+            var aboutFlyout = new MenuFlyout();
+            var aboutItem = MenuCommand("关于 Dafeiyu-Go", "DshWindow.About", () => InvokeHostCommand(openAbout, "关于"));
+            aboutItem.IsEnabled = openAbout != null;
+            aboutFlyout.Items.Add(aboutItem);
+            _aboutMenu.Flyout = aboutFlyout;
+            _menus.Children.Add(_aboutMenu);
             _onlinePresence = CaptionButton("服务器在线统计", "DshWindow.OnlinePresence");
             _onlinePresence.Visibility = Visibility.Collapsed;
             _onlinePresence.IsEnabled = openServerSettings != null;
@@ -225,7 +241,7 @@ namespace DeepSeekHarnessLauncher
             Grid.SetRow(_statusPanel, 1);
             _surface.Children.Add(_statusPanel);
             _surface.Children.Add(_titleBar);
-            _loading = new ProgressBar { IsIndeterminate = true, Height = 2 };
+            _loading = new ProgressBar { IsIndeterminate = true, Height = 2, MinHeight = 0 };
             Grid.SetRow(_loading, 2);
             _surface.Children.Add(_loading);
             _page = new Grid();
@@ -310,6 +326,19 @@ namespace DeepSeekHarnessLauncher
                 ApplyWebTheme();
                 ApplyTitleBarColors();
             });
+        }
+
+        public new void Activate()
+        {
+            if (_closed) return;
+            if (!DispatcherQueue.HasThreadAccess) { DispatcherQueue.TryEnqueue(Activate); return; }
+            if (AppWindow.Presenter is OverlappedPresenter presenter)
+            {
+                presenter.IsAlwaysOnTop = false;
+                if (presenter.State == OverlappedPresenterState.Minimized) presenter.Restore();
+            }
+            base.Activate();
+            WindowForeground.BringForward(WindowNative.GetWindowHandle(this), false);
         }
 
         internal void SetOnlinePresence(ClientNoticePresence presence)
@@ -779,7 +808,10 @@ namespace DeepSeekHarnessLauncher
 
         private void CreateWebView()
         {
-            _webView = new WebView2 { HorizontalAlignment = HorizontalAlignment.Stretch,
+            // WinUI forwards the native IDataObject through its composition controller only
+            // when the XAML control opts into drop. Keep DSH's document handlers in charge of
+            // attachment validation/upload; do not synthesize files or intercept their events.
+            _webView = new WebView2 { AllowDrop = true, HorizontalAlignment = HorizontalAlignment.Stretch,
                 VerticalAlignment = VerticalAlignment.Stretch, Opacity = _startup.Visible ? 0 : 1 };
             _page.Children.Insert(0, _webView);
             ApplyWebTheme();
@@ -787,6 +819,7 @@ namespace DeepSeekHarnessLauncher
 
         private void OnLoaded(object sender, RoutedEventArgs args)
         {
+            AttachFileDrop();
             _surface.XamlRoot.Changed += OnXamlRootChanged;
             ApplyMinimumWindowSize();
             UpdateTitleBarRegions();
@@ -826,6 +859,14 @@ namespace DeepSeekHarnessLauncher
                 _navigation.AttachCore(_core);
                 AttachCoreEvents(_core);
                 _core.Settings.AreDevToolsEnabled = false;
+                // WinUI native accelerators cover title controls; Chromium consumes
+                // keys in the document. Cancel its F5 default before routing one reload.
+                await _core.AddScriptToExecuteOnDocumentCreatedAsync(@"addEventListener('keydown',e=>{
+                    if(e.key==='F5'&&!e.altKey&&!e.shiftKey&&!e.metaKey){
+                        e.preventDefault();e.stopImmediatePropagation();
+                        if(!e.repeat)chrome.webview.postMessage('dafeiyu-go.window.refresh.v1');
+                    }},true);");
+                if (_closed || !ReferenceEquals(view, _webView)) return;
                 ApplyMemoryTarget();
                 ApplyWebTheme();
                 SafeLog("[window] WebView2 initialized using the isolated profile.");
@@ -889,6 +930,7 @@ namespace DeepSeekHarnessLauncher
             if (!_navigation.Start(sender, args.NavigationId)) { args.Cancel = true; return; }
             _documentVersion++;
             _navigationSucceeded = false;
+            ReleaseFileDrops();
             _startup.NavigationStarted();
             SafeLog("[window] Navigation starting; id=" + args.NavigationId + ".");
             ReportStartup(null, "Loading the DSH page from port " + new Uri(_target).Port + ".");
@@ -1106,7 +1148,7 @@ namespace DeepSeekHarnessLauncher
 
         private void Reload()
         {
-            if (_closed) return;
+            if (_closed || _target == null || _navigation == null || _initializing) return;
             if (_startup.Visible && _target != null)
             {
                 BeginStartup("Reloading", "Waiting for DSH to become ready...");
@@ -1444,6 +1486,12 @@ namespace DeepSeekHarnessLauncher
             TypedEventHandler<CoreWebView2, CoreWebView2DownloadStartingEventArgs> download = (_, args) => OnDownloadStarting(core, args);
             TypedEventHandler<CoreWebView2, CoreWebView2ProcessFailedEventArgs> failure = (_, args) => OnProcessFailed(core, args);
             TypedEventHandler<CoreWebView2, object> history = (_, args) => OnHistoryChanged(core, args);
+            TypedEventHandler<CoreWebView2, CoreWebView2WebMessageReceivedEventArgs> refresh = (_, args) =>
+            {
+                if (_closed || !_navigation.IsCurrentCore(core) || !_policy.IsInternal(args.Source)) return;
+                try { if (args.TryGetWebMessageAsString() == "dafeiyu-go.window.refresh.v1") Reload(); }
+                catch (ArgumentException) { }
+            };
             core.NavigationStarting += starting;
             core.NavigationCompleted += completed;
             core.DOMContentLoaded += dom;
@@ -1453,6 +1501,7 @@ namespace DeepSeekHarnessLauncher
             core.DownloadStarting += download;
             core.ProcessFailed += failure;
             core.HistoryChanged += history;
+            core.WebMessageReceived += refresh;
             _detachCoreEvents = () =>
             {
                 core.NavigationStarting -= starting;
@@ -1464,6 +1513,7 @@ namespace DeepSeekHarnessLauncher
                 core.DownloadStarting -= download;
                 core.ProcessFailed -= failure;
                 core.HistoryChanged -= history;
+                core.WebMessageReceived -= refresh;
             };
         }
 
@@ -1482,6 +1532,8 @@ namespace DeepSeekHarnessLauncher
         private void OnClosed(object sender, WindowEventArgs args)
         {
             _closed = true;
+            _nativeFileDrop?.Dispose();
+            ReleaseFileDrops();
             _navigation?.Close();
             if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
                 _uiSettings.AnimationsEnabledChanged -= OnAnimationsEnabledChanged;
@@ -1520,6 +1572,7 @@ namespace DeepSeekHarnessLauncher
 
         private void DisposeWebView()
         {
+            ReleaseFileDrops();
             _navigation?.DetachCore();
             _documentVersion++;
             if (_core != null)

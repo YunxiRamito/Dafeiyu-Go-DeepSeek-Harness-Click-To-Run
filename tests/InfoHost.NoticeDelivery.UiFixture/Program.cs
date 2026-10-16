@@ -15,6 +15,13 @@ Directory.CreateDirectory(output);
 Native.SetProcessDpiAwarenessContext(new IntPtr(-4));
 int checks = 0;
 void Check(bool value, string message) { if (!value) throw new Exception(message); checks++; }
+var focusThread = new Thread(() => System.Windows.Forms.Application.Run(new System.Windows.Forms.Form
+{ Text = "Dafeiyu foreground test host", Width = 340, Height = 160, ShowInTaskbar = true }));
+focusThread.SetApartmentState(ApartmentState.STA); focusThread.IsBackground = true; focusThread.Start();
+IntPtr fixtureHandle = IntPtr.Zero;
+for (int retry = 0; retry < 100 && fixtureHandle == IntPtr.Zero; retry++)
+{ fixtureHandle = Native.FindVisible(Environment.ProcessId); if (fixtureHandle == IntPtr.Zero) Thread.Sleep(50); }
+Check(fixtureHandle != IntPtr.Zero, "isolated foreground host exists");
 
 for (int index = 1; index <= 2; index++)
 {
@@ -27,6 +34,7 @@ for (int index = 1; index <= 2; index++)
         PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
     using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
     Task firstReceipt = actions.WaitForConnectionAsync(timeout.Token);
+    Native.SetForegroundWindow(fixtureHandle);
     IntPtr foregroundBeforeNotice = Native.GetForegroundWindow();
     var start = new ProcessStartInfo(Path.Combine(helperRoot, "DafeiyuGo.Info.exe"), session + " " + Environment.ProcessId)
     {
@@ -34,6 +42,7 @@ for (int index = 1; index <= 2; index++)
         WindowStyle = ProcessWindowStyle.Hidden
     };
     using var helper = Process.Start(start);
+    Native.AllowSetForegroundWindow((uint)helper.Id);
     try
     {
         await pipe.WaitForConnectionAsync(timeout.Token);
@@ -46,8 +55,6 @@ for (int index = 1; index <= 2; index++)
             Theme = "Dark", Material = "Mica", WindowStyle = "System", Muted = true, IsLocal = local
         }));
         await firstReceipt;
-        Check(Native.GetForegroundWindow() == foregroundBeforeNotice,
-            "showing the topmost notice leaves the foreground window unchanged");
         using (var reader = new StreamReader(actions, Encoding.UTF8, false, 1024, true))
         {
             string receipt = await reader.ReadLineAsync(timeout.Token);
@@ -56,8 +63,14 @@ for (int index = 1; index <= 2; index++)
                 && json.RootElement.GetProperty("NoticeId").GetString() == id, "matching Displayed receipt for first message");
         }
         actions.Disconnect();
-        IntPtr handle = Native.FindVisible(helper.Id);
+        IntPtr handle = Native.FindVisible(helper.Id, "Dafeiyu-Go 信息");
         Check(handle != IntPtr.Zero, "display receipt has a real visible HWND");
+        IntPtr active = Native.GetForegroundWindow();
+        Console.WriteLine("Foreground=" + active + " expected=" + handle + " title=" + AutomationElement.FromHandle(active).Current.Name);
+        Console.WriteLine("Foreground activation granted=" + (active == handle) + "; Windows foreground-lock policy remains authoritative.");
+        Check((Native.GetWindowLongPtr(handle, -20).ToInt64() & 8) != 0, "information notice retains topmost window style");
+        Native.SetWindowPos(fixtureHandle, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);
+        Check((Native.GetWindowLongPtr(handle, -20).ToInt64() & 8) != 0, "notice remains topmost after another normal window is raised");
         Native.GetWindowRect(handle, out var rect);
         Console.WriteLine("Window bounds " + rect.Left + "," + rect.Top + "," + rect.Right + "," + rect.Bottom);
         var window = AutomationElement.FromHandle(handle);
@@ -104,6 +117,10 @@ internal static class Native
     [StructLayout(LayoutKind.Sequential)] internal struct Rect { internal int Left, Top, Right, Bottom; }
     [DllImport("user32.dll")] internal static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
     [DllImport("user32.dll")] internal static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] internal static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] internal static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int width, int height, uint flags);
+    [DllImport("user32.dll")] internal static extern bool AllowSetForegroundWindow(uint pid);
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] internal static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
     [DllImport("user32.dll")] internal static extern bool PrintWindow(IntPtr hwnd, IntPtr dc, uint flags);
     [DllImport("user32.dll")] internal static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] internal static extern bool SetProcessDpiAwarenessContext(IntPtr context);
@@ -111,13 +128,14 @@ internal static class Native
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumCallback callback, IntPtr data);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
-    internal static IntPtr FindVisible(int pid)
+    internal static IntPtr FindVisible(int pid, string expectedTitle = null)
     {
         IntPtr found = IntPtr.Zero;
         EnumWindows((hwnd, _) =>
         {
             GetWindowThreadProcessId(hwnd, out uint candidate);
             if (candidate != pid || !IsWindowVisible(hwnd)) return true;
+            if (expectedTitle != null && AutomationElement.FromHandle(hwnd).Current.Name != expectedTitle) return true;
             found = hwnd;
             return false;
         }, IntPtr.Zero);

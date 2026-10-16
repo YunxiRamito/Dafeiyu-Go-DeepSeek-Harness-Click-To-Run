@@ -377,8 +377,7 @@ namespace DeepSeekHarnessLauncher
                         _root.Opacity = 0;
                     }
 
-                    // Show the topmost toast without activating it. Activate()/Show() can
-                    // steal foreground input from a fullscreen game even for a popup.
+                    // New information must appear in the foreground and remain above other windows.
                     IntPtr handle = WindowNative.GetWindowHandle(_window);
                     NativeMethods.SetWindowPos(
                         handle,
@@ -387,7 +386,9 @@ namespace DeepSeekHarnessLauncher
                         targetY,
                         _windowWidth,
                         _windowHeight,
-                        NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+                        NativeMethods.SWP_SHOWWINDOW);
+                    _window.Activate();
+                    WindowForeground.BringForward(handle, true);
 
                     // 先把窗口内容真正渲染出来（它在屏幕外，用户看不到），
                     // 拿到的下一帧再开始滑动——启动阶段 UI 线程忙的时候也不会变成"瞬移"。
@@ -681,6 +682,7 @@ namespace DeepSeekHarnessLauncher
                 _detailScroll.MaxHeight = Math.Max(40, Math.Min(320, 480 / scale - 2 - fixedHeight));
                 _panel.Measure(new Windows.Foundation.Size(contentWidth, Double.PositiveInfinity));
                 Resize(NoticeWindowWidth, Math.Clamp((int)Math.Ceiling((_panel.DesiredSize.Height + 2) * scale), 120, 480), true);
+                WindowForeground.BringForward(WindowNative.GetWindowHandle(_window), true);
                 QueueNoticeDisplayReceipt();
             });
         }

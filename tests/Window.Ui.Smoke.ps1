@@ -344,8 +344,8 @@ try {
    [WindowSmokeNative]::SetForegroundWindow([IntPtr]::new($window.Current.NativeWindowHandle)) | Out-Null
    Start-Sleep -Milliseconds 500
    Check ($windowPattern.Current.WindowVisualState -eq [Windows.Automation.WindowVisualState]::Normal) "round ${round}: native restore"
-   $buttons = @('ApplicationMenu','EditMenu','Settings','CheckUpdates') | ForEach-Object { Find-ShellId $window ('DshWindow.' + $_) }
-   Check (@($buttons | Where-Object { $null -ne $_ -and $_.Current.IsEnabled }).Count -eq 4) "round ${round}: all four compact menu entries are enabled"
+   $buttons = @('OptionsMenu','EditMenu','AboutMenu') | ForEach-Object { Find-ShellId $window ('DshWindow.' + $_) }
+   Check (@($buttons | Where-Object { $null -ne $_ -and $_.Current.IsEnabled }).Count -eq 3) "round ${round}: all three compact menu entries are enabled"
    $shellBounds = $window.Current.BoundingRectangle
    $firstBounds = $buttons[0].Current.BoundingRectangle
    $lastBounds = $buttons[-1].Current.BoundingRectangle
@@ -364,7 +364,7 @@ try {
    Check ($windowPattern.Current.WindowVisualState -eq [Windows.Automation.WindowVisualState]::Maximized) "round ${round}: native maximize with custom title bar"
    $windowPattern.SetWindowVisualState([Windows.Automation.WindowVisualState]::Normal)
    Start-Sleep -Milliseconds 250
-   $null = Invoke-ShellId $window 'DshWindow.ApplicationMenu'
+   $null = Invoke-ShellId $window 'DshWindow.OptionsMenu'
    $reload = Find-ShellId $window 'DshWindow.Reload'
    $browser = Find-ShellId $window 'DshWindow.OpenBrowser'
    Check ($null -ne $reload -and $reload.Current.IsEnabled -and $null -ne $browser -and $browser.Current.IsEnabled) "round ${round}: application flyout exposes refresh and browser commands"
@@ -386,7 +386,7 @@ try {
    $data = $reloaded
    if ($round -eq 1) {
     $previousCapture = [datetime]$data.capturedUtc
-    $null = Invoke-ShellId $window 'DshWindow.ApplicationMenu'
+    $null = Invoke-ShellId $window 'DshWindow.OptionsMenu'
     $null = Invoke-ShellId $window 'DshWindow.RestartService'
     $previewLog = Join-Path $env:DAFEIYU_LAUNCHER_SETTINGS_DIRECTORY 'window-preview.log'
     Check ((Get-Content -LiteralPath $previewLog -Raw).Contains('Offline preview restart callback requested; no production service was restarted.')) 'restart menu calls the isolated host callback'
@@ -408,7 +408,10 @@ try {
      $restarted.page.elementCount -gt 50 -and -not $restarted.shell.startupVisible) 'restart preview reconnects to actual DSH and preparation screen fades out'
     $data = $restarted
     foreach ($entry in @(@{id='CheckLauncherInstaller';target='启动器/安装器'},@{id='CheckDsh';target='DSH'},@{id='CheckPlugins';target='插件'})) {
-     $null = Invoke-ShellId $window 'DshWindow.CheckUpdates'
+     $null = Invoke-ShellId $window 'DshWindow.OptionsMenu'
+     $updateSubmenu = Find-ShellId $window 'DshWindow.CheckUpdates'
+     $updateSubmenu.GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
+     Start-Sleep -Milliseconds 150
      $null = Invoke-ShellId $window ('DshWindow.' + $entry.id)
      $previewLog = Join-Path $env:DAFEIYU_LAUNCHER_SETTINGS_DIRECTORY 'window-preview.log'
      Check ((Get-Content -LiteralPath $previewLog -Raw).Contains('Window update menu requested ' + $entry.target + '.')) "update menu invokes isolated $($entry.target) callback"
@@ -423,6 +426,7 @@ try {
      if (-not $helpers.Count) { Start-Sleep -Milliseconds 200 }
     } while (-not $helpers.Count -and [datetime]::UtcNow -lt $deadline)
     Check ($helpers.Count -gt 0) 'update commands start the real isolated information-window helper'
+    $null = Invoke-ShellId $window 'DshWindow.OptionsMenu'
     $null = Invoke-ShellId $window 'DshWindow.Settings'
     $deadline = [datetime]::UtcNow.AddSeconds(10)
     do {
