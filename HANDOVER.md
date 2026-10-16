@@ -1,5 +1,12 @@
 # 交接：大肥鱼Go / Dafeiyu-Go Launcher
 
+## 2026-10-17 Launcher 1.8.2 正式发布
+
+按用户明确授权发布，更新日志精确为“优化了已知问题（连接页面）”。GitHub v1.8.2、npm @yunxiramito/dsh-launcher@1.8.2 与国内 npmmirror 已真实下载校验，当前/版本化 manifest 已普通推送并读回。源码提交3ef0036cc4ff5490ea177a9199902f5b8d0d7b47，清单提交c551a384821daf24a6ff3e9c02fa94bdd8f9080f。ZIP 27,849,945 bytes，SHA256 7d30c37e7a5cb053a263caf9b97f109e61382bd4233d4cca6e96eabec2d443f6。
+
+发布默认Focused，仅实际构建Core的12项连接插件专项及verify，不跑历史全量；发布器重新校验绑定源码/运行时/报告/Core/ZIP的验收收据，不重跑测试。完整journal位于项目Temp_SetupandLauncher/ReleaseRuns/publish-launcher182-20261017-r3/journal.json，status=published-and-verified、published=true。之前MP17候选未发布说明已成为历史状态；本轮只发布Launcher，未重新发布Setup、Android、Aries或后端插件。
+
+
 ## 2026-10-17 双插件显式管理（本地候选；后端已部署）
 
 新增 `ManagedConnectionPluginsService.cs` 与嵌入的 `ManagedConnectionPluginOperation.mjs`；连接页两行分别为 Connect、Mobile-CSS，按钮从“安装”变为“检查更新 / 卸载”，发现新版后变为“更新”。启动阶段只读 inspect，不再隐式安装，卸载后下次启动保持缺失。当前后端包为 Connect 0.3.1、Mobile-CSS 0.1.6，均已部署 DeveloperCenter 并通过公网实际包及 integrity 校验。使用 `../一键推包/推插件.ps1` 更新；服务器目录、API、更新/回滚见 `../DeveloperCenter.Server/docs/PLUGIN-RELEASE-OPERATIONS.md`。
