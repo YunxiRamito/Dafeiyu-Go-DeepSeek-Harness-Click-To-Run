@@ -1,0 +1,11 @@
+{
+  "version": "1.8.2",
+  "sha256": "7d30c37e7a5cb053a263caf9b97f109e61382bd4233d4cca6e96eabec2d443f6",
+  "subDirectory": "",
+  "assets": {
+    "github": "https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/download/v1.8.2/Dafeiyu-GO.1.8.2.zip",
+    "mirrors": []
+  },
+  "notes": "优化了已知问题（连接页面）",
+  "releasedAt": "2026-10-16T17:04:38.7360939Z"
+}
