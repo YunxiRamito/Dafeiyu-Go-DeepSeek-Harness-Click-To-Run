@@ -145,7 +145,7 @@ export async function prepareConnectionPlugin(request) {
       const timer = setTimeout(() => abort.abort(new Error('连接插件安装超时。')), request.timeout_ms);
       try {
         const result = await operations.runProfilePnpm({ profile: 'web', dir, installAnchor: anchor, cwd: root, home },
-          ['add', current.path, '--offline', '--ignore-scripts', '--reporter=append-only', '--config.fetch-retries=0'],
+          ['add', current.path, '--offline=false', '--ignore-scripts', '--reporter=append-only', '--config.fetch-retries=0'],
           { command: request.pnpm_path, execution: 'service', signal: abort.signal, outputBytes: 65536,
             idleTimeoutMs: Math.min(request.timeout_ms, 60000), env: request.package_environment,
             onOutput: text => process.stderr.write(text) });

@@ -1463,15 +1463,41 @@
                                 <TextBlock FontSize="16" FontWeight="SemiBold" Text="同步与广播" />
                                 <TextBlock Text="连接后自动同步本机 DSH 的工作区与对话，并广播 DSH 网页。"
                                            Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                <Grid ColumnSpacing="12">
+                                <Grid ColumnSpacing="12" RowSpacing="8">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock x:Name="ConnectionPluginStatusText" Text="尚未检查插件" TextWrapping="Wrap"
-                                               Style="{StaticResource SettingsRowDescriptionTextStyle}" VerticalAlignment="Center" />
-                                    <Button x:Name="ConnectionPluginUpdateButton" Grid.Column="1" Content="安装 / 更新插件"
-                                            Click="ConnectionPluginUpdate_Click" />
+                                    <StackPanel Spacing="4" VerticalAlignment="Center">
+                                        <TextBlock Text="Connect" FontWeight="SemiBold" />
+                                        <TextBlock Text="同步 DSH 工作区与对话，并广播 DSH 网页。" TextWrapping="Wrap"
+                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                        <TextBlock x:Name="ConnectionPluginStatusText" Text="正在检查安装状态…" TextWrapping="Wrap"
+                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                        <Button x:Name="ConnectionPluginUpdateButton" Content="安装" Tag="connect" Click="ConnectionPluginUpdate_Click" />
+                                        <Button x:Name="ConnectionPluginUninstallButton" Content="卸载" Tag="connect" Visibility="Collapsed"
+                                                Click="ConnectionPluginUninstall_Click" />
+                                    </StackPanel>
+                                </Grid>
+                                <Grid ColumnSpacing="12" RowSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="4" VerticalAlignment="Center">
+                                        <TextBlock Text="Mobile-CSS" FontWeight="SemiBold" />
+                                        <TextBlock Text="为 DSH 网页提供移动端适配样式。" TextWrapping="Wrap"
+                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                        <TextBlock x:Name="ConnectionMobilePluginStatusText" Text="正在检查安装状态…" TextWrapping="Wrap"
+                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                        <Button x:Name="ConnectionMobilePluginUpdateButton" Content="安装" Tag="mobile-ui" Click="ConnectionPluginUpdate_Click" />
+                                        <Button x:Name="ConnectionMobilePluginUninstallButton" Content="卸载" Tag="mobile-ui" Visibility="Collapsed"
+                                                Click="ConnectionPluginUninstall_Click" />
+                                    </StackPanel>
                                 </Grid>
                                 <TextBlock x:Name="ConnectionPreferencesHintText" Text="自动连接已配对设备；同步与网页广播随连接启用。"
                                            Style="{StaticResource SettingsPageDescriptionTextStyle}" />

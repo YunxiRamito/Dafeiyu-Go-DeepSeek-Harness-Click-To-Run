@@ -1,5 +1,28 @@
 # 交接：大肥鱼Go / Dafeiyu-Go Launcher
 
+## 2026-10-17 双插件显式管理（本地候选；后端已部署）
+
+新增 `ManagedConnectionPluginsService.cs` 与嵌入的 `ManagedConnectionPluginOperation.mjs`；连接页两行分别为 Connect、Mobile-CSS，按钮从“安装”变为“检查更新 / 卸载”，发现新版后变为“更新”。启动阶段只读 inspect，不再隐式安装，卸载后下次启动保持缺失。当前后端包为 Connect 0.3.1、Mobile-CSS 0.1.6，均已部署 DeveloperCenter 并通过公网实际包及 integrity 校验。使用 `../一键推包/推插件.ps1` 更新；服务器目录、API、更新/回滚见 `../DeveloperCenter.Server/docs/PLUGIN-RELEASE-OPERATIONS.md`。
+
+安装前读取 current 并验证协议、版本、主机版本、路径、大小、SHA与Mobile逐文件清单；Node使用官方SDK0.2.1-alpha.1、在线且ignore-scripts的pnpm、profile锁及五文件快照。托管凭据位于 `<DshRoot>/.launcher-connect/managed-plugins/{id}.json`，TGZ及描述位于 managed-packages。卸载仅移除该插件依赖、bundle与托管凭据，保留工作区、对话、用户patch及无关依赖；外来来源/篡改拒绝写入。旧Connect与Mobile schema2凭据通过冻结归档验真接管。
+
+按用户要求仅做本次专项：Node生命周期10/10、实际构建Core→生产HTTPS→嵌入helper→官方SDK/pnpm安装/检查更新/卸载12/12通过；测试分别在 `tests/ConnectionPluginPopulatedProfile/managed-lifecycle.mjs`、`tests/ManagedConnectionPlugins.Regression`。构建候选 `../Temp_SetupandLauncher/MP17/dist`，内部版本仍1.8.0，不代表新的正式发版；本轮不覆盖公开1.8.1资产。详见 `../Temp_SetupandLauncher/MP17/REPORT.md`。默认不扩大到全量测试。
+
+## 2026-10-17 连接插件安装冷缓存修复（本地，未发布）
+
+本节优先于旧“离线安装”说明。本地TGZ不能替代现有profile依赖的供应链元数据；
+旧localhost:9 + offline + 空缓存导致截图debug@4.4.3 mirror错误。
+现ConnectionPluginInstallation使用既有PackageDownloadEnvironment / ProxySupport，
+offline=false，显式向官方service转发registry/代理/CA/Git TLS；helper使用
+--offline=false，保留--ignore-scripts、策略与包/来源/实际解析校验及失败快照。
+
+实际pnpm12.4.1 + SDK0.2.1-alpha.1：原11项、新有依赖/有锁冷缓存6项、实际Core/service
+环境13项均通过。持久测试在tests/ConnectionPluginPopulatedProfile和
+tests/ConnectionPluginEnvironment.Regression。构建基于发布83e3839，仅两生产文件补丁；
+本地包../Temp_SetupandLauncher/CF17/Dafeiyu-GO 1.8.1-connect-fix-local.zip，SHA256
+05DF287BF9DDF1007366F692C9D1FF374A5B1132FBF1708B54F45F02B32872AD。
+完整报告../Temp_SetupandLauncher/CF17/REPORT.md。未发布/替换真实安装，未执行真实154项依赖。
+
 ## 2026-10-16 用户反馈修复：连接、原生窗口与本地交付
 
 本节记录新的功能修复，取代下方历史补录中“本次只改文档”的状态。本轮没有发布、推送或替换真实安装；公开 1.8.0 不因本地候选自动改变。主报告 `../Temp_SetupandLauncher/Feedback-20261016/REPORT.md` 是最终构建、原生复核、打包摘要和一键发布演练结果入口，不能用旧 Launcher 目录或旧 12 项安装测试代替。用户最后要求配对请求窗全程置顶，待允许、拒绝、关闭或撤回后结束；此要求优先于旧测试的非永久 topmost 断言。统一窗口名为“提示窗”，新增轻量 PromptWindow 承载外观、图标、标题区与置顶，配对 wrapper 保留独立审批与关闭保护。

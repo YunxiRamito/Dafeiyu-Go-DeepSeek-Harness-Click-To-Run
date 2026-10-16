@@ -8,6 +8,9 @@ param(
     [string]$DotnetPath,
     [string]$NuGetCache,
     [string]$Proxy = 'http://127.0.0.1:7890',
+    [ValidateSet('Focused','Full')][string]$TestMode = 'Focused',
+    [string]$FocusedSdkNodeModules,
+    [string]$FocusedPnpmPath,
     [string]$Otp,
     [switch]$NoManifest,
     [switch]$FunctionsOnly
@@ -18,6 +21,72 @@ function Get-LocalReleaseSuites {
       'ClientNotice', 'DeveloperNotice', 'InfoWindowClient', 'DshDataImport',
       'DshDataExport', 'DshDataDiscovery', 'StartupBackgroundUpdates',
       'UpdateMetadata', 'UpdateIntegrity', 'ComponentRuntime')
+}
+
+function New-LocalReleaseInput {
+    param([string]$Path)
+    $path = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Release input must be a file.' }
+    [ordered]@{path=$path; bytes=(Get-Item -LiteralPath $path).Length; sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()}
+}
+
+function Invoke-LocalFocusedChecks {
+    param([string]$Root,[string]$Snapshot,[string]$Run,[string]$Dist,[string]$DotnetPath,[string]$SdkNodeModules,[string]$PnpmPath)
+    if (-not $SdkNodeModules) {
+        $candidate = $Root
+        while ($candidate) {
+            $modules = Join-Path $candidate 'node_modules'
+            if (Test-Path -LiteralPath (Join-Path $modules '@deepseek-ai/dsh/package.json')) { $SdkNodeModules=$modules; break }
+            $candidate = Split-Path $candidate -Parent
+        }
+    }
+    if (-not $SdkNodeModules) { throw 'Focused tests require -FocusedSdkNodeModules containing the actual DSH SDK.' }
+    $SdkNodeModules = (Resolve-Path -LiteralPath $SdkNodeModules -ErrorAction Stop).Path
+    if (-not $PnpmPath) {
+        foreach ($candidate in @((Join-Path (Split-Path $SdkNodeModules -Parent) 'node_modules/pnpm/pnpm.exe'),
+            $(if ($env:APPDATA) { Join-Path $env:APPDATA 'npm/node_modules/pnpm/pnpm.exe' }))) {
+            if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { $PnpmPath=$candidate; break }
+        }
+    }
+    if (-not $PnpmPath) { throw 'Focused tests require -FocusedPnpmPath for the actual pnpm executable.' }
+    $PnpmPath = (Resolve-Path -LiteralPath $PnpmPath -ErrorAction Stop).Path
+    $fixture = Join-Path $Run 'focused-fixture'
+    $output = Join-Path $Run 'focused-runner'
+    $intermediate = (Join-Path $Run 'focused-obj') + [IO.Path]::DirectorySeparatorChar
+    if ($Run -match '^[cC]:' -or $SdkNodeModules -match '^[cC]:' -or (Test-Path -LiteralPath $fixture)) {
+        throw 'Focused tests require a fresh owned project-drive fixture and non-C SDK.'
+    }
+    $sourceInputs = @('tests/ManagedConnectionPlugins.Regression/Program.cs',
+        'tests/ManagedConnectionPlugins.Regression/ManagedConnectionPlugins.Regression.csproj',
+        'source/ManagedConnectionPluginsService.cs','release.ps1','verify.ps1','source/build-winui.ps1')
+    $inputs = @($sourceInputs | ForEach-Object { New-LocalReleaseInput (Join-Path $Root $_) })
+    foreach ($path in @($DotnetPath,$PnpmPath,(Join-Path $SdkNodeModules 'node/bin/node.exe'),
+        (Join-Path $SdkNodeModules '@deepseek-ai/dsh/package.json'),(Join-Path $SdkNodeModules '.modules.yaml'),
+        (Join-Path $SdkNodeModules '.pnpm/lock.yaml'))) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) { $inputs += New-LocalReleaseInput $path }
+        elseif ($path.EndsWith('node.exe') -or $path.EndsWith('package.json')) { throw 'Focused SDK runtime or manifest is missing.' }
+    }
+    New-Item -ItemType Directory -Path $fixture -Force | Out-Null
+    New-Item -ItemType Junction -Path (Join-Path $fixture 'node_modules') -Target $SdkNodeModules | Out-Null
+    $project = Join-Path $Snapshot 'tests/ManagedConnectionPlugins.Regression/ManagedConnectionPlugins.Regression.csproj'
+    Invoke-ReleaseNative $DotnetPath @('build',$project,'-c','Release','--output',$output,'-p:UseSharedCompilation=false',
+        ('-p:BaseIntermediateOutputPath='+$intermediate))
+    $runner = Join-Path $output 'ManagedConnectionPlugins.Regression.dll'
+    Invoke-ReleaseNative $DotnetPath @($runner,$Dist,$fixture,$SdkNodeModules,$PnpmPath)
+    $report = Join-Path $fixture 'managed-built-report.json'
+    $result = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+    $core = New-LocalReleaseInput (Join-Path $Dist 'DeepSeek Harness.Core.dll')
+    if ($result.passed -ne 12 -or $result.failed -ne 0 -or $result.checks.Count -ne 12 -or
+        $result.coreSha256.ToLowerInvariant() -cne $core.sha256 -or $result.root -cne $fixture) {
+        throw 'Focused report must prove all twelve checks against the actual built Core.'
+    }
+    foreach ($input in $inputs) {
+        $current = New-LocalReleaseInput $input.path
+        if ($current.sha256 -cne $input.sha256 -or $current.bytes -ne $input.bytes) { throw 'Focused input changed during acceptance.' }
+    }
+    # Keep the report and runner; the SDK junction is not part of the acceptance artifact.
+    Remove-Item -LiteralPath (Join-Path $fixture 'node_modules') -Force
+    [ordered]@{report=(New-LocalReleaseInput $report); runner=(New-LocalReleaseInput $runner); core=$core; inputs=$inputs; passed=12}
 }
 
 function Invoke-ReleaseNative {
@@ -144,9 +213,12 @@ function Assert-LocalReleaseReceipt {
         $receipt.commit -notmatch '^[a-f0-9]{40}$' -or $receipt.sha256 -notmatch '^[a-f0-9]{64}$') {
         throw 'Invalid local acceptance receipt.'
     }
-    $expected = @((Get-LocalReleaseSuites) + @('StartupUpdateOwnership', 'RuntimeBootstrap.Compiled', 'verify'))
+    $mode = if ($receipt.PSObject.Properties['testMode']) { $receipt.testMode } else { 'Full' }
+    if ($mode -cnotin @('Focused','Full')) { throw 'Unknown acceptance test mode.' }
+    $expected = if ($mode -eq 'Focused') { @('ManagedConnectionPlugins.Compiled12','verify') }
+        else { @((Get-LocalReleaseSuites) + @('StartupUpdateOwnership', 'RuntimeBootstrap.Compiled', 'verify')) }
     if (@(Compare-Object $expected @($receipt.checks)).Count -or $receipt.checks.Count -ne $expected.Count) {
-        throw 'Receipt must include all 14 suites, StartupUpdateOwnership, compiled RuntimeBootstrap and verify.'
+        throw 'Receipt checks differ from the explicitly selected test mode.'
     }
     Assert-ReleaseClean $Root $receipt.commit
     [xml]$project = Get-Content -LiteralPath (Join-Path $Root 'source/DeepSeekHarness.csproj') -Raw
@@ -154,6 +226,24 @@ function Assert-LocalReleaseReceipt {
     if ((Split-Path $receipt.zipPath -Leaf) -cne "Dafeiyu-GO $($receipt.version).zip" -or
         (Get-FileHash -LiteralPath $receipt.zipPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $receipt.sha256) {
         throw 'ZIP changed after acceptance.'
+    }
+    if ($mode -eq 'Focused') {
+        if ($receipt.focused.passed -ne 12 -or $receipt.focused.inputs.Count -lt 9) { throw 'Focused acceptance proof is incomplete.' }
+        foreach ($input in @($receipt.focused.inputs) + @($receipt.focused.report,$receipt.focused.runner,$receipt.focused.core)) {
+            $actual = New-LocalReleaseInput $input.path
+            if ($actual.sha256 -cne $input.sha256 -or $actual.bytes -ne $input.bytes) { throw 'Focused acceptance input or proof changed.' }
+        }
+        $report = Get-Content -LiteralPath $receipt.focused.report.path -Raw | ConvertFrom-Json
+        if ($report.passed -ne 12 -or $report.failed -ne 0 -or $report.checks.Count -ne 12 -or
+            $report.coreSha256.ToLowerInvariant() -cne $receipt.focused.core.sha256) { throw 'Focused report/Core binding differs.' }
+        $zip = [IO.Compression.ZipFile]::OpenRead($receipt.zipPath)
+        try {
+            $core = @($zip.Entries | Where-Object FullName -CEQ 'DeepSeek Harness.Core.dll')
+            if ($core.Count -ne 1) { throw 'Accepted ZIP must contain the tested Core once.' }
+            $stream=$core[0].Open(); $sha=[Security.Cryptography.SHA256]::Create()
+            try { $hash=[Convert]::ToHexString($sha.ComputeHash($stream)).ToLowerInvariant() } finally { $stream.Dispose();$sha.Dispose() }
+            if ($hash -cne $receipt.focused.core.sha256) { throw 'ZIP Core differs from the actual focused test candidate.' }
+        } finally { $zip.Dispose() }
     }
     $receipt
 }
@@ -186,7 +276,8 @@ function Set-SnapshotBuildSettings {
 }
 
 function Invoke-LocalReleaseBuild {
-    param([string]$Root, [string]$WorkRoot, [string]$DotnetPath)
+    param([string]$Root, [string]$WorkRoot, [string]$DotnetPath,
+        [ValidateSet('Focused','Full')][string]$TestMode='Focused',[string]$FocusedSdkNodeModules,[string]$FocusedPnpmPath)
     Assert-ReleaseClean $Root
     $commit = Get-ReleaseGit $Root @('rev-parse', 'HEAD')
     [xml]$project = Get-Content -LiteralPath (Join-Path $Root 'source/DeepSeekHarness.csproj') -Raw
@@ -205,7 +296,7 @@ function Invoke-LocalReleaseBuild {
         try {
             Invoke-ReleaseNative $pwsh @('-NoProfile', '-File', (Join-Path $snapshot 'check-release-gate.ps1'), '-Version', $version)
             $checks = @()
-            foreach ($suite in (Get-LocalReleaseSuites)) {
+            foreach ($suite in $(if ($TestMode -eq 'Full') { Get-LocalReleaseSuites })) {
                 Write-Host "Regression: $suite"
                 Invoke-ReleaseNative $DotnetPath @('run', '--project', "tests/$suite.Regression/$suite.Regression.csproj", '-c', 'Release', '-p:UseSharedCompilation=false')
                 $checks += $suite
@@ -213,16 +304,22 @@ function Invoke-LocalReleaseBuild {
             $build = Join-Path $snapshot 'source/build-winui.ps1'
             Set-SnapshotBuildSettings $build $DotnetPath $env:NUGET_PACKAGES
             Invoke-ReleaseNative $pwsh @('-NoProfile', '-File', $build, '-OutputDirectory', $dist)
-            Invoke-ReleaseNative $DotnetPath @('run', '--project', 'tests/StartupUpdateOwnership.Regression/StartupUpdateOwnership.Regression.csproj', '-c', 'Release', '-p:UseSharedCompilation=false', '--', $dist)
-            $checks += 'StartupUpdateOwnership'
-            Invoke-ReleaseNative $pwsh @('-NoProfile', '-File', 'tests/RuntimeBootstrap.Regression/Run.ps1', '-BootstrapPath', (Join-Path $dist 'DeepSeek Harness.exe'))
-            $checks += 'RuntimeBootstrap.Compiled'
+            $focused = $null
+            if ($TestMode -eq 'Focused') {
+                $focused = Invoke-LocalFocusedChecks $Root $snapshot $run $dist $DotnetPath $FocusedSdkNodeModules $FocusedPnpmPath
+                $checks += 'ManagedConnectionPlugins.Compiled12'
+            } else {
+                Invoke-ReleaseNative $DotnetPath @('run', '--project', 'tests/StartupUpdateOwnership.Regression/StartupUpdateOwnership.Regression.csproj', '-c', 'Release', '-p:UseSharedCompilation=false', '--', $dist)
+                $checks += 'StartupUpdateOwnership'
+                Invoke-ReleaseNative $pwsh @('-NoProfile', '-File', 'tests/RuntimeBootstrap.Regression/Run.ps1', '-BootstrapPath', (Join-Path $dist 'DeepSeek Harness.exe'))
+                $checks += 'RuntimeBootstrap.Compiled'
+            }
             Invoke-ReleaseNative $pwsh @('-NoProfile', '-File', 'verify.ps1', '-Dist', $dist, '-Version', $version)
             $checks += 'verify'
             Assert-ReleaseClean $Root $commit
             $zip = Join-Path $run "Dafeiyu-GO $version.zip"
             Compress-Archive -Path (Join-Path $dist '*') -DestinationPath $zip -CompressionLevel Optimal
-            $receipt = [ordered]@{ schema = 1; version = $version; commit = $commit; checks = $checks
+            $receipt = [ordered]@{ schema = 1; version = $version; commit = $commit; checks = $checks; testMode=$TestMode; focused=$focused
                 zipPath = $zip; sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
                 acceptedAt = [DateTime]::UtcNow.ToString('o') }
             $receiptPath = Join-Path $run 'acceptance.json'
@@ -255,7 +352,7 @@ if (-not $NuGetCache) {
     }
 }
 Invoke-LocalReleaseEnvironment $WorkRoot $Proxy $NuGetCache {
-    $receiptPath = Invoke-LocalReleaseBuild $PSScriptRoot $WorkRoot $DotnetPath
+    $receiptPath = Invoke-LocalReleaseBuild $PSScriptRoot $WorkRoot $DotnetPath $TestMode $FocusedSdkNodeModules $FocusedPnpmPath
     if ($Publish) {
         & (Join-Path $PSScriptRoot 'publish-release.ps1') -ReceiptPath $receiptPath -Repository $Repository -WorkRoot $WorkRoot -Proxy $Proxy -Otp $Otp -PushCommit:$PushCommit
     } else {

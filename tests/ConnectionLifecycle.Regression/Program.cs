@@ -182,7 +182,8 @@ Check(!named.Contains("ConnectionWorkspaceToggle") && !named.Contains("Connectio
 Check(!named.Contains("ConnectionWorkspaceRootButton") && !named.Contains("ConnectionWorkspaceRootText"), "arbitrary folder selector removed");
 Check(named.Contains("ConnectionPluginUpdateButton"), "connection plugin repair remains reachable");
 string startup = File.ReadAllText(Path.Combine(repo, "source", "WinUIProgram.cs"));
-Check(startup.IndexOf("ConnectionPluginUpdateService.EnsureInstalled(_settings, WriteLog)", StringComparison.Ordinal) < startup.IndexOf("if (!PrepareMobileUiForOwnedLaunch", StringComparison.Ordinal), "connection plugin prepared before owned DSH startup");
+Check(startup.Contains("ManagedConnectionPluginsService.InspectAsync(_settings, \"connect\"")
+    && !startup.Contains("ConnectionPluginUpdateService.EnsureInstalled(_settings, WriteLog)"), "owned startup inspects connection plugin without reinstalling after user removal");
 Check(!File.ReadAllText(Path.Combine(repo, "source", "SettingsWindow.Connections.cs")).Contains("ConnectionPreferences_Toggled"), "obsolete preference event path removed");
 string promptUi = File.ReadAllText(Path.Combine(repo, "source", "Features", "Connections", "Pairing", "LauncherContext.PairingPrompt.cs"));
 Check(promptUi.Contains("StateChanged += PairingPromptStateChanged") && promptUi.Contains("host.DecidePairingPromptAsync")

@@ -43,7 +43,7 @@ namespace DeepSeekHarnessLauncher
     {
         public const string Title = "Dafeiyu-Go";
         public const string EnglishTitle = "Dafeiyu-Go";
-        public const string Version = "1.8.1";
+        public const string Version = "1.8.2";
         public const string Repository = "YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run";
         public const string LegacyRepository = "YunxiRamito/DSH-Launcher";
         public const string UserAgent = "Dafeiyu-Go/" + Version;
@@ -5753,18 +5753,16 @@ namespace DeepSeekHarnessLauncher
             string diagnostic;
             try
             {
-                MobileUiPluginService.ResolveShippedAssets(AppContext.BaseDirectory,
-                    out string archive, out string manifest);
-                UpdateServiceWindow("正在验证手机网页插件");
-                var prepared = MobileUiPluginService.Prepare(_settings, archive, manifest, "web",
-                    Path.Combine(_settings.DshRoot, ".launcher-mobile-ui", "operations"),
-                    timeoutMs: 120000, log: WriteLog,
-                    serviceRunning: () => IsServicePortListening(_port),
-                    profileAttested: true, allowInstallation: true);
-                if (prepared.Status == MobileUiPluginService.PreparationStatus.Ready
-                    || prepared.Status == MobileUiPluginService.PreparationStatus.Disabled)
+                UpdateServiceWindow("正在检查手机网页插件");
+                var prepared = ManagedConnectionPluginsService.InspectAsync(_settings, "mobile-ui", WriteLog,
+                    CancellationToken.None).GetAwaiter().GetResult();
+                if (String.IsNullOrEmpty(prepared.Error))
+                {
+                    WriteLog(prepared.Installed ? "手机网页美化插件已安装：" + prepared.Version
+                        : "手机网页美化插件未安装，可在连接页安装。");
                     return true;
-                diagnostic = prepared.Error ?? "SDK 未返回可验证结果。";
+                }
+                diagnostic = prepared.Error;
             }
             catch (Exception exception) when (exception is IOException
                 || exception is UnauthorizedAccessException || exception is InvalidOperationException
@@ -5810,12 +5808,13 @@ namespace DeepSeekHarnessLauncher
             }
 
             if (!TryPrepareServicePort(false, out failureMessage)) return false;
-            // The shared connection plugin must be composed into the explicit web
-            // profile before the owned DSH process starts. Never patch a running
-            // service or silently restart an externally owned process.
-            var connectionPlugin = ConnectionPluginUpdateService.EnsureInstalled(_settings, WriteLog);
-            if (connectionPlugin.Failed || connectionPlugin.Cancelled || !connectionPlugin.Started || connectionPlugin.ExitCode != 0)
-                WriteLog("连接插件尚未就绪，DSH 将继续启动；可在连接页重试安装。");
+            // Installation is an explicit connection-page action. Read-only inspection
+            // preserves uninstall choices and never downgrades a backend-updated bundle.
+            var connectionPlugin = ManagedConnectionPluginsService.InspectAsync(_settings, "connect", WriteLog,
+                CancellationToken.None).GetAwaiter().GetResult();
+            if (!String.IsNullOrEmpty(connectionPlugin.Error) || !connectionPlugin.Installed)
+                WriteLog("连接插件尚未就绪，DSH 将继续启动；可在连接页安装。" + connectionPlugin.Error);
+            else ConnectionPluginPreferences.Save(_settings);
             if (!PrepareMobileUiForOwnedLaunch(out failureMessage)) return false;
             // Recheck after package preparation; another process may have claimed
             // the configured port while the SDK/profile lease was busy.

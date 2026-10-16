@@ -37,11 +37,35 @@ namespace DeepSeekHarnessLauncher
         private bool _connectionPairStateChecking;
         private bool _connectionInvitationGenerating;
         private TextBlock _connectionServerSummary;
+        private readonly ManagedConnectionPluginUiState _connectPluginUi = new ManagedConnectionPluginUiState();
+        private readonly ManagedConnectionPluginUiState _mobilePluginUi = new ManagedConnectionPluginUiState();
+        private bool _managedPluginsInspectBusy;
+        private bool _managedPluginsActionBusy;
+        private sealed class ManagedConnectionPluginUiState
+        {
+            internal bool Loaded;
+            internal bool Installed;
+            internal string Version;
+            internal string Error;
+            internal string UpdateAvailableVersion;
+        }
 
         private void BuildConnectionSections()
         {
             if (_connectionServerSummary != null) return;
             var sync = (StackPanel)ConnectionSyncCard.Child;
+            sync.ChildrenTransitions = new TransitionCollection
+                { new EntranceThemeTransition(), new RepositionThemeTransition(), new AddDeleteThemeTransition() };
+            foreach (var child in sync.Children)
+                if (child is Grid row)
+                {
+                    row.ChildrenTransitions = new TransitionCollection
+                        { new EntranceThemeTransition(), new RepositionThemeTransition(), new AddDeleteThemeTransition() };
+                    foreach (var content in row.Children)
+                        if (content is StackPanel panel)
+                            panel.ChildrenTransitions = new TransitionCollection
+                                { new EntranceThemeTransition(), new RepositionThemeTransition(), new AddDeleteThemeTransition() };
+                }
             ((TextBlock)sync.Children[0]).Text = "连接服务";
             var status = (StackPanel)((Grid)((StackPanel)ConnectionStatusCard.Child).Children[0]).Children[1];
             ((TextBlock)status.Children[0]).Text = "设备详情";
@@ -75,7 +99,7 @@ namespace DeepSeekHarnessLauncher
             && _connectionsClient?.CanUnpair == true;
         private bool ConnectionClientAvailable => _connectionsClient != null && _connectionsClient.IsAvailable;
         private bool ConnectionReady => _connectionsCancellation != null && _connectionsPageActive && !_settingsClosed && !_settingsDestroyed;
-        private bool ConnectionControlsBusy => _connectionsActionBusy || _connectionsDialogBusy;
+        private bool ConnectionControlsBusy => _connectionsActionBusy || _connectionsDialogBusy || _managedPluginsActionBusy;
 
         private void InitializeConnectionsPage()
         {
@@ -143,6 +167,7 @@ namespace DeepSeekHarnessLauncher
             _connectionsCancellation = new CancellationTokenSource();
             _connectionsRefreshTimer.Start();
             _ = RefreshConnectionStateAsync();
+            _ = RefreshManagedConnectionPluginsAsync();
             UpdateConnectionsControls();
         }
 
@@ -167,6 +192,7 @@ namespace DeepSeekHarnessLauncher
         private void ConnectionsRefreshTimer_Tick(DispatcherQueueTimer sender, object args)
         {
             _ = RefreshConnectionStateAsync();
+            if (!_connectPluginUi.Loaded || !_mobilePluginUi.Loaded) _ = RefreshManagedConnectionPluginsAsync();
         }
 
         private async Task RefreshConnectionStateAsync()
@@ -233,7 +259,7 @@ namespace DeepSeekHarnessLauncher
             ConnectionRejectButton.IsEnabled = approvals && _connectionState?.PendingRequest != null && !_connectionState.PendingRequest.KeyDelivery;
             ConnectionUnpairButton.IsEnabled = editable && CanCancelConnectionPair;
             ConnectionClearCacheButton.IsEnabled = editable && HasConnectionPeer && _connectionsClient.CanClearCurrentPairCache;
-            ConnectionPluginUpdateButton.IsEnabled = editable;
+            UpdateManagedConnectionPluginControls();
             ConnectionCacheHintText.Text = available && _connectionsClient.CanClearCurrentPairCache
                 ? HasConnectionPeer ? "只清理当前连接的文件缓存。" : "配对后可清理当前连接的文件缓存。"
                 : "当前服务器暂不支持清理配对文件缓存。";
@@ -665,24 +691,113 @@ namespace DeepSeekHarnessLauncher
             }, "已提交缓存清理请求，磁盘清理进度以服务器统计为准。");
         }
 
+        private ManagedConnectionPluginUiState ManagedPluginUi(string id) => id == "mobile-ui" ? _mobilePluginUi : _connectPluginUi;
+        private TextBlock ManagedPluginStatus(string id) => id == "mobile-ui" ? ConnectionMobilePluginStatusText : ConnectionPluginStatusText;
+
+        private void UpdateManagedConnectionPluginControls()
+        {
+            void Apply(string id, Button primary, Button remove)
+            {
+                var state = ManagedPluginUi(id);
+                bool ready = ConnectionReady && !ConnectionControlsBusy && !_managedPluginsInspectBusy && state.Loaded;
+                primary.Content = !state.Installed ? "安装" : !String.IsNullOrEmpty(state.UpdateAvailableVersion) ? "更新" : "检查更新";
+                primary.IsEnabled = ready && String.IsNullOrEmpty(state.Error);
+                remove.Visibility = state.Installed ? Visibility.Visible : Visibility.Collapsed;
+                remove.IsEnabled = ready && String.IsNullOrEmpty(state.Error);
+            }
+            Apply("connect", ConnectionPluginUpdateButton, ConnectionPluginUninstallButton);
+            Apply("mobile-ui", ConnectionMobilePluginUpdateButton, ConnectionMobilePluginUninstallButton);
+        }
+
+        private async Task RefreshManagedConnectionPluginsAsync()
+        {
+            if (!ConnectionReady || _managedPluginsInspectBusy || _managedPluginsActionBusy) return;
+            int generation = _connectionsGeneration;
+            var token = _connectionsCancellation.Token;
+            _managedPluginsInspectBusy = true;
+            UpdateManagedConnectionPluginControls();
+            try
+            {
+                foreach (string id in new[] { "connect", "mobile-ui" })
+                {
+                    var result = await ManagedConnectionPluginsService.InspectAsync(_settings, id, _host.Log, token);
+                    if (!IsCurrentConnection(generation, token)) return;
+                    var state = ManagedPluginUi(id);
+                    state.Loaded = true; state.Installed = result.Installed; state.Version = result.Version; state.Error = result.Error;
+                    ManagedPluginStatus(id).Text = !String.IsNullOrWhiteSpace(result.Error) ? result.Error
+                        : result.Installed ? "已安装 · " + ConnectionValue(result.Version) : "尚未安装";
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception exception)
+            {
+                _host.Log("读取连接插件状态失败：" + exception.Message);
+                if (IsCurrentConnection(generation, token))
+                {
+                    if (!_connectPluginUi.Loaded) ConnectionPluginStatusText.Text = "状态读取失败，正在重试…";
+                    if (!_mobilePluginUi.Loaded) ConnectionMobilePluginStatusText.Text = "状态读取失败，正在重试…";
+                    ShowConnectionNotice(exception.Message, InfoBarSeverity.Warning);
+                }
+            }
+            finally
+            {
+                _managedPluginsInspectBusy = false;
+                if (ConnectionReady) UpdateManagedConnectionPluginControls();
+            }
+        }
+
         private async void ConnectionPluginUpdate_Click(object sender, RoutedEventArgs args)
         {
-            if (!ConnectionReady || ConnectionControlsBusy) return;
+            if (sender is not Button button || button.Tag is not string id || (id != "connect" && id != "mobile-ui")) return;
+            await RunManagedConnectionPluginActionAsync(id, false);
+        }
+
+        private async void ConnectionPluginUninstall_Click(object sender, RoutedEventArgs args)
+        {
+            if (sender is not Button button || button.Tag is not string id || (id != "connect" && id != "mobile-ui")) return;
+            if (!ConnectionReady || ConnectionControlsBusy || _managedPluginsInspectBusy) return;
+            string title = id == "connect" ? "卸载 Connect？" : "卸载 Mobile-CSS？";
+            string detail = id == "connect" ? "卸载后将停止同步与网页广播。DSH 工作区、对话及用户配置会保留。"
+                : "卸载后将移除网页移动端样式。DSH 工作区、对话及用户配置会保留。";
+            if (!await ConfirmConnectionActionAsync(title, detail, "卸载")) return;
+            await RunManagedConnectionPluginActionAsync(id, true);
+        }
+
+        private async Task RunManagedConnectionPluginActionAsync(string id, bool remove)
+        {
+            if (!ConnectionReady || ConnectionControlsBusy || _managedPluginsInspectBusy) return;
+            var state = ManagedPluginUi(id);
+            if (!state.Loaded || !String.IsNullOrWhiteSpace(state.Error)) return;
             int generation = _connectionsGeneration;
-            var cancellation = _connectionsCancellation.Token;
-            await RunConnectionActionAsync(async (_, token) =>
+            var token = _connectionsCancellation.Token;
+            bool checkOnly = !remove && state.Installed && String.IsNullOrEmpty(state.UpdateAvailableVersion);
+            _managedPluginsActionBusy = true;
+            UpdateConnectionsControls();
+            ManagedPluginStatus(id).Text = remove ? "正在卸载…" : checkOnly ? "正在检查更新…" : "正在验证并安装插件…";
+            try
             {
-                ConnectionPluginStatusText.Text = "正在验证并安装内置连接插件…";
-                var result = await ConnectionPluginUpdateService.InstallAsync(_settings, _host.Log, token);
-                if (result.Cancelled) throw new OperationCanceledException(token);
-                if (result.Failed || !result.Started || result.ExitCode != 0)
-                    throw new InvalidOperationException(result.Error ?? "插件安装未完成。");
-                if (!IsCurrentConnection(generation, token)) return null;
-                ConnectionPluginStatusText.Text = result.RestartRequired ? "插件已安装，重启 DSH 后生效。" : "插件已安装。";
-                return null;
-            }, "连接插件安装完成。");
-            if (IsCurrentConnection(generation, cancellation) && ConnectionPluginStatusText.Text.StartsWith("正在"))
-                ConnectionPluginStatusText.Text = "插件安装未完成，请查看提示后重试。";
+                var result = remove ? await ManagedConnectionPluginsService.UninstallAsync(_settings, id, _host.Log, token)
+                    : checkOnly ? await ManagedConnectionPluginsService.CheckUpdateAsync(_settings, id, _host.Log, token)
+                    : await ManagedConnectionPluginsService.InstallAsync(_settings, id, _host.Log, token);
+                if (!result.Success) throw new InvalidOperationException(result.Error ?? "插件操作未完成。");
+                if (!IsCurrentConnection(generation, token)) return;
+                state.Loaded = true; state.Installed = result.Installed; state.Version = result.Version; state.Error = null;
+                state.UpdateAvailableVersion = result.UpdateAvailable ? result.UpdateAvailableVersion : null;
+                ManagedPluginStatus(id).Text = result.UpdateAvailable ? "已安装 " + ConnectionValue(result.Version) + " · 可更新至 " + ConnectionValue(result.UpdateAvailableVersion)
+                    : !result.Installed ? "尚未安装" : "已安装 · " + ConnectionValue(result.Version) + (checkOnly ? " · 已是最新版本" : " · 重启 DSH 后生效");
+                if (!checkOnly) ShowConnectionNotice(remove ? "插件已卸载，重启 DSH 后生效。" : "插件安装完成，重启 DSH 后生效。", InfoBarSeverity.Success);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception exception)
+            {
+                _host.Log("连接插件操作失败：" + exception.Message);
+                if (IsCurrentConnection(generation, token))
+                {
+                    ManagedPluginStatus(id).Text = "操作未完成 · " + exception.Message;
+                    ShowConnectionNotice(exception.Message, InfoBarSeverity.Warning);
+                }
+            }
+            finally { _managedPluginsActionBusy = false; if (ConnectionReady) UpdateConnectionsControls(); }
         }
 
         private void ShowConnectionNotice(string message, InfoBarSeverity severity)

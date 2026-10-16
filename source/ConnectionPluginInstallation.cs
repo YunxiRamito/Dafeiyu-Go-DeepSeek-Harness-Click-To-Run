@@ -76,12 +76,15 @@ internal static class ConnectionPluginInstallation
                 StandardErrorEncoding = Encoding.UTF8
             };
             start.ArgumentList.Add("--input-type=module");
-            PackageDownloadEnvironment.ApplyRegistry(start, "http://127.0.0.1:9/");
+            ProxySupport.ApplyProcessEnvironment(start);
+            PackageDownloadEnvironment.Apply(start, settings);
             start.Environment["DSH_HOME"] = home;
             start.Environment["TEMP"] = temporary; start.Environment["TMP"] = temporary; start.Environment["TMPDIR"] = temporary;
             start.Environment["npm_config_cache"] = Path.Combine(temporary, "npm-cache");
             start.Environment["npm_config_store_dir"] = Path.Combine(temporary, "pnpm-store");
-            start.Environment["npm_config_offline"] = "true";
+            // The Connect archive is local, but pnpm must also validate the existing
+            // profile's dependency graph and supply-chain metadata on a cold cache.
+            start.Environment["npm_config_offline"] = "false";
             start.Environment["npm_config_manage_package_manager_versions"] = "false";
             start.Environment["npm_config_package_manager_strict"] = "false";
             start.Environment["XDG_CACHE_HOME"] = Path.Combine(temporary, "cache");
@@ -93,8 +96,17 @@ internal static class ConnectionPluginInstallation
             foreach (string key in new[] { "PATH", "TEMP", "TMP", "TMPDIR", "npm_config_cache",
                 "npm_config_store_dir", "npm_config_offline", "npm_config_registry",
                 "npm_config_manage_package_manager_versions", "npm_config_package_manager_strict",
-                "XDG_CACHE_HOME", "XDG_STATE_HOME", "COREPACK_HOME", "NODE_COMPILE_CACHE" })
+                "XDG_CACHE_HOME", "XDG_STATE_HOME", "COREPACK_HOME", "NODE_COMPILE_CACHE",
+                "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                "npm_config_proxy", "npm_config_https_proxy", "npm_config_noproxy",
+                "npm_config_cafile", "npm_config_strict_ssl", "npm_config_always_auth",
+                "NODE_EXTRA_CA_CERTS", "GIT_CONFIG_COUNT", "GIT_TERMINAL_PROMPT",
+                "GIT_HTTP_LOW_SPEED_LIMIT", "GIT_HTTP_LOW_SPEED_TIME" })
                 if (start.Environment.TryGetValue(key, out string? value)) environment[key] = value;
+            foreach (var entry in start.Environment)
+                if (entry.Key.StartsWith("GIT_CONFIG_KEY_", StringComparison.Ordinal)
+                    || entry.Key.StartsWith("GIT_CONFIG_VALUE_", StringComparison.Ordinal))
+                    environment[entry.Key] = entry.Value;
             start.Environment["DAFEIYU_CONNECT_INSTALL_REQUEST"] = Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
             {
                 schema = 1, root = Path.GetFullPath(settings.DshRoot), home = Path.GetFullPath(home),
