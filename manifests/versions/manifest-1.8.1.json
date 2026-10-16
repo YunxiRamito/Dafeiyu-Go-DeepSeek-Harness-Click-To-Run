@@ -1,0 +1,11 @@
+{
+  "version": "1.8.1",
+  "sha256": "42f4e9af18624ab9d85eb121b68a94b508e74e79380c0f1aa9276212337fbd9b",
+  "subDirectory": "",
+  "assets": {
+    "github": "https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/download/v1.8.1/Dafeiyu-GO.1.8.1.zip",
+    "mirrors": []
+  },
+  "notes": "**启动器 · 2026-10-16 · 已发布**\n\n小更新来了\n- 修复 连接设备后会自动同步 DSH 的工作区和对话,新设备请求配对改成简洁的提示窗；\n- 优化 退出软件、停止 DSH、重启 DSH 不再重复弹出二次确认；\n- 新增 窗口模式支持直接拖入文件,支持使用 F5 或 Ctrl+F5 刷新页面；\n- 优化 菜单名称统一为“选项 / 编辑 / 关于”；\n- 优化 调整正式页面的标题栏、应用图标和 WinUI 3 风格，浅色、深色主题保持一致；\n- 修复 下载中心详细说明文字没有正确跟随主题颜色变化的问题；\n- 修复 搜索下载内容后整个结果板块变成黄色的问题；\n- 修复 安装器导入旧官方客户端导出数据时可能闪退的问题；\n- 修复 插件安装流程。",
+  "releasedAt": "2026-10-16T15:35:15.5745573Z"
+}
