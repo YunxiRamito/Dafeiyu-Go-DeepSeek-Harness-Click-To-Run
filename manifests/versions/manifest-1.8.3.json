@@ -1,0 +1,11 @@
+{
+  "version": "1.8.3",
+  "sha256": "734d7beca3b4037576a44c3076026a9b929150931a1172ee299725c8d44cc83e",
+  "subDirectory": "",
+  "assets": {
+    "github": "https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/download/v1.8.3/Dafeiyu-GO.1.8.3.zip",
+    "mirrors": []
+  },
+  "notes": "修复 DSH安装可能会出现的潜在问题\n修复 最新版本登录没有窗口弹出的问题\n修复 浅色模式禁止按钮的颜色问题",
+  "releasedAt": "2026-10-17T07:56:24.5991038Z"
+}
