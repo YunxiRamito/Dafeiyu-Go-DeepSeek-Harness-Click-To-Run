@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -453,6 +453,16 @@ namespace DeepSeekHarnessLauncher
                 installedVersion);
         }
 
+        internal static bool ShouldInstall(
+            DshUpdatePackage package, string installedVersion, bool forceInstall, bool changingVersion)
+        {
+            if (package == null || String.IsNullOrWhiteSpace(package.Version)) return false;
+            // Repair the exact installed version without silently downgrading a
+            // newer local version when the configured channel points backwards.
+            return changingVersion || IsNewer(package, installedVersion)
+                || (forceInstall && String.Equals(package.Version, installedVersion, StringComparison.Ordinal));
+        }
+
         internal static DateTimeOffset? GetPublishedAt(
             DshUpdatePackage package,
             string version)
@@ -518,87 +528,61 @@ namespace DeepSeekHarnessLauncher
         {
             packagePath = null;
             error = null;
-            if (package == null
-                || String.IsNullOrWhiteSpace(package.Version)
-                || String.IsNullOrWhiteSpace(package.TarballUrl)
-                || !HasValidIntegrity(package.Integrity))
+            if (package == null || String.IsNullOrWhiteSpace(package.Version))
             {
-                error = "DSH 更新包信息不完整或缺少 SHA-256/SHA-512 校验值。";
+                error = "DSH 更新版本缺失。";
                 return false;
             }
+            // Never silently switch to npm when a complete artifact fails.
+            return TryDownloadOfflineBundle(package.Version, settings, progress,
+                out packagePath, out error, out _);
+        }
 
-            string stagingDirectory = Path.Combine(
-                Path.GetTempPath(),
-                "DeepSeekHarnessUpdate",
-                "dsh-" + Guid.NewGuid().ToString("N"));
-            bool downloaded = false;
-            string targetPath = Path.Combine(
-                stagingDirectory,
-                "dsh-" + SanitizeFileName(package.Version) + ".tgz");
-
+        internal static bool PreparePackage(
+            DshUpdatePackage package, string nodePath, LauncherSettings settings,
+            Action<string, double> progress, out string packagePath, out string error, Action<string> log = null)
+        {
+            packagePath = null;
+            error = null;
+            if (package == null || String.IsNullOrWhiteSpace(package.Version))
+            { error = "DSH 更新版本缺失。"; return false; }
+            bool unavailable;
+            var downloadClock = Stopwatch.StartNew();
+            if (TryDownloadOfflineBundle(package.Version, settings, (done, total) =>
+            {
+                if (done == 0 || done == total || downloadClock.ElapsedMilliseconds >= 2000)
+                { log?.Invoke("DSH 完整包下载：" + done + "/" + total + " 字节"); downloadClock.Restart(); }
+                progress?.Invoke("正在下载安装包…",
+                    total > 0 ? Math.Min(100, done * 100.0 / total) : -1);
+            },
+                out packagePath, out error, out unavailable)) return true;
+            // Only an explicit missing manifest authorizes isolated reconstruction.
+            // Transport, certificate, archive, and integrity failures stay failures.
+            if (!unavailable) return false;
             try
             {
-                Directory.CreateDirectory(stagingDirectory);
-                if (File.Exists(targetPath))
-                {
-                    File.Delete(targetPath);
-                }
-
-                ServicePointManager.SecurityProtocol =
-                    SecurityProtocolType.Tls12;
-                if (progress != null)
-                {
-                    progress(0, -1);
-                }
-
-                string usedUrl;
-                if (!DownloadSupport.Download(
-                    new List<string> { package.TarballUrl },
-                    targetPath,
-                    settings,
-                    DownloadSupport.DefaultThreads,
-                    delegate(DownloadProgressInfo info)
-                    {
-                        if (progress != null)
-                        {
-                            progress(info.BytesReceived, info.TotalBytes);
-                        }
-                    },
-                    null,
-                    out usedUrl,
-                    out error))
-                {
-                    return false;
-                }
-
-                if (progress != null)
-                {
-                    long received = new FileInfo(targetPath).Length;
-                    progress(received, received);
-                }
-
-                using (var stream = File.OpenRead(targetPath))
-                {
-                    byte[] actual = package.Integrity.StartsWith("sha512-", StringComparison.Ordinal)
-                        ? System.Security.Cryptography.SHA512.HashData(stream)
-                        : System.Security.Cryptography.SHA256.HashData(stream);
-                    byte[] expected = Convert.FromBase64String(package.Integrity.Substring(7));
-                    if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(actual, expected))
-                    { error = "DSH 安装包 SHA 校验失败，已拒绝安装。"; return false; }
-                }
-                packagePath = targetPath;
-                downloaded = true;
+                string root = settings?.DshRoot;
+                string node = ResolveCompatibleNode(root, nodePath, log);
+                var process = new ProcessStartInfo();
+                ProxySupport.ApplyProcessEnvironment(process, settings);
+                PackageDownloadEnvironment.Apply(process, settings);
+                var environment = new Dictionary<string, string>(process.Environment, StringComparer.OrdinalIgnoreCase);
+                log?.Invoke("DSH " + package.Version + " 没有现成完整包，将在隔离目录准备依赖；现有服务继续运行。");
+                progress?.Invoke("正在准备依赖…", -1);
+                packagePath = DafeiyuGo.Shared.DshNpmBundleBuilder.Build(package.Version, root, node,
+                    ResolveInstallRegistry(settings), environment, ShortProgress(progress, log, true), CancellationToken.None, log);
+                var manifest = DafeiyuGo.Shared.DshBundleDeployment.ParseManifest(
+                    File.ReadAllText(packagePath + ".manifest.json", Encoding.UTF8), package.Version);
+                DafeiyuGo.Shared.DshBundleDeployment.VerifyArchive(packagePath, manifest);
+                error = null;
                 return true;
             }
             catch (Exception exception)
             {
-                TryDeleteFile(targetPath);
-                error = "DSH 更新包下载失败：" + exception.Message;
+                error = "DSH " + package.Version + " 安装包准备失败，未更改现有安装：" + exception.Message;
+                CleanupPackage(packagePath);
+                packagePath = null;
                 return false;
-            }
-            finally
-            {
-                if (!downloaded) { try { Directory.Delete(stagingDirectory, true); } catch { } }
             }
         }
 
@@ -611,12 +595,209 @@ namespace DeepSeekHarnessLauncher
             catch { return false; }
         }
 
-        internal static void CleanupPackage(string packagePath, Action<string> log = null)
+        internal static bool IsMissingBundleManifest(HttpStatusCode status, bool manifestReceived)
+            => !manifestReceived && (status == HttpStatusCode.NotFound || status == HttpStatusCode.Gone);
+
+        private static bool TryDownloadOfflineBundle(
+            string version,
+            LauncherSettings settings,
+            Action<long, long> progress,
+            out string archivePath,
+            out string error,
+            out bool unavailable)
+        {
+            archivePath = null;
+            error = null;
+            unavailable = false;
+            bool manifestReceived = false;
+            // This is our own artifact, independent of upstream mirror choices.
+            // Snapshot settings to retain the proxy without mutating preferences.
+            LauncherSettings bundleSettings = settings == null ? new LauncherSettings()
+                : JsonSerializer.Deserialize<LauncherSettings>(JsonSerializer.Serialize(settings));
+            bundleSettings.UpdateSource = "Accelerated";
+            bundleSettings.MirrorSource = BackendDownloadSource.SourceId;
+            string manifestUrl = BackendDownloadSource.BaseUrl
+                + "/api/dsh/bundles/" + Uri.EscapeDataString(version) + "/manifest";
+            string stagingDirectory = null;
+
+            try
+            {
+                string manifestText;
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(manifestUrl);
+                request.Method = "GET";
+                request.UserAgent = Constants.UserAgent;
+                request.ReadWriteTimeout = 30000;
+                ProxySupport.Apply(request, bundleSettings);
+                BackendDownloadSource.Apply(request);
+                request.Timeout = 15000;
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                using (Stream stream = response.GetResponseStream())
+                using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
+                {
+                    char[] buffer = new char[8193];
+                    int length = 0;
+                    int read;
+                    while (length < buffer.Length && (read = reader.Read(buffer, length, buffer.Length - length)) > 0)
+                        length += read;
+                    if (length == buffer.Length) throw new InvalidDataException("DSH 完整包清单过大。");
+                    manifestText = new string(buffer, 0, length);
+                }
+                manifestReceived = true;
+
+                using (JsonDocument document = JsonDocument.Parse(manifestText))
+                {
+                    var manifest = DafeiyuGo.Shared.DshBundleDeployment.ParseManifest(manifestText, version);
+                    long size = manifest.SizeBytes;
+                    string sha256 = manifest.Sha256;
+                    string root = String.IsNullOrWhiteSpace(settings?.DshRoot) ? AppContext.BaseDirectory : settings.DshRoot;
+                    stagingDirectory = DafeiyuGo.Shared.DshBundleDeployment.CreateWorkDirectory(root, "download", version);
+                    string targetPath = Path.Combine(stagingDirectory, manifest.FileName);
+                    var progressGate = new object();
+                    long lastReceived = 0;
+                    if (progress != null) progress(0, size);
+                    string usedUrl;
+                    if (!DownloadSupport.Download(
+                            new List<string> { BackendDownloadSource.BaseUrl
+                                + "/api/dsh/bundles/" + Uri.EscapeDataString(version) + "/archive" },
+                            targetPath,
+                            bundleSettings,
+                            2,
+                            info =>
+                            {
+                                lock (progressGate)
+                                {
+                                    if (info.BytesReceived > size)
+                                        throw new InvalidDataException("DSH 完整包超过清单声明大小。");
+                                    lastReceived = Math.Max(lastReceived, info.BytesReceived);
+                                    progress?.Invoke(lastReceived, size);
+                                }
+                            },
+                            null,
+                            out usedUrl,
+                            out error))
+                    {
+                        error = "DSH 完整包下载失败：" + error;
+                        return false;
+                    }
+
+                    FileInfo archiveInfo = new FileInfo(targetPath);
+                    if (archiveInfo.Length != size
+                        || !String.Equals(UpdateSupport.ComputeSha256(targetPath), sha256, StringComparison.OrdinalIgnoreCase))
+                    {
+                        error = "后端 DSH 完整包校验失败，已拒绝部署。";
+                        return false;
+                    }
+
+                    File.WriteAllText(
+                        targetPath + ".manifest.json",
+                        manifestText,
+                        Encoding.UTF8);
+                    if (progress != null) progress(size, size);
+                    archivePath = targetPath;
+                    return true;
+                }
+            }
+            catch (WebException exception)
+            {
+                using (var response = exception.Response)
+                {
+                    var http = response as HttpWebResponse;
+                    unavailable = http != null && IsMissingBundleManifest(http.StatusCode, manifestReceived);
+                    string status = http == null ? String.Empty : "（HTTP " + (int)http.StatusCode + "）";
+                    error = unavailable
+                        ? "DSH " + version + " 的完整安装包尚未提供" + status + "。请使用安装/修复功能准备该精确版本；未更改现有安装。"
+                        : "DSH " + version + " 完整包下载失败" + status
+                            + "，请检查网络或代理后重试；未更改现有安装：" + exception.Message;
+                }
+                return false;
+            }
+            catch (Exception exception)
+            {
+                error = "获取 DSH 完整包失败：" + exception.Message;
+                return false;
+            }
+            finally
+            {
+                if (archivePath == null)
+                {
+                    DafeiyuGo.Shared.DshBundleDeployment.CleanupWorkDirectory(stagingDirectory);
+                }
+            }
+        }
+
+        private static bool InstallOfflineBundle(
+            string dshRoot, string nodePath, string archivePath,
+            Action<string, double> progress, out string error, Action<string> log = null)
+        {
+            error = null;
+            try
+            {
+                string manifestText = File.ReadAllText(archivePath + ".manifest.json", Encoding.UTF8);
+                using (var document = JsonDocument.Parse(manifestText))
+                {
+                    string version = document.RootElement.GetProperty("version").GetString();
+                    string node = ResolveCompatibleNode(dshRoot, nodePath, log);
+                    Action<string, double> shortProgress = ShortProgress(progress, log, false);
+                    DafeiyuGo.Shared.DshBundleDeployment.Deploy(archivePath, manifestText,
+                        version, dshRoot, node,
+                        (detail, percent) => shortProgress(detail, Math.Min(99.9, percent)), CancellationToken.None, log);
+                }
+                return true;
+            }
+            catch (Exception exception)
+            {
+                error = "DSH 完整包部署失败：" + exception.Message;
+                return false;
+            }
+        }
+
+        internal static string ProgressText(double percent, bool preparing)
+        {
+            if (preparing)
+                return percent < 0 ? "正在准备依赖…" : percent < 90 ? "正在检查安装包…"
+                    : percent < 100 ? "正在整理安装包…" : "安装包已就绪";
+            return percent <= 0 ? "正在校验安装包…" : percent < 81 ? "正在解压文件…"
+                : percent < 85 ? "正在检查组件…" : percent < 99.6 ? "正在安装 DSH…"
+                : percent < 100 ? "正在清理…" : "安装完成";
+        }
+
+        private static Action<string, double> ShortProgress(Action<string, double> progress, Action<string> log, bool preparing)
+        {
+            string lastPhase = null;
+            var clock = Stopwatch.StartNew();
+            return (detail, percent) =>
+            {
+                string phase = ProgressText(detail, percent, preparing);
+                if (phase != lastPhase || clock.ElapsedMilliseconds >= 2000 || percent >= 100)
+                { log?.Invoke(detail); lastPhase = phase; clock.Restart(); }
+                progress?.Invoke(phase, percent);
+            };
+        }
+
+        internal static string ProgressText(string detail, double percent, bool preparing)
+        {
+            if (detail != null && detail.EndsWith("）", StringComparison.Ordinal)
+                && (detail.StartsWith("准备依赖（", StringComparison.Ordinal)
+                    || detail.StartsWith("解压文件（", StringComparison.Ordinal)
+                    || detail.StartsWith("清理（", StringComparison.Ordinal))) return detail;
+            return ProgressText(percent, preparing);
+        }
+
+        internal static void CleanupPackage(string packagePath, Action<string> log = null, Action<int, int> progress = null)
         {
             if (String.IsNullOrWhiteSpace(packagePath)) return;
             try
             {
-                DownloadSupport.TryDeleteOwnedDirectory(Path.GetDirectoryName(Path.GetFullPath(packagePath)),
+                string directory = Path.GetDirectoryName(Path.GetFullPath(packagePath));
+                if (DafeiyuGo.Shared.DshBundleDeployment.CleanupWorkDirectory(directory, log, progress)) return;
+                string name = Path.GetFileName(directory);
+                if (name.StartsWith(".dsh-bundle-", StringComparison.Ordinal)
+                    && Guid.TryParseExact(name.Substring(".dsh-bundle-".Length), "N", out _))
+                {
+                    DownloadSupport.TryDeleteOwnedDirectory(directory, Path.GetDirectoryName(directory), ".dsh-bundle-", log);
+                    return;
+                }
+                DownloadSupport.TryDeleteOwnedDirectory(directory,
                     Path.Combine(Path.GetTempPath(), "DeepSeekHarnessUpdate"), "dsh-", log);
             }
             catch (Exception exception) { try { log?.Invoke("DSH package cleanup failed: " + exception.Message); } catch { } }
@@ -666,13 +847,13 @@ namespace DeepSeekHarnessLauncher
                 return false;
             }
 
-            return RunNpmInstall(
-                dshRoot,
-                nodePath,
-                PackageName + "@" + version,
-                registry,
-                progress,
-                out error);
+            var settings = new LauncherSettings { DshRoot = dshRoot };
+            string archive;
+            if (!PreparePackage(new DshUpdatePackage { Version = version }, nodePath, settings,
+                (text, percent) => progress?.Invoke(text, percent < 0 ? -1 : percent * .5),
+                out archive, out error)) return false;
+            return InstallPackage(dshRoot, nodePath, archive, registry,
+                (text, percent) => progress?.Invoke(text, percent < 0 ? -1 : 50 + percent * .5), out error);
         }
 
         /// <summary>
@@ -732,500 +913,36 @@ namespace DeepSeekHarnessLauncher
             string packagePath,
             string registry,
             Action<string, double> progress,
-            out string error)
+            out string error,
+            Action<string> log = null)
         {
             if (String.IsNullOrWhiteSpace(packagePath)
                 || !File.Exists(packagePath))
             {
+                CleanupPackage(packagePath, log);
                 error = "DSH 更新包不存在。";
                 return false;
             }
 
-            return RunNpmInstall(
-                dshRoot,
-                nodePath,
-                packagePath,
-                registry,
-                progress,
-                out error);
-        }
-
-        private static bool RunNpmInstall(
-            string dshRoot,
-            string nodePath,
-            string packageSpec,
-            string registry,
-            Action<string, double> progress,
-            out string error)
-        {
-            error = null;
-            if (String.IsNullOrWhiteSpace(dshRoot)
-                || String.IsNullOrWhiteSpace(nodePath)
-                || String.IsNullOrWhiteSpace(packageSpec))
+            if (packagePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+                && File.Exists(packagePath + ".manifest.json"))
             {
-                error = "DSH 更新参数不完整。";
-                return false;
-            }
-
-            string nodeDirectory =
-                Path.GetDirectoryName(nodePath) ?? String.Empty;
-            string npmCli = FindNpmCli(nodeDirectory, dshRoot);
-            string npmCmd = FindNpmCmd(nodeDirectory, dshRoot);
-
-            string fileName;
-            string arguments;
-            string npmDirectory = null;
-            string installArguments = " install "
-                + Quote(packageSpec)
-                + " --prefix " + Quote(dshRoot)
-                + " --no-audit --no-fund --progress=true --loglevel=http";
-            if (!String.IsNullOrWhiteSpace(registry))
-            {
-                installArguments += " --registry=" + Quote(registry);
-            }
-            if (!String.IsNullOrWhiteSpace(npmCli))
-            {
-                fileName = nodePath;
-                arguments = Quote(npmCli) + installArguments;
-            }
-            else if (!String.IsNullOrWhiteSpace(npmCmd))
-            {
-                fileName = "cmd.exe";
-                arguments = "/d /s /c \""
-                    + Quote(npmCmd)
-                    + installArguments
-                    + "\"";
-                npmDirectory = Path.GetDirectoryName(npmCmd);
-            }
-            else
-            {
-                // 最后一层交给 cmd 自己按 PATH 解析 npm.cmd。
-                fileName = "cmd.exe";
-                arguments = "/d /s /c \"npm.cmd"
-                    + installArguments
-                    + "\"";
-            }
-
-            try
-            {
-                Encoding consoleEncoding = GetConsoleEncoding();
-                ProcessStartInfo startInfo = new ProcessStartInfo
-                {
-                    FileName = fileName,
-                    Arguments = arguments,
-                    WorkingDirectory = dshRoot,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    StandardOutputEncoding = consoleEncoding,
-                    StandardErrorEncoding = consoleEncoding
-                };
-                SetPath(startInfo, nodeDirectory, npmDirectory);
-                PackageDownloadEnvironment.ApplyRegistry(startInfo, registry);
-
-                using (Process process = Process.Start(startInfo))
-                using (NpmInstallProgress tracker =
-                    new NpmInstallProgress(dshRoot, progress))
-                {
-                    StringBuilder standardOutput = new StringBuilder();
-                    StringBuilder standardError = new StringBuilder();
-                    object outputLock = new object();
-                    process.OutputDataReceived += delegate(
-                        object sender,
-                        DataReceivedEventArgs args)
-                    {
-                        if (args.Data == null)
-                        {
-                            return;
-                        }
-
-                        lock (outputLock)
-                        {
-                            standardOutput.AppendLine(args.Data);
-                        }
-
-                        tracker.OnLine(args.Data);
-                    };
-                    process.ErrorDataReceived += delegate(
-                        object sender,
-                        DataReceivedEventArgs args)
-                    {
-                        if (args.Data == null)
-                        {
-                            return;
-                        }
-
-                        lock (outputLock)
-                        {
-                            standardError.AppendLine(args.Data);
-                        }
-                    };
-
-                    process.BeginOutputReadLine();
-                    process.BeginErrorReadLine();
-                    if (!process.WaitForExit(600000))
-                    {
-                        try
-                        {
-                            process.Kill();
-                        }
-                        catch
-                        {
-                        }
-
-                        error = "DSH 更新安装超时。";
-                        return false;
-                    }
-
-                    process.WaitForExit();
-
-                    string stdoutText;
-                    string stderrText;
-                    lock (outputLock)
-                    {
-                        stdoutText = standardOutput.ToString();
-                        stderrText = standardError.ToString();
-                    }
-
-                    if (process.ExitCode != 0)
-                    {
-                        error = "DSH 更新安装失败（退出码 "
-                            + process.ExitCode.ToString(
-                                CultureInfo.InvariantCulture)
-                            + "）："
-                            + (String.IsNullOrWhiteSpace(stderrText)
-                                ? stdoutText
-                                : stderrText);
-                        return false;
-                    }
-
-                    tracker.Complete();
-                }
-
-                return true;
-            }
-            catch (Exception exception)
-            {
-                error = "DSH 更新安装失败：" + exception.Message;
-                return false;
-            }
-        }
-
-        private sealed class NpmInstallProgress : IDisposable
-        {
-            /// <summary>
-            /// 一次升级大致会往 node_modules 里净增多少 MB。
-            /// 实测 0.1.5-rc.3 → 0.1.7-rc.2：223MB 涨到 504MB，净增约 281MB。
-            /// 以前把「总大小 230MB」当分母，于是升级一开始就报 223 / 230，
-            /// 装到后面又出现 503.8 / 230 这种自相矛盾的读数。
-            /// </summary>
-            private const double ExpectedGrowthMb = 300.0;
-
-            private readonly Action<string, double> _report;
-            private readonly string _modulesDirectory;
-            private readonly double _baselineMb;
-            private readonly DateTime _startedUtc = DateTime.UtcNow;
-            private readonly object _gate = new object();
-            private readonly Timer _timer;
-            private double _lastPercent;
-            private string _lastDetail = String.Empty;
-            private volatile bool _completed;
-
-            public NpmInstallProgress(
-                string dshRoot,
-                Action<string, double> report)
-            {
-                _report = report;
-                _modulesDirectory = Path.Combine(
-                    dshRoot ?? String.Empty,
-                    "node_modules");
-                // 升级是替换不是从零装：先量一份基线，之后只看净增了多少，
-                // 否则进度条会在还没开始写的时候就冲到 90%。
-                _baselineMb = DirectorySizeMb(_modulesDirectory);
-                if (_report != null)
-                {
-                    _timer = new Timer(
-                        delegate { Publish(false); },
-                        null,
-                        500,
-                        750);
-                    Publish(true);
-                }
-            }
-
-            public void OnLine(string line)
-            {
-                if (String.IsNullOrWhiteSpace(line) || _completed)
-                {
-                    return;
-                }
-
-                if (line.IndexOf(
-                        "npm info ok",
-                        StringComparison.OrdinalIgnoreCase) >= 0
-                    || line.IndexOf(
-                        "added ",
-                        StringComparison.OrdinalIgnoreCase) >= 0
-                        && line.IndexOf(
-                            " packages",
-                            StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    Publish(true, "安装中 · 正在完成安装", 97);
-                    return;
-                }
-
-                Publish(false);
-            }
-
-            public void Complete()
-            {
-                Publish(true, "安装完成", 100);
-            }
-
-            public void Dispose()
-            {
-                if (_timer != null)
-                {
-                    _timer.Dispose();
-                }
-            }
-
-            private void Publish(
-                bool force,
-                string detailOverride = null,
-                double percentOverride = -1)
-            {
-                if (_report == null || _completed)
-                {
-                    return;
-                }
-
-                double elapsedSeconds =
-                    Math.Max(0.0, (DateTime.UtcNow - _startedUtc).TotalSeconds);
-                double sizeMb = DirectorySizeMb(_modulesDirectory);
-                double growthMb = Math.Max(0.0, sizeMb - _baselineMb);
-
-                // 从 0 起步：进度只由「这次净增了多少」驱动。
-                double sizeProgress =
-                    Math.Min(0.94, growthMb / ExpectedGrowthMb) * 94.0;
-                // 时间兜底放慢到 300 秒的时间常数、并压在 90% 以内。
-                // 原来 90 秒就跑满 95%，慢机器上会一直贴着 95% 看着像卡死。
-                double timeProgress = Math.Min(
-                    90.0,
-                    88.0 * (1.0 - Math.Exp(-elapsedSeconds / 300.0)));
-                double percent = percentOverride >= 0
-                    ? percentOverride
-                    : Math.Max(sizeProgress, timeProgress);
-                if (percent > 99.0 && percentOverride < 0)
-                {
-                    percent = 99.0;
-                }
-
-                string detail = detailOverride;
-                if (String.IsNullOrWhiteSpace(detail))
-                {
-                    if (growthMb < 1.0)
-                    {
-                        detail = "安装中 · 正在进行准备工作";
-                    }
-                    else if (growthMb <= ExpectedGrowthMb)
-                    {
-                        detail = "安装中 · 部署 DSH 核心 "
-                            + growthMb.ToString(
-                                "0.0",
-                                CultureInfo.InvariantCulture)
-                            + " / "
-                            + ExpectedGrowthMb.ToString(
-                                "0",
-                                CultureInfo.InvariantCulture)
-                            + " MB";
-                    }
-                    else
-                    {
-                        // 超出预估就只报实际写入量，不再出现 503.8 / 300 这种读数。
-                        detail = "安装中 · 部署 DSH 核心 已写入 "
-                            + growthMb.ToString(
-                                "0.0",
-                                CultureInfo.InvariantCulture)
-                            + " MB";
-                    }
-                }
-
-                lock (_gate)
-                {
-                    if (_completed)
-                    {
-                        return;
-                    }
-
-                    if (percentOverride >= 100)
-                    {
-                        _completed = true;
-                    }
-
-                    if (!force
-                        && percent - _lastPercent < 0.5
-                        && String.Equals(
-                            detail,
-                            _lastDetail,
-                            StringComparison.Ordinal))
-                    {
-                        return;
-                    }
-
-                    _lastPercent = percent;
-                    _lastDetail = detail;
-                }
-
-                _report(detail, percent);
-            }
-
-            private static double DirectorySizeMb(string directory)
-            {
-                if (String.IsNullOrWhiteSpace(directory)
-                    || !Directory.Exists(directory))
-                {
-                    return 0.0;
-                }
-
+                bool installed;
                 try
                 {
-                    long bytes = 0;
-                    string[] files = Directory.GetFiles(
-                        directory,
-                        "*",
-                        SearchOption.AllDirectories);
-                    for (int index = 0; index < files.Length; index++)
-                    {
-                        try
-                        {
-                            bytes += new FileInfo(files[index]).Length;
-                        }
-                        catch
-                        {
-                        }
-                    }
-
-                    return bytes / 1048576.0;
+                    installed = InstallOfflineBundle(dshRoot, nodePath, packagePath, progress, out error, log);
                 }
-                catch
+                finally
                 {
-                    return 0.0;
+                    CleanupPackage(packagePath, log, (done, total) => progress?.Invoke("清理（" + done + "/" + total + "）", 99.99));
                 }
-            }
-        }
-
-        private static string FindNpmCli(
-            string nodeDirectory,
-            string dshRoot)
-        {
-            string[] candidates = new string[]
-            {
-                Path.Combine(
-                    nodeDirectory,
-                    @"node_modules\npm\bin\npm-cli.js"),
-                Path.Combine(
-                    nodeDirectory,
-                    @"..\node_modules\npm\bin\npm-cli.js"),
-                Path.Combine(
-                    nodeDirectory,
-                    @"..\lib\node_modules\npm\bin\npm-cli.js"),
-                Path.Combine(
-                    nodeDirectory,
-                    @"..\..\lib\node_modules\npm\bin\npm-cli.js"),
-                Path.Combine(
-                    dshRoot,
-                    @"node_modules\npm\bin\npm-cli.js"),
-                Path.Combine(
-                    dshRoot,
-                    @"node_modules\node\node_modules\npm\bin\npm-cli.js"),
-                Path.Combine(
-                    dshRoot,
-                    @"node_modules\node\lib\node_modules\npm\bin\npm-cli.js")
-            };
-
-            for (int index = 0; index < candidates.Length; index++)
-            {
-                string candidate = Path.GetFullPath(candidates[index]);
-                if (File.Exists(candidate))
-                {
-                    return candidate;
-                }
+                if (installed) progress?.Invoke("安装完成", 100);
+                return installed;
             }
 
-            return null;
-        }
-
-        private static string FindNpmCmd(
-            string nodeDirectory,
-            string dshRoot)
-        {
-            string[] candidates = new string[]
-            {
-                Path.Combine(nodeDirectory, "npm.cmd"),
-                Path.Combine(nodeDirectory, @"..\npm.cmd"),
-                Path.Combine(dshRoot, @"node_modules\.bin\npm.cmd")
-            };
-
-            for (int index = 0; index < candidates.Length; index++)
-            {
-                string candidate = Path.GetFullPath(candidates[index]);
-                if (File.Exists(candidate))
-                {
-                    return candidate;
-                }
-            }
-
-            return FindOnPath("npm.cmd");
-        }
-
-        private static string FindOnPath(string fileName)
-        {
-            string path = Environment.GetEnvironmentVariable("Path");
-            if (String.IsNullOrWhiteSpace(path))
-            {
-                return null;
-            }
-
-            string[] directories = path.Split(';');
-            for (int index = 0; index < directories.Length; index++)
-            {
-                string directory = directories[index].Trim().Trim('"');
-                if (directory.Length == 0)
-                {
-                    continue;
-                }
-
-                try
-                {
-                    directory = Environment.ExpandEnvironmentVariables(
-                        directory);
-                    string candidate = Path.Combine(directory, fileName);
-                    if (File.Exists(candidate))
-                    {
-                        return candidate;
-                    }
-                }
-                catch
-                {
-                }
-            }
-
-            return null;
-        }
-
-        private static Encoding GetConsoleEncoding()
-        {
-            try
-            {
-                return Encoding.GetEncoding(
-                    CultureInfo.CurrentCulture.TextInfo.OEMCodePage);
-            }
-            catch
-            {
-                return Encoding.Default;
-            }
+            CleanupPackage(packagePath, log);
+            error = "DSH 安装要求带校验清单的完整 ZIP 包，请重新下载；不会调用 npm。";
+            return false;
         }
 
         private static string SanitizeFileName(string value)
@@ -1243,47 +960,64 @@ namespace DeepSeekHarnessLauncher
             return builder.ToString();
         }
 
-        private static void TryDeleteFile(string path)
+        internal static string ResolveCompatibleNode(string dshRoot, string preferredNode, Action<string> log = null)
         {
+            List<string> candidates = new List<string>();
+            if (!String.IsNullOrWhiteSpace(preferredNode)) candidates.Add(preferredNode);
+            if (!String.IsNullOrWhiteSpace(dshRoot))
+            {
+                candidates.Add(Path.Combine(dshRoot, @"node_modules\node\bin\node.exe"));
+                candidates.Add(Path.Combine(dshRoot, @"node_modules\node\node_modules\node-win-x64\bin\node.exe"));
+                candidates.Add(Path.Combine(dshRoot, @"components\nodejs\node.exe"));
+                candidates.Add(Path.Combine(dshRoot, @"components\node\node.exe"));
+                candidates.Add(Path.Combine(dshRoot, "node.exe"));
+            }
+
+            string path = Environment.GetEnvironmentVariable("Path") ?? String.Empty;
+            string[] directories = path.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int index = 0; index < directories.Length; index++)
+            {
+                candidates.Add(Path.Combine(directories[index].Trim().Trim('"'), "node.exe"));
+            }
+
+            candidates.Add(@"C:\Program Files\nodejs\node.exe");
+            candidates.Add(@"C:\Program Files (x86)\nodejs\node.exe");
+            if (String.IsNullOrWhiteSpace(dshRoot) || !Path.IsPathFullyQualified(dshRoot))
+                throw new ArgumentException("DSH 安装目录必须是绝对路径。");
+            string work = DafeiyuGo.Shared.DshBundleDeployment.CreateWorkDirectory(dshRoot, "runtime-check", "node", log);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             try
             {
-                if (!String.IsNullOrWhiteSpace(path) && File.Exists(path))
+                foreach (string candidate in candidates)
                 {
-                    File.Delete(path);
+                    try
+                    {
+                        if (!Path.IsPathFullyQualified(candidate) || !File.Exists(candidate)) continue;
+                        string pathToNode = Path.GetFullPath(candidate);
+                        if (!seen.Add(pathToNode)) continue;
+                        var info = new ProcessStartInfo(pathToNode) { UseShellExecute = false, CreateNoWindow = true,
+                            WorkingDirectory = work, RedirectStandardOutput = true, RedirectStandardError = true };
+                        info.ArgumentList.Add("--version");
+                        info.Environment.Remove("NODE_OPTIONS");
+                        foreach (string key in new[] { "TEMP", "TMP", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "DSH_HOME" })
+                            info.Environment[key] = work;
+                        using var child = Process.Start(info);
+                        var stdout = child.StandardOutput.ReadToEndAsync();
+                        var stderr = child.StandardError.ReadToEndAsync();
+                        if (!child.WaitForExit(5000))
+                        { try { child.Kill(true); child.WaitForExit(2000); } catch { } continue; }
+                        if (!System.Threading.Tasks.Task.WaitAll(new System.Threading.Tasks.Task[] { stdout, stderr }, 2000)) continue;
+                        string version = stdout.Result.Trim();
+                        if (child.ExitCode != 0 || (!version.StartsWith("v22.", StringComparison.Ordinal) && !version.StartsWith("v24.", StringComparison.Ordinal))) continue;
+                        if (!String.Equals(pathToNode, preferredNode, StringComparison.OrdinalIgnoreCase))
+                            log?.Invoke("DSH 安装/运行使用兼容 Node " + version + "：" + pathToNode + "；系统 Node.js 不变。");
+                        return pathToNode;
+                    }
+                    catch { }
                 }
             }
-            catch
-            {
-            }
-        }
-
-        private static void SetPath(
-            ProcessStartInfo startInfo,
-            string nodeDirectory,
-            string npmDirectory)
-        {
-            string existing = startInfo.Environment["Path"];
-            string prefix = nodeDirectory ?? String.Empty;
-            if (!String.IsNullOrWhiteSpace(npmDirectory)
-                && !String.Equals(
-                    nodeDirectory,
-                    npmDirectory,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                prefix = npmDirectory
-                    + ";"
-                    + prefix;
-            }
-
-            startInfo.Environment["Path"] =
-                prefix.Trim(';')
-                + ";"
-                + (existing ?? String.Empty);
-        }
-
-        private static string Quote(string value)
-        {
-            return "\"" + (value ?? String.Empty).Replace("\"", "\\\"") + "\"";
+            finally { DafeiyuGo.Shared.DshBundleDeployment.CleanupWorkDirectory(work, log); }
+            throw new FileNotFoundException("未找到兼容的 Node 22/24。请在设置的组件页安装 Node.js，或选择已有的 Node 22/24 路径后重试。");
         }
 
     }

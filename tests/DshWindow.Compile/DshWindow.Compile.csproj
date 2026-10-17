@@ -17,6 +17,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260804001" />
     <Compile Include="../../source/DshWindow.cs" Link="DshWindow.cs" />
+    <Compile Include="../../source/DshLoginWindow.cs" Link="DshLoginWindow.cs" />
     <Compile Include="../../source/DshWindowFileDrop.cs" Link="DshWindowFileDrop.cs" />
     <Compile Include="../../source/WindowForeground.cs" Link="WindowForeground.cs" />
     <Compile Include="../../source/DshWindowPolicy.cs" Link="DshWindowPolicy.cs" />

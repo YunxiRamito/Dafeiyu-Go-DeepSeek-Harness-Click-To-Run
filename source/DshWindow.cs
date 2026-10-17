@@ -87,6 +87,7 @@ namespace DeepSeekHarnessLauncher
         private readonly SemaphoreSlim _promptGate = new SemaphoreSlim(1, 1);
         private readonly HashSet<Deferral> _deferrals = new HashSet<Deferral>();
         private readonly List<CoreWebView2DownloadOperation> _downloads = new List<CoreWebView2DownloadOperation>();
+        private readonly List<DshLoginWindow> _loginWindows = new List<DshLoginWindow>();
         private WebView2 _webView;
         private CoreWebView2 _core;
         private Action _detachCoreEvents;
@@ -929,6 +930,7 @@ namespace DeepSeekHarnessLauncher
             _target = args.Uri;
             if (!_navigation.Start(sender, args.NavigationId)) { args.Cancel = true; return; }
             _documentVersion++;
+            CloseLoginWindows();
             _navigationSucceeded = false;
             ReleaseFileDrops();
             _startup.NavigationStarted();
@@ -992,12 +994,47 @@ namespace DeepSeekHarnessLauncher
             catch (Exception exception) { SafeLog("[window] Preview readiness probe failed: " + exception.GetType().Name + "."); }
         }
 
-        private void OnNewWindowRequested(CoreWebView2 sender, CoreWebView2NewWindowRequestedEventArgs args)
+        private async void OnNewWindowRequested(CoreWebView2 sender, CoreWebView2NewWindowRequestedEventArgs args)
         {
             args.Handled = true;
-            if (!_navigation.IsCurrentCore(sender)) return;
-            if (_policy.IsInternal(args.Uri)) Navigate(args.Uri);
-            else OpenBrowser(args.Uri, false);
+            bool trustedOpener = _navigation != null && _navigation.IsCurrentCore(sender) && _policy.IsInternal(sender.Source);
+            if (!trustedOpener)
+                trustedOpener = _loginWindows.Exists(window => window.IsCurrentCore(sender));
+            if (_closed || !trustedOpener || !_policy.IsLoginPopupUrl(args.Uri, true) || _loginWindows.Count >= 4) return;
+            Deferral deferral = args.GetDeferral();
+            _deferrals.Add(deferral);
+            DshLoginWindow popup = null;
+            int version = _documentVersion;
+            try
+            {
+                popup = new DshLoginWindow(this, _policy, _surface.ActualTheme, SafeLog, OnNewWindowRequested, () =>
+                {
+                    if (popup != null) _loginWindows.Remove(popup);
+                    CompleteDeferral(deferral);
+                });
+                _loginWindows.Add(popup);
+                CoreWebView2 popupCore = await popup.InitializeAsync(sender, _lifetime.Token);
+                if (_closed || version != _documentVersion || popup.IsClosed || !_deferrals.Contains(deferral))
+                { popup.CloseImmediately(); return; }
+                // Do not Navigate or set Source before assignment: Chromium creates the
+                // WindowProxy and preserves opener/async about:blank navigation itself.
+                args.NewWindow = popupCore;
+                SafeLog("[window] Login popup attached to the opener profile.");
+            }
+            catch (OperationCanceledException) { popup?.CloseImmediately(); }
+            catch (Exception exception)
+            {
+                popup?.CloseImmediately();
+                if (!_closed) SetStatus("登录窗口无法打开，请重试。", false);
+                SafeLog("[window] Login popup failed: " + exception.GetType().Name + ".");
+            }
+            finally { CompleteDeferral(deferral); }
+        }
+
+        private void CloseLoginWindows()
+        {
+            foreach (var popup in new List<DshLoginWindow>(_loginWindows)) popup.CloseImmediately();
+            _loginWindows.Clear();
         }
 
         private void OnLaunchingExternalUriScheme(CoreWebView2 sender, CoreWebView2LaunchingExternalUriSchemeEventArgs args)
@@ -1532,6 +1569,7 @@ namespace DeepSeekHarnessLauncher
         private void OnClosed(object sender, WindowEventArgs args)
         {
             _closed = true;
+            CloseLoginWindows();
             _nativeFileDrop?.Dispose();
             ReleaseFileDrops();
             _navigation?.Close();
@@ -1572,6 +1610,7 @@ namespace DeepSeekHarnessLauncher
 
         private void DisposeWebView()
         {
+            CloseLoginWindows();
             ReleaseFileDrops();
             _navigation?.DetachCore();
             _documentVersion++;

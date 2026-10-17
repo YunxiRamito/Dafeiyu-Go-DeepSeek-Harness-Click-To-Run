@@ -233,12 +233,16 @@ namespace DeepSeekHarnessLauncher
         /// </summary>
         internal static void ApplyProcessEnvironment(ProcessStartInfo startInfo)
         {
+            ApplyProcessEnvironment(startInfo, Program.Settings);
+        }
+
+        internal static void ApplyProcessEnvironment(ProcessStartInfo startInfo, LauncherSettings settings)
+        {
             if (startInfo == null)
             {
                 return;
             }
 
-            LauncherSettings settings = Program.Settings;
             ApplyProxyEnvironment(startInfo, settings, EffectiveMode(settings));
         }
 

@@ -50,6 +50,16 @@ Check(DshWindowPolicy.ExternalUrl("https://example.com/?authorization=x&session=
 string fixture = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "isolated-settings"));
 Check(DshWindowPolicy.UserDataPath(fixture) == Path.Combine(fixture, "webview2"), "Profile uses isolated settings directory");
 Check(!Directory.Exists(fixture), "Policy does not write settings or create directories");
+foreach (string url in new[] { "about:blank", "https://accounts.deepseek.com/signin?state=oauth-fixture&code=callback-fixture",
+    "http://127.0.0.1:8787/callback?code=callback-fixture" })
+    Check(policy.IsLoginPopupUrl(url), "Owned login popup retains blank and safe auth navigation");
+Check(policy.IsLoginPopupUrl(String.Empty, true) && !policy.IsLoginPopupUrl(String.Empty), "Only a new-window request may start with an empty document");
+foreach (string url in new[] { "http://external.example/signin", "http://localhost:8899/callback",
+    "https://localhost:8899/callback", "file:///G:/private.txt", "data:text/html,hello",
+    "javascript:alert(1)", "dsh://callback", "https://user:pass@example.com/", "about:blank#extra",
+    "https://example.com/?value=private-login-value", "https://example.com/?value=rotated-value",
+    "https://example.com/?value=%2570rivate-login-value", "https://example.com/\n" })
+    Check(!policy.IsLoginPopupUrl(url), "Login popup blocks unsafe schemes, other local origins and DSH token forwarding");
 Console.WriteLine($"DshWindow policy regression: {checks} checks passed.");
 
 string initial = "http://localhost:8787/?token=fixture";

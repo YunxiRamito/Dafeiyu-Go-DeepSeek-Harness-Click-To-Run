@@ -1,4 +1,4 @@
-// Official DSH 0.2.1-alpha.1 profile operations; no package entrypoint is executed.
+// Reviewed official DSH 0.2.1-alpha.1 / 0.2.1-rc.1 profile operations; no package entrypoint is executed.
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { dirname, join, resolve, relative, isAbsolute, sep } from 'node:path';
 
 const PACKAGES = { connect: 'dafeiyu-go-connect', 'mobile-ui': 'dafeiyu-mobile-ui' };
-const SDK = '0.2.1-alpha.1';
+const SDK_VERSIONS = Object.freeze(['0.2.1-alpha.1', '0.2.1-rc.1']);
 const digest = value => createHash('sha256').update(value).digest('hex');
 const fail = message => { throw new Error(message); };
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -85,13 +85,25 @@ export async function manageConnectionPlugin(request) {
   safe(root); safe(home);
   const anchor=join(root,'node_modules','@deepseek-ai','dsh','package.json');
   const require=createRequire(anchor);
+  const sdk=json(anchor);
   for(const packageName of ['@deepseek-ai/dsh','@deepseek-ai/dsh-app-boot','@deepseek-ai/dsh-plugin-manager','@deepseek-ai/dsh-atomic-write']) {
-    const pkg=json(packageName==='@deepseek-ai/dsh'?anchor:require.resolve(packageName+'/package.json'));
-    if(pkg.name!==packageName||pkg.version!==SDK||pkg.license!=='MIT') fail('插件管理需要 DSH '+SDK+'（当前 '+packageName+': '+String(pkg.version??'未知')+'）。');
+    const pkg=packageName==='@deepseek-ai/dsh'?sdk:json(require.resolve(packageName+'/package.json'));
+    if(pkg.name!==packageName||!SDK_VERSIONS.includes(pkg.version)||pkg.version!==sdk.version||pkg.license!=='MIT')
+      fail('插件管理需要经过审核且版本一致的 DSH SDK（支持 '+SDK_VERSIONS.join(' / ')+'；当前 '+packageName+': '+String(pkg.version??'未知')+'）。');
   }
   const boot=await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-app-boot')));
   const operations=await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-plugin-manager/operations')));
   const locks=await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-atomic-write')));
+  for(const [label,api,functions] of [
+    ['dsh-app-boot',boot,['resolveProfileDir','initProfile','resolveBundleDir']],
+    ['dsh-plugin-manager/operations',operations,['runProfilePnpm','saveManifest']],
+    ['dsh-atomic-write',locks,['withFileLock','writeFileAtomic']]
+  ]) {
+    for(const name of functions) if(typeof api[name]!=='function') fail('DSH 插件管理 SDK 接口不兼容：'+label+'.'+name+'。');
+  }
+  const bundles=boot.PROFILE_TEMPLATES?.web?.bundles;
+  if(!object(boot.PROFILE_TEMPLATES)||!object(boot.PROFILE_TEMPLATES.web)||!Array.isArray(bundles)
+      ||!bundles.length||!bundles.every(name=>typeof name==='string'&&name.length>0)) fail('DSH 插件管理 SDK 的 web profile 模板无效。');
   const dir=boot.resolveProfileDir('web',home), modules=join(dir,'node_modules'), packageDir=join(modules,name);
   if(!same(dir,request.profile_directory)) fail('插件 profile 不匹配。');
   safe(dir); safe(modules);

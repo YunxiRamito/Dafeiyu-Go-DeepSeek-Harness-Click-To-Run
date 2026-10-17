@@ -29,16 +29,24 @@ namespace DeepSeekHarnessLauncher
         {
             try
             {
-                if (String.IsNullOrWhiteSpace(path)) return false;
-                string resolved = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                string expectedParent = Path.GetFullPath(parent).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (String.IsNullOrWhiteSpace(path) || String.IsNullOrWhiteSpace(parent) || String.IsNullOrEmpty(prefix)) return false;
+                string resolved = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+                // TrimEnd turns a volume root such as G:\ into drive-relative G:.
+                // Preserve root separators so direct children of a volume can be owned.
+                string expectedParent = Path.TrimEndingDirectorySeparator(Path.GetFullPath(parent));
                 string name = Path.GetFileName(resolved);
                 if (!String.Equals(Path.GetDirectoryName(resolved), expectedParent, StringComparison.OrdinalIgnoreCase)
                     || !name.StartsWith(prefix, StringComparison.Ordinal)
                     || !Guid.TryParseExact(name.Substring(prefix.Length), "N", out _)) return false;
+                if (File.Exists(resolved) && !Directory.Exists(resolved)) return false;
                 for (string ancestor = resolved; ancestor != null; ancestor = Path.GetDirectoryName(ancestor))
                     if (Directory.Exists(ancestor) && (File.GetAttributes(ancestor) & FileAttributes.ReparsePoint) != 0) return false;
-                if (Directory.Exists(resolved)) Directory.Delete(resolved, true);
+                for (int attempt = 0; ; attempt++)
+                {
+                    try { DeleteOwnedDownloadTree(resolved); break; }
+                    catch (IOException) when (attempt < 2) { Thread.Sleep(50 * (attempt + 1)); }
+                    catch (UnauthorizedAccessException) when (attempt < 2) { Thread.Sleep(50 * (attempt + 1)); }
+                }
                 return true;
             }
             catch (Exception exception)
@@ -46,6 +54,27 @@ namespace DeepSeekHarnessLauncher
                 try { log?.Invoke("Temporary download cleanup failed: " + exception.Message); } catch { }
                 return false;
             }
+        }
+
+        private static void DeleteOwnedDownloadTree(string path)
+        {
+            FileAttributes attributes;
+            try { attributes = File.GetAttributes(path); }
+            catch (FileNotFoundException) { return; }
+            catch (DirectoryNotFoundException) { return; }
+            bool directory = (attributes & FileAttributes.Directory) != 0;
+            // Remove the link itself, never enumerate or change its target attributes.
+            if ((attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                if (directory) Directory.Delete(path); else File.Delete(path);
+                return;
+            }
+            if (directory)
+                foreach (string entry in Directory.EnumerateFileSystemEntries(path)) DeleteOwnedDownloadTree(entry);
+            // npm package files can be read-only; only normalize the owned entry.
+            if ((attributes & FileAttributes.ReadOnly) != 0)
+                File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
+            if (directory) Directory.Delete(path); else File.Delete(path);
         }
 
         internal const int DefaultThreads = 4;

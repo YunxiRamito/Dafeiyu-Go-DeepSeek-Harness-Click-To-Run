@@ -43,7 +43,7 @@ namespace DeepSeekHarnessLauncher
     {
         public const string Title = "Dafeiyu-Go";
         public const string EnglishTitle = "Dafeiyu-Go";
-        public const string Version = "1.8.2";
+        public const string Version = "1.8.3";
         public const string Repository = "YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run";
         public const string LegacyRepository = "YunxiRamito/DSH-Launcher";
         public const string UserAgent = "Dafeiyu-Go/" + Version;
@@ -88,6 +88,7 @@ namespace DeepSeekHarnessLauncher
         private static string _settingsPreviewPage = "General";
         private static SettingsWindow _settingsPreviewWindow;
         private static DshWindow _applicationPreviewWindow;
+        private static WinUICompositionTrayMenu _trayPreviewMenu;
         private static bool _credentialRecovery;
         private static Backup.PcOfficialBootstrapSingleInstance _officialStartupLock;
         private static Backup.PcOfficialHostBootstrap _officialBootstrap;
@@ -343,6 +344,17 @@ namespace DeepSeekHarnessLauncher
                 SynchronizationContext.SetSynchronizationContext(
                     new DispatcherQueueSynchronizationContext(previewDispatcher));
                 EnsureXamlControlsResources();
+
+                if (String.Equals(_settingsPreviewPage, "TrayMenu", StringComparison.OrdinalIgnoreCase))
+                {
+                    LauncherContext.ApplyWindowAppearance(Settings);
+                    _trayPreviewMenu = new WinUICompositionTrayMenu();
+                    _trayPreviewMenu.SetBalance("余额：¥52.47", "菜单外观预览");
+                    _trayPreviewMenu.SetRunning(String.Equals(Environment.GetEnvironmentVariable("DAFEIYU_TRAY_PREVIEW_RUNNING"), "true", StringComparison.OrdinalIgnoreCase));
+                    _trayPreviewMenu.ExitClicked += delegate { _application.Exit(); };
+                    previewDispatcher.TryEnqueue(delegate { _trayPreviewMenu.ShowAtCursor(); });
+                    return;
+                }
 
                 if (String.Equals(_settingsPreviewPage, "PairingRequest", StringComparison.OrdinalIgnoreCase))
                 {
@@ -3664,7 +3676,9 @@ namespace DeepSeekHarnessLauncher
                         : installed)
                     + " / "
                     + FormatPublishedAt(installedPublishedAt));
-                if (!changingVersion && !DshUpdateService.IsNewer(package, installed))
+                // An explicit install also repairs a same-version package whose
+                // package.json survived an incomplete dependency installation.
+                if (!DshUpdateService.ShouldInstall(package, installed, forceInstall, changingVersion))
                 {
                     UpdateDshUi(
                         UpdateUiActivity.UpToDate,
@@ -3724,60 +3738,54 @@ namespace DeepSeekHarnessLauncher
                 UpdateDshUi(
                     UpdateUiActivity.Installing,
                     latest,
-                    "准备下载",
+                    "正在准备…",
                     -1,
                     true,
                     String.Empty);
                 ShowUpdateWindow(
-                    changingVersion ? "正在更换 DSH 版本" : "正在更新 DSH v" + latest,
-                    changingVersion ? "准备下载 v" + latest + "…" : "准备下载…");
+                    changingVersion ? "正在更换版本" : "正在更新 DSH",
+                    "正在准备…");
                 UpdateWindow(
-                    changingVersion ? "正在更换 DSH 版本" : "正在更新 DSH v" + latest,
-                    changingVersion ? "准备下载 v" + latest + "…" : "准备下载…",
+                    changingVersion ? "正在更换版本" : "正在更新 DSH",
+                    "正在准备…",
                     -1);
 
                 string downloadError;
-                bool downloaded = DshUpdateService.DownloadPackage(
+                bool downloaded = DshUpdateService.PreparePackage(
                     package,
-                    delegate(long received, long total)
+                    _settings.NodePath,
+                    _settings,
+                    delegate(string text, double packagePercent)
                     {
-                        bool indeterminate = total <= 0;
+                        bool indeterminate = packagePercent < 0;
+                        // 下载和安装共用一条进度条：下载占前半段，安装占后半段，
+                        // 避免下载到 100% 后切回安装 0% 造成明显跳动。
                         double percent = indeterminate
                             ? -1
-                            : received * 100.0 / total;
-                        string detail = indeterminate
-                            ? "下载中"
-                            : "下载中 · "
-                                + FormatBytes(received)
-                                + "/"
-                                + FormatBytes(total);
+                            : Math.Min(50.0, Math.Max(0.0, packagePercent * 0.5));
                         UpdateDshUi(
                             UpdateUiActivity.Installing,
                             latest,
-                            "下载中",
+                            text,
                             indeterminate ? -1 : percent,
                             indeterminate,
-                            indeterminate
-                                ? String.Empty
-                                : FormatBytes(received)
-                                    + "/"
-                                    + FormatBytes(total));
-                        UpdateWindow(null, detail, percent);
+                            String.Empty);
+                        UpdateWindow(null, text, percent);
                     },
                     out packagePath,
                     out downloadError,
-                    _settings);
+                    WriteLog);
                 if (!downloaded)
                 {
                     UpdateDshUi(
                         UpdateUiActivity.Failed,
                         latest,
-                        "下载失败",
+                        "安装包准备失败",
                         0,
                         false,
                         downloadError);
                     UpdateWindow(changingVersion ? "更换 DSH 版本失败" : "更新失败", downloadError, 0);
-                    WriteLog("DSH 安装包下载失败: " + downloadError);
+                    WriteLog("DSH 安装包准备失败: " + downloadError);
 
                     // 失败必弹,不看「更新提醒」开关 ——
                     // 关掉提醒的人更需要知道这次更新没成(以前这里被开关一起静默了)。
@@ -3791,14 +3799,14 @@ namespace DeepSeekHarnessLauncher
                 UpdateDshUi(
                     UpdateUiActivity.Installing,
                     latest,
-                    "安装中 · 正在进行准备工作",
-                    0,
+                    "正在安装…",
+                    50,
                     false,
                     String.Empty);
                 UpdateWindow(
-                    changingVersion ? "正在更换 DSH 版本" : "正在更新 DSH v" + latest,
-                    changingVersion ? "正在安装 v" + latest + " · 正在准备" : "安装中 · 正在准备",
-                    0);
+                    changingVersion ? "正在更换版本" : "正在更新 DSH",
+                    "正在安装…",
+                    50);
                 StopService();
                 string installError;
                 bool installedOk = DshUpdateService.InstallPackage(
@@ -3808,26 +3816,34 @@ namespace DeepSeekHarnessLauncher
                     DshUpdateService.ResolveInstallRegistry(_settings),
                     delegate(string text, double percent)
                     {
-                        // 文案由进度跟踪器统一给（形如「安装中 · 部署 DSH 核心 12.4 / 300 MB」）。
+                        // 文案由进度跟踪器统一给，安装进度映射到下载后的后半段。
                         // 这里不要再拼第二遍，否则设置页会把同一句话连着显示两遍。
+                        double installPercent = percent < 0
+                            ? -1
+                            : 50.0 + Math.Min(100.0, Math.Max(0.0, percent)) * 0.5;
                         UpdateDshUi(
                             UpdateUiActivity.Installing,
                             latest,
                             text,
-                            percent,
-                            false,
+                            installPercent,
+                            installPercent < 0,
                             String.Empty);
-                        UpdateWindow(null, text, percent);
+                        UpdateWindow(null, text, installPercent);
                     },
-                    out installError);
+                    out installError,
+                    WriteLog);
                 if (!installedOk)
                 {
                     WriteLog((changingVersion ? "更换 DSH 版本失败: " : "DSH 更新失败: ") + installError);
                     UpdateWindow(
                         changingVersion ? "正在更换 DSH 版本" : "正在更新 DSH v" + latest,
-                        "安装失败，正在恢复原版本…",
+                        "正在恢复原版本…",
                         0);
-                    if (!String.IsNullOrWhiteSpace(installed))
+                    // 完整归档部署在提交前会校验并保留旧目录；失败时旧版本仍在原位。
+                    // 不要为了回滚归档再次启动 npm，避免把失败路径重新拖回生命周期脚本。
+                    if (!String.IsNullOrWhiteSpace(installed)
+                        && (String.IsNullOrWhiteSpace(packagePath)
+                            || !packagePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)))
                     {
                         string rollbackError;
                         bool rolledBack = DshUpdateService.InstallVersion(
@@ -3848,10 +3864,18 @@ namespace DeepSeekHarnessLauncher
                 }
                 else
                 {
+                    string compatibleNode = DshUpdateService.ResolveCompatibleNode(_settings.DshRoot, _settings.NodePath, WriteLog);
+                    if (!String.Equals(compatibleNode, _settings.NodePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _settings.NodePath = compatibleNode;
+                        _nodePath = compatibleNode;
+                        LauncherSettingsStore.Save(_settings);
+                        WriteLog("DSH 部署验证已通过，已保存兼容运行时路径；系统 Node.js 不变。");
+                    }
                     UpdateDshUi(
                         UpdateUiActivity.Installing,
                         latest,
-                        "重启中",
+                        "正在重启服务…",
                         100,
                         false,
                         String.Empty);
@@ -3870,8 +3894,8 @@ namespace DeepSeekHarnessLauncher
                 if (!_startupUpdateFlow)
                 {
                     UpdateWindow(
-                        changingVersion ? "正在更换 DSH 版本" : "正在重启 DSH",
-                        changingVersion ? "安装完成，等待服务重新就绪" : "等待服务重新就绪",
+                        changingVersion ? "正在更换版本" : "正在更新 DSH",
+                        "等待服务就绪…",
                         -1);
                     RestartThreadProc(preserveVersionChangeProgress: changingVersion, dshUpdateOwner: true);
                 }
@@ -6354,11 +6378,11 @@ namespace DeepSeekHarnessLauncher
 
             // 重启路径（托盘菜单 / 设置页插件区 / 插件自更新 / DSH 更新后）统一在这里
             // 拉起右下角信息窗口：重启中 -> 已重启 / 重启失败。
-            string initialDetail = restarting
+            string initialDetail = dshUpdateOwner ? "正在重启服务…" : restarting
                 ? "正在停止旧的 DSH 服务"
                 : "正在解析 DSH 目录与端口";
             if (preserveVersionChangeProgress)
-                UpdateWindow("正在更换 DSH 版本", initialDetail, -1);
+                UpdateWindow("正在更换版本", initialDetail, -1);
             else
                 ShowServiceWindow(restarting, initialDetail);
             try
@@ -6383,11 +6407,11 @@ namespace DeepSeekHarnessLauncher
                 _suppressExitNotification = false;
                 _startupInProgress = true;
 
-                string startDetail = restarting
+                string startDetail = dshUpdateOwner ? "正在重启服务…" : restarting
                     ? "已停止旧进程，正在重新拉起"
                     : "正在拉起 DSH 服务进程";
                 if (preserveVersionChangeProgress)
-                    UpdateWindow("正在更换 DSH 版本", startDetail, -1);
+                    UpdateWindow("正在更换版本", startDetail, -1);
                 else
                     UpdateServiceWindow(startDetail);
                 string startFailureMessage;
@@ -6397,9 +6421,10 @@ namespace DeepSeekHarnessLauncher
                     return;
                 }
 
-                string readyDetail = "等待服务就绪（" + Program.BuildServiceUrl(_port) + "）";
+                string readyDetail = dshUpdateOwner ? "等待服务就绪…"
+                    : "等待服务就绪（" + Program.BuildServiceUrl(_port) + "）";
                 if (preserveVersionChangeProgress)
-                    UpdateWindow("正在更换 DSH 版本", readyDetail, -1);
+                    UpdateWindow("正在更换版本", readyDetail, -1);
                 else
                     UpdateServiceWindow(readyDetail);
                 string failureMessage;
@@ -8109,6 +8134,7 @@ namespace DeepSeekHarnessLauncher
                 Child = _itemsPanel
             };
             _surface.Loaded += TraySurface_Loaded;
+            _surface.ActualThemeChanged += delegate { ApplyThemeStates(); };
             // Keep the HWND for tray callbacks without keeping a shown XAML
             // composition target and backdrop alive while the menu is closed.
             _window.AppWindow.Hide();
@@ -8314,7 +8340,31 @@ namespace DeepSeekHarnessLauncher
                     new SolidColorBrush(Microsoft.UI.Colors.Transparent);
                 items[index].Resources["ButtonBorderBrushPressed"] =
                     new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+                ApplyItemForeground(items[index], dark);
             }
+        }
+
+        private static void ApplyItemForeground(Microsoft.UI.Xaml.Controls.Button button, bool dark)
+        {
+            // Resolve against this menu's actual theme, not Application.Resources:
+            // that dictionary can still contain the startup theme's disabled brush.
+            var normal = new SolidColorBrush(dark
+                ? Windows.UI.Color.FromArgb(255, 243, 243, 243)
+                : Windows.UI.Color.FromArgb(255, 27, 27, 27));
+            var disabled = new SolidColorBrush(dark
+                ? Windows.UI.Color.FromArgb(255, 156, 156, 156)
+                : Windows.UI.Color.FromArgb(255, 105, 105, 105));
+            button.Resources["ButtonForeground"] = normal;
+            button.Resources["ButtonForegroundPointerOver"] = normal;
+            button.Resources["ButtonForegroundPressed"] = normal;
+            button.Resources["ButtonForegroundDisabled"] = disabled;
+            button.Foreground = button.IsEnabled ? normal : disabled;
+            if (button.Content is Grid content)
+                foreach (var child in content.Children)
+                {
+                    if (child is TextBlock label) label.Foreground = button.Foreground;
+                    else if (child is FontIcon icon) icon.Foreground = button.Foreground;
+                }
         }
 
         private void TraySurface_Loaded(object sender, RoutedEventArgs args)
@@ -8617,9 +8667,12 @@ namespace DeepSeekHarnessLauncher
                 new SolidColorBrush(Microsoft.UI.Colors.Transparent);
             button.Resources["ButtonBorderBrushDisabled"] =
                 new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-            button.Resources["ButtonForegroundDisabled"] = GetThemeBrush(
-                "TextFillColorDisabledBrush",
-                Windows.UI.Color.FromArgb(255, 120, 126, 138));
+            button.RegisterPropertyChangedCallback(Microsoft.UI.Xaml.Controls.Control.IsEnabledProperty, (sender, property) =>
+            {
+                var item = (Microsoft.UI.Xaml.Controls.Button)sender;
+                ApplyItemForeground(item, item.ActualTheme == ElementTheme.Dark);
+            });
+            ApplyItemForeground(button, button.ActualTheme == ElementTheme.Dark);
             return button;
         }
 

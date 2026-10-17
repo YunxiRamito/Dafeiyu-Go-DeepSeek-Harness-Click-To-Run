@@ -15,12 +15,13 @@ namespace DeepSeekHarnessLauncher
         private static int Main(string[] args)
         {
             if (Array.IndexOf(args, "--drop-policy") >= 0) return DroppedFilePolicyFixture.Run();
-            if (Array.IndexOf(args, "--style") >= 0 || Array.IndexOf(args, "--menu") >= 0 || Array.IndexOf(args, "--drop") >= 0 || Array.IndexOf(args, "--foreground") >= 0 || Array.IndexOf(args, "--refresh") >= 0)
+            if (Array.IndexOf(args, "--style") >= 0 || Array.IndexOf(args, "--menu") >= 0 || Array.IndexOf(args, "--drop") >= 0 || Array.IndexOf(args, "--foreground") >= 0 || Array.IndexOf(args, "--refresh") >= 0 || Array.IndexOf(args, "--login") >= 0)
             {
                 ToolStyleFixture.MenuMode = Array.IndexOf(args, "--menu") >= 0;
                 ToolStyleFixture.DropMode = Array.IndexOf(args, "--drop") >= 0;
                 ToolStyleFixture.ForegroundMode = Array.IndexOf(args, "--foreground") >= 0;
                 ToolStyleFixture.RefreshMode = Array.IndexOf(args, "--refresh") >= 0;
+                ToolStyleFixture.LoginMode = Array.IndexOf(args, "--login") >= 0;
                 WinRT.ComWrappersSupport.InitializeComWrappers();
                 Application.Start(_ =>
                 {
@@ -73,6 +74,7 @@ namespace DeepSeekHarnessLauncher
         internal static bool DropMode;
         internal static bool ForegroundMode;
         internal static bool RefreshMode;
+        internal static bool LoginMode;
         private Window _window;
 
         public ToolStyleFixture()
@@ -83,6 +85,7 @@ namespace DeepSeekHarnessLauncher
 
         protected override void OnLaunched(LaunchActivatedEventArgs args)
         {
+            if (LoginMode) { _ = LoginFixture.RunAsync(this); return; }
             if (ForegroundMode) { _ = ForegroundFixture.RunAsync(this); return; }
             if (RefreshMode) { _ = RefreshFixture.RunAsync(this); return; }
             if (DropMode) { _ = DropFixture.RunAsync(this); return; }

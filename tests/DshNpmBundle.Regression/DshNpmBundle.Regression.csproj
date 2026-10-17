@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <AssemblyName>DshNpmBundleRegression</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../source/DshNpmBundleBuilder.cs" Link="DshNpmBundleBuilder.cs" />
+    <Compile Include="../../source/DshBundleDeployment.cs" Link="DshBundleDeployment.cs" />
+  </ItemGroup>
+</Project>

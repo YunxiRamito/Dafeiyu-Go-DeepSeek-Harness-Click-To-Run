@@ -182,6 +182,18 @@ namespace DeepSeekHarnessLauncher
 
         internal bool IsInternal(string value) { return IsSameOrigin(value, _origin); }
 
+        internal bool IsLoginPopupUrl(string value, bool allowEmpty = false)
+        {
+            if (allowEmpty && String.IsNullOrEmpty(value)) return true;
+            if (String.Equals(value, "about:blank", StringComparison.OrdinalIgnoreCase)) return true;
+            if (!TryHttpUri(value, out Uri uri)) return false;
+            if (IsInternal(value)) return true;
+            // OAuth parameters stay intact inside the owned WebView, but a DSH
+            // loopback access token must never be sent to another origin.
+            return uri.Scheme == Uri.UriSchemeHttps && !IsLoopback(uri)
+                && !ContainsSecret(Decode(value), _secrets);
+        }
+
         internal void RememberInternalUrl(string value)
         {
             if (!IsInternal(value)) return;

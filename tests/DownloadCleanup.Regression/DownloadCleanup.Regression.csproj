@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>disable</Nullable><NoWarn>SYSLIB0014</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../source/DownloadSupport.cs" Link="DownloadSupport.cs" />
+    <Compile Include="../../source/DownloadTaskCenter.cs" Link="DownloadTaskCenter.cs" />
+    <Compile Include="../../source/GitHubAccelerator.cs" Link="GitHubAccelerator.cs" />
+    <Compile Include="../../source/BackendDownloadSource.cs" Link="BackendDownloadSource.cs" />
+    <Compile Include="../../source/LauncherSettings.cs" Link="LauncherSettings.cs" />
+    <Compile Include="../../source/ProxySupport.cs" Link="ProxySupport.cs" />
+    <Compile Include="../../source/PackageDownloadEnvironment.cs" Link="PackageDownloadEnvironment.cs" />
+    <Compile Include="../../source/AcceleratorLatency.cs" Link="AcceleratorLatency.cs" />
+  </ItemGroup>
+</Project>
