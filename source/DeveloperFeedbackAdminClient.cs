@@ -30,7 +30,7 @@ namespace DeepSeekHarnessLauncher
             => (await ListPageAsync(endpoint, token, cancellationToken).ConfigureAwait(false)).Feedback;
 
         internal async Task<FeedbackListResponse> ListPageAsync(string endpoint, string token, CancellationToken cancellationToken, int offset = 0,
-            FeedbackCategory? category = null, FeedbackStatus? status = null, bool updatedOrder = false, string machineId = null)
+            FeedbackCategory? category = null, FeedbackStatus? status = null, bool updatedOrder = true, string machineId = null)
         {
             if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
             if (category.HasValue && !Enum.IsDefined(typeof(FeedbackCategory), category.Value)) throw new ArgumentException("Invalid feedback category.", nameof(category));
@@ -39,7 +39,7 @@ namespace DeepSeekHarnessLauncher
                 + (category.HasValue ? "&category=" + category.Value : String.Empty)
                 + (status.HasValue ? "&status=" + status.Value : String.Empty)
                 + (machineId != null ? "&machineId=" + Uri.EscapeDataString(machineId) : String.Empty)
-                + (updatedOrder ? "&sort=updated" : String.Empty);
+                + (updatedOrder ? "&sort=updated" : "&sort=support");
             FeedbackListResponse response = await SendAsync<FeedbackListResponse>(endpoint, token, HttpMethod.Get, query, null, cancellationToken).ConfigureAwait(false);
             if (response == null || response.Feedback == null || response.Feedback.Count > FeedbackResponseBudget.PageSize
                 || response.TotalCount < 0 || response.TotalCount < response.Feedback.Count)

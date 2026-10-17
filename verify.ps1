@@ -64,6 +64,22 @@ foreach ($name in 'DeepSeek Harness.exe', 'DeepSeek Harness.Core.exe', 'DeepSeek
     }
 }
 
+# About, update requests and User-Agent use Constants.Version rather than FileVersion.
+try {
+    $corePath = Join-Path $Dist 'DeepSeek Harness.Core.dll'
+    $coreAssembly = [Reflection.Assembly]::Load([IO.File]::ReadAllBytes($corePath))
+    $constants = $coreAssembly.GetType('DeepSeekHarnessLauncher.Constants', $true)
+    $versionField = $constants.GetField('Version', [Reflection.BindingFlags]'Public,Static')
+    $runtimeVersion = [string]$versionField.GetRawConstantValue()
+    if ($runtimeVersion -ceq $Version) {
+        Pass "关于页/运行时版本 v$runtimeVersion 与产物一致"
+    } else {
+        Fail "关于页/运行时版本为 v$runtimeVersion，期望 v$Version"
+    }
+} catch {
+    Fail "无法验证关于页/运行时版本: $($_.Exception.Message)"
+}
+
 Head '[2] 运行库依赖(目标机必须已装)'
 $winAppRuntime = $false
 try {

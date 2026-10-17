@@ -3,6 +3,7 @@ namespace DeepSeekHarnessLauncher
 {
     internal sealed class LauncherSettings
     {
+        public string DshRoot { get; set; }
         public string LauncherChannel { get; set; } = "Stable";
         public string DshChannel { get; set; } = "Auto";
         public string UpdateSource { get; set; } = "Official";
@@ -19,6 +20,7 @@ namespace DeepSeekHarnessLauncher
     internal static class LauncherSettingsStore { internal static string DirectoryPath = AppContext.BaseDirectory; }
     internal static class ProxySupport
     {
+        internal static void ApplyProcessEnvironment(System.Diagnostics.ProcessStartInfo info, LauncherSettings settings) { LastSettings = settings; }
         internal static LauncherSettings LastSettings;
         internal static void Apply(HttpWebRequest request) { request.Proxy = null; }
         internal static void Apply(HttpWebRequest request, LauncherSettings settings) { LastSettings = settings; request.Proxy = null; }

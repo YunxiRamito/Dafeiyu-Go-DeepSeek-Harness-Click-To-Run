@@ -33,6 +33,11 @@ namespace DeepSeekHarnessLauncher
         private int _developerFeedbackPage = 1;
         private int? _developerFeedbackTotalCount;
         private long _developerFeedbackRequestId;
+        private long _developerFeedbackLoadedRequestId;
+        private bool _developerFeedbackReplySending;
+        private CancellationTokenSource _developerFeedbackReplyCancellation;
+        private TextBox _developerFeedbackReplyEditor;
+        private Button _developerFeedbackReplySend;
         private readonly Dictionary<string, FeedbackConversationPager> _feedbackConversations = new Dictionary<string, FeedbackConversationPager>();
         private readonly Dictionary<string, FeedbackConversationPager> _developerFeedbackConversations = new Dictionary<string, FeedbackConversationPager>();
 
@@ -680,7 +685,8 @@ namespace DeepSeekHarnessLauncher
 
         private async Task LoadDeveloperFeedbackCoreAsync(int? pageNumber = null)
         {
-            if (DeveloperFeedbackRows == null) return;
+            if (_settingsClosed || DeveloperFeedbackRows == null) return;
+            int generation = _settingsUiGeneration;
             long requestId = ++_developerFeedbackRequestId;
             _developerFeedbackLoading = true;
             _developerFeedbackCancellation?.Cancel();
@@ -690,7 +696,6 @@ namespace DeepSeekHarnessLauncher
             CancellationToken token = cancellation.Token;
             DeveloperFeedbackRefreshButton.IsEnabled = false;
             DeveloperFeedbackInfoBar.IsOpen = false;
-            DeveloperFeedbackRows.Children.Clear();
             DeveloperFeedbackLoadingRing.IsActive = true;
             _developerFeedbackConversations.Clear();
             DeveloperFeedbackLoadingRing.Visibility = Visibility.Visible;
@@ -703,6 +708,8 @@ namespace DeepSeekHarnessLauncher
             FeedbackStatus? status = SelectedFeedbackStatus(DeveloperFeedbackStatusFilter);
             try
             {
+                await FeedbackVisualTree.ClearAsync(DeveloperFeedbackRows, SettingsNavigationView, token);
+                if (_settingsClosed || generation != _settingsUiGeneration || requestId != _developerFeedbackRequestId || token.IsCancellationRequested) return;
                 string adminToken = LauncherSettingsStore.ReadAdminToken(_settings);
                 if (String.IsNullOrWhiteSpace(adminToken))
                     throw new InvalidOperationException("管理员 Token 未填写，请先在 API 与翻译中保存管理员 Token。");
@@ -712,7 +719,7 @@ namespace DeepSeekHarnessLauncher
                 {
                     page = await client.ListPageAsync(FeedbackEndpoint, adminToken, token,
                         FeedbackPagination.Offset(_developerFeedbackPage), category, status, machineId: _clientNoticeStore.GetMachineId());
-                    if (requestId != _developerFeedbackRequestId || token.IsCancellationRequested) return;
+                    if (_settingsClosed || generation != _settingsUiGeneration || requestId != _developerFeedbackRequestId || token.IsCancellationRequested) return;
                     if (page.Feedback.Count > 0 || _developerFeedbackPage == 1) break;
                     _developerFeedbackPage = FeedbackPagination.PreviousNonEmptyPage(_developerFeedbackPage, page.TotalCount);
                 }
@@ -720,6 +727,7 @@ namespace DeepSeekHarnessLauncher
                 _developerFeedbackNextOffset = page.NextOffset;
                 _developerFeedbackTotalCount = page.TotalCount;
                 RenderDeveloperFeedbackRows();
+                _developerFeedbackLoadedRequestId = requestId;
                 SettingsScroller.ChangeView(null, 0, null, true);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -728,8 +736,7 @@ namespace DeepSeekHarnessLauncher
             catch (Exception exception)
             {
                 LogFeedbackFailure("读取管理员反馈列表", exception);
-                if (requestId != _developerFeedbackRequestId || token.IsCancellationRequested) return;
-                DeveloperFeedbackRows.Children.Clear();
+                if (_settingsClosed || generation != _settingsUiGeneration || requestId != _developerFeedbackRequestId || token.IsCancellationRequested) return;
                 DeveloperFeedbackInfoBar.Severity = exception is HttpRequestException http && http.StatusCode == System.Net.HttpStatusCode.Unauthorized
                     ? InfoBarSeverity.Error : InfoBarSeverity.Warning;
                 DeveloperFeedbackInfoBar.Title = "无法加载反馈";
@@ -739,7 +746,7 @@ namespace DeepSeekHarnessLauncher
             }
             finally
             {
-                if (ReferenceEquals(_developerFeedbackCancellation, cancellation) && !token.IsCancellationRequested)
+                if (!_settingsClosed && generation == _settingsUiGeneration && ReferenceEquals(_developerFeedbackCancellation, cancellation) && !token.IsCancellationRequested)
                 {
                     DeveloperFeedbackRefreshButton.IsEnabled = true;
                     DeveloperFeedbackLoadingRing.IsActive = false;
@@ -752,7 +759,6 @@ namespace DeepSeekHarnessLauncher
 
         private void RenderDeveloperFeedbackRows()
         {
-            DeveloperFeedbackRows.Children.Clear();
             List<FeedbackModel> items = _developerFeedbackItems ?? new List<FeedbackModel>();
             if (items.Count == 0)
             {
@@ -929,25 +935,45 @@ namespace DeepSeekHarnessLauncher
 
         private async Task AddDeveloperFeedbackReplyAsync(FeedbackModel item, TextBox reply, Button send)
         {
-            if (_developerFeedbackLoading) return;
-            send.IsEnabled = false;
-            reply.IsEnabled = false;
+            if (_settingsClosed || _developerFeedbackLoading || _developerFeedbackReplySending || item == null) return;
+            int generation = _settingsUiGeneration;
+            _developerFeedbackReplySending = true;
+            _developerFeedbackReplyEditor = reply;
+            _developerFeedbackReplySend = send;
+            string body = reply.Text;
+            var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                _developerFeedbackCancellation?.Token ?? CancellationToken.None);
+            _developerFeedbackReplyCancellation = cancellation;
+            CancellationToken token = cancellation.Token;
+            bool reloading = false;
             try
             {
-                string token = LauncherSettingsStore.ReadAdminToken(_settings);
-                if (String.IsNullOrWhiteSpace(token)) throw new InvalidOperationException("管理员 Token 未填写。");
+                FeedbackVisualTree.MoveFocusOutside(DeveloperFeedbackRows, SettingsNavigationView);
+                send.IsEnabled = false;
+                reply.IsEnabled = false;
+                string adminToken = LauncherSettingsStore.ReadAdminToken(_settings);
+                if (String.IsNullOrWhiteSpace(adminToken)) throw new InvalidOperationException("管理员 Token 未填写。");
                 using var client = new DeveloperFeedbackAdminClient();
-                await client.AddReplyAsync(FeedbackEndpoint, token, item.Id, reply.Text, CancellationToken.None);
+                await client.AddReplyAsync(FeedbackEndpoint, adminToken, item.Id, body, token);
+                if (_settingsClosed || generation != _settingsUiGeneration || token.IsCancellationRequested) return;
                 reply.Text = String.Empty;
+                reloading = true;
+                long expectedRefresh = _developerFeedbackRequestId + 1;
                 await LoadDeveloperFeedbackCoreAsync();
+                if (_settingsClosed || generation != _settingsUiGeneration || _developerFeedbackRequestId != expectedRefresh
+                    || _developerFeedbackLoadedRequestId != expectedRefresh) return;
                 DeveloperFeedbackInfoBar.Severity = InfoBarSeverity.Success;
                 DeveloperFeedbackInfoBar.Title = "回复已发送";
                 DeveloperFeedbackInfoBar.Message = "开发者回复已加入对话。";
                 DeveloperFeedbackInfoBar.IsOpen = true;
             }
+            catch (OperationCanceledException) when (_settingsClosed || generation != _settingsUiGeneration || token.IsCancellationRequested)
+            {
+            }
             catch (Exception exception)
             {
                 LogFeedbackFailure("发送开发者回复", exception);
+                if (_settingsClosed || generation != _settingsUiGeneration || token.IsCancellationRequested) return;
                 DeveloperFeedbackInfoBar.Severity = InfoBarSeverity.Error;
                 DeveloperFeedbackInfoBar.Title = "回复发送失败";
                 DeveloperFeedbackInfoBar.Message = exception.Message;
@@ -955,9 +981,53 @@ namespace DeepSeekHarnessLauncher
             }
             finally
             {
-                send.IsEnabled = true;
-                reply.IsEnabled = true;
+                if (ReferenceEquals(_developerFeedbackReplyCancellation, cancellation))
+                {
+                    _developerFeedbackReplyCancellation = null;
+                    _developerFeedbackReplySending = false;
+                    _developerFeedbackReplyEditor = null;
+                    _developerFeedbackReplySend = null;
+                    // Successful reloads have replaced these native control peers.
+                    if (!_settingsClosed && generation == _settingsUiGeneration && !reloading && send.IsLoaded && reply.IsLoaded)
+                    {
+                        send.IsEnabled = true;
+                        reply.IsEnabled = true;
+                    }
+                }
+                cancellation.Dispose();
             }
+        }
+
+        private void CancelDeveloperFeedbackOperations(bool restoreControls = true)
+        {
+            ++_developerFeedbackRequestId;
+            _developerFeedbackLoadedRequestId = 0;
+            var loading = _developerFeedbackCancellation;
+            var sending = _developerFeedbackReplyCancellation;
+            TextBox editor = _developerFeedbackReplyEditor;
+            Button send = _developerFeedbackReplySend;
+            _developerFeedbackCancellation = null;
+            _developerFeedbackReplyCancellation = null;
+            _developerFeedbackLoading = false;
+            _developerFeedbackReplySending = false;
+            _developerFeedbackReplyEditor = null;
+            _developerFeedbackReplySend = null;
+            // Normal Close hides and retains the tree. Restore it before detach so
+            // reopening never inherits permanently disabled reply controls.
+            if (restoreControls)
+            {
+                if (editor?.IsLoaded == true) editor.IsEnabled = true;
+                if (send?.IsLoaded == true) send.IsEnabled = true;
+                DeveloperFeedbackRefreshButton.IsEnabled = true;
+                DeveloperFeedbackLoadingRing.IsActive = false;
+                DeveloperFeedbackLoadingRing.Visibility = Visibility.Collapsed;
+                UpdateFeedbackPagination(true);
+            }
+            // Cancel can run awaiting continuations synchronously. Invalidate the
+            // operation identity and restore retained controls before invoking it.
+            sending?.Cancel();
+            loading?.Cancel();
+            loading?.Dispose();
         }
 
         private static string FeedbackCategoryLabel(string category)

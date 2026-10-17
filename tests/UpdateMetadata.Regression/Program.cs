@@ -315,10 +315,10 @@ using (var server = new FixtureServer())
         "valid DSH version catalog has no parse error");
     DownloadSupport.Calls = 0;
     bool downloaded = DshUpdateService.DownloadPackage(
-        new DshUpdatePackage { Version = "1.0.0", TarballUrl = server.Url("/package") },
+        new DshUpdatePackage { TarballUrl = server.Url("/package") },
         null, out _, out string downloadError);
-    Check(!downloaded && DownloadSupport.Calls == 0 && downloadError.Contains("缺少", StringComparison.Ordinal),
-        "DSH download does not start without integrity");
+    Check(!downloaded && DownloadSupport.Calls == 0 && downloadError.Contains("缺失", StringComparison.Ordinal),
+        "DSH bundle download does not start without an exact version; artifact integrity is validated by its own manifest");
 }
 
 if (OperatingSystem.IsWindows())

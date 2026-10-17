@@ -700,8 +700,9 @@ namespace DeepSeekHarnessLauncher
             {
                 var state = ManagedPluginUi(id);
                 bool ready = ConnectionReady && !ConnectionControlsBusy && !_managedPluginsInspectBusy && state.Loaded;
-                primary.Content = !state.Installed ? "安装" : !String.IsNullOrEmpty(state.UpdateAvailableVersion) ? "更新" : "检查更新";
-                primary.IsEnabled = ready && String.IsNullOrEmpty(state.Error);
+                primary.Content = !String.IsNullOrWhiteSpace(state.Error) ? "重新检测"
+                    : !state.Installed ? "安装" : !String.IsNullOrEmpty(state.UpdateAvailableVersion) ? "更新" : "检查更新";
+                primary.IsEnabled = ready;
                 remove.Visibility = state.Installed ? Visibility.Visible : Visibility.Collapsed;
                 remove.IsEnabled = ready && String.IsNullOrEmpty(state.Error);
             }
@@ -720,12 +721,29 @@ namespace DeepSeekHarnessLauncher
             {
                 foreach (string id in new[] { "connect", "mobile-ui" })
                 {
-                    var result = await ManagedConnectionPluginsService.InspectAsync(_settings, id, _host.Log, token);
-                    if (!IsCurrentConnection(generation, token)) return;
                     var state = ManagedPluginUi(id);
-                    state.Loaded = true; state.Installed = result.Installed; state.Version = result.Version; state.Error = result.Error;
-                    ManagedPluginStatus(id).Text = !String.IsNullOrWhiteSpace(result.Error) ? result.Error
-                        : result.Installed ? "已安装 · " + ConnectionValue(result.Version) : "尚未安装";
+                    try
+                    {
+                        var result = await ManagedConnectionPluginsService.InspectAsync(_settings, id, _host.Log, token);
+                        if (!IsCurrentConnection(generation, token)) return;
+                        if (!result.Installed || !String.Equals(state.Version, result.Version, StringComparison.Ordinal))
+                            state.UpdateAvailableVersion = null;
+                        state.Loaded = true; state.Installed = result.Installed; state.Version = result.Version; state.Error = result.Error;
+                        ManagedPluginStatus(id).Text = !String.IsNullOrWhiteSpace(result.Error) ? result.Error
+                            : !result.Installed ? "尚未安装"
+                            : "已安装 · " + ConnectionValue(result.Version)
+                                + (!String.IsNullOrEmpty(state.UpdateAvailableVersion) ? " · 可更新至 " + state.UpdateAvailableVersion : String.Empty);
+                    }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                    catch (Exception exception)
+                    {
+                        if (!IsCurrentConnection(generation, token)) return;
+                        state.Loaded = true;
+                        state.Error = "状态读取失败，请重新检测。";
+                        ManagedPluginStatus(id).Text = state.Error;
+                        _host.Log("读取连接插件 " + id + " 状态失败：" + exception.Message);
+                        ShowConnectionNotice(exception.Message, InfoBarSeverity.Warning);
+                    }
                 }
             }
             catch (OperationCanceledException) { }
@@ -767,11 +785,19 @@ namespace DeepSeekHarnessLauncher
         {
             if (!ConnectionReady || ConnectionControlsBusy || _managedPluginsInspectBusy) return;
             var state = ManagedPluginUi(id);
-            if (!state.Loaded || !String.IsNullOrWhiteSpace(state.Error)) return;
+            if (!state.Loaded) return;
+            if (!String.IsNullOrWhiteSpace(state.Error))
+            {
+                await RefreshManagedConnectionPluginsAsync();
+                return;
+            }
             int generation = _connectionsGeneration;
             var token = _connectionsCancellation.Token;
             bool checkOnly = !remove && state.Installed && String.IsNullOrEmpty(state.UpdateAvailableVersion);
             _managedPluginsActionBusy = true;
+            // A cancelled or stale action may still have changed disk state.
+            // Keep it unloaded until a result or a fresh inspection is applied.
+            state.Loaded = false;
             UpdateConnectionsControls();
             ManagedPluginStatus(id).Text = remove ? "正在卸载…" : checkOnly ? "正在检查更新…" : "正在验证并安装插件…";
             try
@@ -797,7 +823,15 @@ namespace DeepSeekHarnessLauncher
                     ShowConnectionNotice(exception.Message, InfoBarSeverity.Warning);
                 }
             }
-            finally { _managedPluginsActionBusy = false; if (ConnectionReady) UpdateConnectionsControls(); }
+            finally
+            {
+                _managedPluginsActionBusy = false;
+                if (ConnectionReady)
+                {
+                    UpdateConnectionsControls();
+                    if (!state.Loaded) _ = RefreshManagedConnectionPluginsAsync();
+                }
+            }
         }
 
         private void ShowConnectionNotice(string message, InfoBarSeverity severity)

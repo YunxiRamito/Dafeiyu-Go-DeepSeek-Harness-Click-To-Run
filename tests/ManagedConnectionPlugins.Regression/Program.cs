@@ -3,6 +3,12 @@ using System.Runtime.Loader;
 using System.Security.Cryptography;
 using System.Text.Json;
 
+if (args.Length > 0 && args[0] == "--metadata")
+{
+    await ManagedPluginMetadataChecks.RunAsync(args);
+    return;
+}
+
 if (args.Length != 4) throw new ArgumentException("Arguments: built-launcher owned-fixture sdk-node_modules pnpm-executable");
 string build = Path.GetFullPath(args[0]), root = Path.GetFullPath(args[1]);
 string sdk = Path.GetFullPath(args[2]), pnpm = Path.GetFullPath(args[3]);

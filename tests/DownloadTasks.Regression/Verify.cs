@@ -18,6 +18,7 @@ namespace DeepSeekHarnessLauncher
         internal string UpdateSource { get; set; }
         internal string MirrorSource { get; set; }
         internal string NodePath { get; set; }
+        internal string DshRoot { get; set; }
     }
 
     internal static class Program { internal static int PreviousProcessId => 0; }
@@ -47,6 +48,7 @@ namespace DeepSeekHarnessLauncher
 
     internal static class ProxySupport
     {
+        internal static void ApplyProcessEnvironment(System.Diagnostics.ProcessStartInfo info, LauncherSettings settings) { }
         internal static void Apply(WebClient client) { client.Proxy = null; }
         internal static void Apply(HttpWebRequest request) { request.Proxy = null; }
         internal static void Apply(HttpWebRequest request, LauncherSettings settings) { request.Proxy = null; }

@@ -1,5 +1,27 @@
 # 交接：大肥鱼Go / Dafeiyu-Go Launcher
 
+## 2026-10-18 反馈崩溃、时间排序与 F5 修复（1.8.4 本地候选）
+
+用户指定本次 **1.8.4**；已同步 Core、InfoHost、bootstrap 及三份 manifest 的版本。最终构建 `../Temp_SetupandLauncher/LB184r2/dist`，Core SHA-256 `0404D7945B0D5834465EA9125065DF4543A0886B8E3976185C8732D0C229A589`；288 个源输入与 live source 一致、157 个产物收据，verify 通过（文档示例路径、未传真实 DshRoot 两项既有提醒，构建保留既有警告）。较早 LB17/1.8.3 仅历史；公开资产未修改，未替换日常安装。
+
+首轮 LB184 漏改 `WinUIProgram.Constants.Version`，文件版本1.8.4但关于页仍1.8.3。已按用户截图补正并重建LB184r2；新增 verify 读取实际Core.Constants.Version，旧包被确定拒绝exit1，r2运行时版本1.8.4通过。根源同时影响主页、更新比较、请求版本与User-Agent，均随此常量修正。旧LB184不交付。
+
+- 真实日志定位 2026-10-17 23:28:17 `AccessViolationException` 于 `UIElementCollection.Clear()`，调用链来自开发者发送回复后的刷新。新增 `FeedbackVisualTree`，清树前两次实查移焦、低优先级等待、逐项 RemoveAt 并短暂保活；Feedback Load/Reply 增加取消/请求/会话 generation 与重复发送保护。`SuspendSettingsWindow` 取消并恢复保留控件，真正 Closed 不访问销毁 peers。原生同款 NavigationView 专项 89/89，编译 0 warning/error；旧会话迟到、取消、重开、焦点重入均覆盖。已有 dump 未解析，不宣称内部 WinUI 缺陷机理已确证。
+- `FeedbackClient` 与 `DeveloperFeedbackAdminClient` 默认 `updatedOrder=true` 并显式 `sort=updated`；时间指最近更新时间/活动时间倒序。独立编号改动位于 DeveloperCenter，PC 历史号不重排、Android 单独从 1 回填；生产仍需迁移才能生效，UUID 不变。PC 255、服务端 691、Android 38/38、真实 PG 188 通过。
+- `DshWindow` 根 Grid 设置 `KeyboardAcceleratorPlacementMode=Hidden`，快捷键及菜单 F5 文字保留。原生刷新 35、实际悬停 6、策略/导航 100、SDK 进程 21 通过。
+- 专项证据与最终集成入口：`../Temp_SetupandLauncher/LauncherBugs-20261017/REPORT.md`，子报告 crash、f5、feedback-sort-id，构建收据 integration-184-r2。未跑全量、未操作真实反馈、未发布/部署。本次只修改对应源码并保留既有未提交改动。
+
+## 2026-10-17 连接页双插件管理补验与恢复修复（1.8.3 本地候选）
+
+依据用户截图及 DeveloperCenter.Server/HANDOVER.md 的双插件正式分发契约，核对并保留现有 Connect / Mobile-CSS 安装、检查更新、发现新版后更新、确认卸载的真实服务接线。下载来自 DeveloperCenter，和 Aries 配对服务分开；本轮未重新部署服务器、发布启动器或修改用户真实插件。当前源码已有版本 1.8.3，本轮沿用，不把旧 1.8.2 正式包写成已包含本轮恢复修复。
+
+- 实现：仅修 `source/SettingsWindow.Connections.cs`。读取错误显示可用的“重新检测”，不再永久锁死；两个插件分别处理检测异常；操作失败、取消或切页后重新读取磁盘，防止残留“正在…”或迟到结果；版本改变清理过期更新提示，同版本保留有效更新提示。XAML 和已有服务实现原样保留，卸载仍保留工作区、对话和用户配置，启动 inspect 不重新安装。改前备份在 `../Temp_SetupandLauncher/ConnectionPlugins-20261017/backup-ui/`。
+- 编译：共享工作树包含其他未提交改动，已按当前源码创建 G 盘独立快照并完整构建 WinUI Core / InfoHost / bootstrap。候选入口 `../Temp_SetupandLauncher/CP17r1/dist/DeepSeek Harness.exe`，版本 1.8.3；Core SHA-256 `539131A6C54DAA1E160BCC850489BC316F8B3380DB35296E9F8BDD9A7DCCEA6E`。完整日志 `../Temp_SetupandLauncher/ConnectionPlugins-20261017/build-r1.log`；保留既有警告，不声明零警告。六个关键输入与原工作树 SHA 一致，记录在 `CP17r1/source-inputs.json`。未替换用户正在运行的 PC 客户端。
+- 专项：生产方法原文 UI 状态测试 18/18；新 Core 经生产 HTTPS 下载、嵌入 helper、官方 SDK / pnpm 安装、inspect、检查更新、双卸载及用户数据保留 12/12；同 Core 内存 HTTP 元数据兼容、身份、摘要、失败重试与取消 21/21；当前真实 SDK `0.2.1-rc.1` + pnpm `12.4.1` 生命周期 12/12，包含 Mobile-CSS `0.1.5 → 0.1.6`、pnpm 失败配置快照与同 profile 重试。新专项 runner 编译零警告、零错误。报告集中在 `ConnectionPlugins-20261017` 的 ui-tests、built-fixture、metadata、node-lifecycle；不是引用旧 MP17 结果。
+- 全量离线检查：按用户后追加的“做完后执行全量检查”执行 release.ps1 定义的全部 14 组离线回归，另有连接生命周期 60 项、实际 Core 更新所有权 6 项、实际 bootstrap 122 项和产物 verify，最终 18 组退出码均为 0。初次直接 `dotnet run` 的连接专项在第 33 项后非零退出、日志没有异常细节；保留初次失败，不推断其原因。随后采用仓库专用 `tests/ConnectionLifecycle.Regression/Run.ps1` 和全新隔离状态，重新编译零警告/错误、60/60 通过。最终索引 `ConnectionPlugins-20261017/full-checks-final.json`，初次日志仍在 `CP17r1/full-checks/`；专用重跑日志在 `ConnectionPlugins-20261017/connection-rerun/`。verify 两项既有提醒为文档示例路径及未传真实 DshRoot，不改真实安装作验证。
+- 原生设备/窗口验证：新候选真实 WinUI 页面未安装 9/9、已安装及 UIA 点击两个“检查更新”的真实 HTTPS 检查 12/12，分别读到 Connect 0.3.1 / Mobile-CSS 0.1.6 并显示“已是最新版本”；截图已目视，收据在 `ConnectionPlugins-20261017/native-ui/receipt.json`。所有设置、profile、下载缓存位于 G 盘隔离夹具，普通 DSH 未启动，用户身份/会话未变。原生安装/卸载按钮点击、UAC 和用户日常安装验收仍待；对应服务链路已按上方实际 Core 专项验证，不混为 UI 验收。
+- 边界：本轮完成的是双插件管理与恢复流程，不能据此声明 Android 原总计划、硬件快照或手机真实模型目录端到端已全部验收。自动清理策略拒绝断开测试 `built-fixture/node_modules` junction 后未重试，G 盘只读 SDK 引用夹具保留。未提交、推送或公开发布，用户验收待。
+
 ## 2026-10-17 Launcher 1.8.2 正式发布
 
 按用户明确授权发布，更新日志精确为“优化了已知问题（连接页面）”。GitHub v1.8.2、npm @yunxiramito/dsh-launcher@1.8.2 与国内 npmmirror 已真实下载校验，当前/版本化 manifest 已普通推送并读回。源码提交3ef0036cc4ff5490ea177a9199902f5b8d0d7b47，清单提交c551a384821daf24a6ff3e9c02fa94bdd8f9080f。ZIP 27,849,945 bytes，SHA256 7d30c37e7a5cb053a263caf9b97f109e61382bd4233d4cca6e96eabec2d443f6。

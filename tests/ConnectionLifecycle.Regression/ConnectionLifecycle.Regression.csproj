@@ -7,6 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../source/ProgressValue.cs" />
+    <Compile Include="../../source/Features/Connections/Aries/AriesConnectionService.Hardware.cs" />
     <Compile Include="../../source/Features/Connections/Pairing/ConnectionPairingPrompt.cs" />
     <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
     <Compile Include="../../source/Features/Connections/Aries/AriesConnectionService.cs;../../source/Features/Connections/Aries/AriesConnectionService.Provider.cs;../../source/Features/Connections/Aries/AriesCrypto.cs;../../source/Features/Connections/Aries/AriesPairingModels.cs;../../source/Features/Connections/Aries/AriesProviderProtocol.cs;../../source/Features/Connections/Aries/AriesProviderBulk.cs;../../source/Features/Connections/Aries/AriesHttpClientFactory.cs;../../source/Features/Connections/Settings/SettingsConnectionClient.cs;../../source/Features/Connections/Settings/SettingsConnectionModels.cs;../../source/Features/Connections/Provider/ConnectionProviderMaintenanceDeadline.cs;../../source/LauncherSettings.cs;../../source/LauncherSettingsStore.cs" />

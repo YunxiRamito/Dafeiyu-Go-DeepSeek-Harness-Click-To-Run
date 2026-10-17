@@ -574,12 +574,22 @@ namespace DeepSeekHarnessLauncher
                     "message:" + operation, Digest(plain), () =>
                     {
                         byte[] key = ProviderKey();
+                        byte[] outgoing = null;
                         try
                         {
-                            string content = AriesCrypto.SealContent(seed, key, Envelope("message", "obj_" + Digest(Scope(operation))), plain);
+                            // The caller's original payload owns the fingerprint. Hardware
+                            // is sampled only while creating a new durable ciphertext. A
+                            // lost-response retry reuses that ciphertext without resampling.
+                            outgoing = JsonSerializer.SerializeToUtf8Bytes(new { kind, body = WithLocalHardware(kind, body) }, AriesCrypto.Json);
+                            if (outgoing.Length > 256 * 1024) throw ProviderError("protocol_error");
+                            string content = AriesCrypto.SealContent(seed, key, Envelope("message", "obj_" + Digest(Scope(operation))), outgoing);
                             return JsonSerializer.Serialize(new { epoch = binding.Epoch, ciphertext = content }, AriesCrypto.Json);
                         }
-                        finally { CryptographicOperations.ZeroMemory(key); }
+                        finally
+                        {
+                            CryptographicOperations.ZeroMemory(key);
+                            if (outgoing != null) CryptographicOperations.ZeroMemory(outgoing);
+                        }
                     }, token, entry =>
                     {
                         entry.MessageKind = kind;

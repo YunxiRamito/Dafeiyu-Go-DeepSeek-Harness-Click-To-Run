@@ -125,7 +125,9 @@ namespace DeepSeekHarnessLauncher
             _openSettings = openSettings;
             Title = "DeepSeek Harness";
             ExtendsContentIntoTitleBar = true;
-            _surface = new Grid();
+            // Root-level accelerators apply across the window, but their automatic
+            // tooltip would otherwise show F5 whenever the pointer rests on the page.
+            _surface = new Grid { KeyboardAcceleratorPlacementMode = KeyboardAcceleratorPlacementMode.Hidden };
             _surface.RequestedTheme = String.Equals(settings?.Theme, "Dark", StringComparison.OrdinalIgnoreCase)
                 ? ElementTheme.Dark : String.Equals(settings?.Theme, "Light", StringComparison.OrdinalIgnoreCase)
                     ? ElementTheme.Light : ElementTheme.Default;

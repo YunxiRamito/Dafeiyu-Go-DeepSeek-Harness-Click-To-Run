@@ -37,6 +37,7 @@ namespace DeepSeekHarnessLauncher
             // Existing asynchronous UI callbacks also use this guard while the
             // window is hidden. Page generations reject responses from before Hide.
             _settingsClosed = true;
+            CancelDeveloperFeedbackOperations();
             _appWindow.Hide();
             StopPageAnimation();
             StopChartAnimations();

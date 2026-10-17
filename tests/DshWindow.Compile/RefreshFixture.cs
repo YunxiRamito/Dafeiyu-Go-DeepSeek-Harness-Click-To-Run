@@ -93,6 +93,8 @@ namespace DeepSeekHarnessLauncher
                 setStatus.Invoke(window,new object[]{String.Empty,false});
                 await AssertIdleAsync("new busy completion");
                 Check(root.KeyboardAccelerators.Count == 2 && root.KeyboardAccelerators[0].Key == Windows.System.VirtualKey.F5 && root.KeyboardAccelerators[1].Modifiers == Windows.System.VirtualKeyModifiers.Control, "native F5 and Ctrl+F5 accelerators installed");
+                Check(root.KeyboardAcceleratorPlacementMode == KeyboardAcceleratorPlacementMode.Hidden, "window-wide refresh accelerators do not create a page hover tooltip");
+                Check(Field<MenuFlyoutItem>(window, "_reload").KeyboardAcceleratorTextOverride == "F5", "refresh shortcut remains discoverable in the application menu");
                 await core.ExecuteScriptAsync("edit.focus();edit.value='focus remains';edit.setSelectionRange(2,5)");
                 await window.ExecuteEditCommandAsync("selectAll");
                 Check(await core.ExecuteScriptAsync("document.activeElement===edit&&edit.selectionEnd===13") == "true", "edit command preserves the active document editor");

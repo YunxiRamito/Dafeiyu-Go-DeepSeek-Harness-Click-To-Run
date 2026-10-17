@@ -63,7 +63,34 @@ async function preserved(){const value=JSON.parse(await fs.readFile(manifest));a
 await check('install Connect with existing registry dependency and create ownership receipt',async()=>{const r=await manage(request('connect','install',connect));assert.equal(r.installed,true);assert.equal(r.changed,true);const receipt=JSON.parse(await fs.readFile(path.join(root,'.launcher-connect/managed-plugins/connect.json')));assert.equal(receipt.archive.sha256,connect.sha256);assert.equal(receipt.archive.files.length,connect.files.length);await preserved();});
 await check('inspect Connect from receipt without package metadata argument',async()=>{const r=await manage(request('connect','inspect'));assert.equal(r.installed,true);assert.equal(r.version,connect.version);assert.equal(r.error,undefined);});
 await check('idempotent Connect install leaves manifest unchanged',async()=>{const before=await fs.readFile(manifest);assert.equal((await manage(request('connect','install',connect))).changed,false);assert.deepEqual(await fs.readFile(manifest),before);});
+await check('pnpm failure retains original configuration and retry installs Mobile',async()=>{
+  const failureShim=path.join(run,'pnpm-fail.cmd');await fs.writeFile(failureShim,'@echo off\r\necho controlled fixture pnpm failure 1>&2\r\nexit /b 23\r\n');
+  const original=await fs.readFile(manifest),patch=await fs.readFile(path.join(dir,'cordis.patch.yml'));
+  const failed=request('mobile-ui','install',oldMobile);failed.pnpm_path=failureShim;
+  await assert.rejects(manage(failed),/官方插件操作失败[\s\S]*原始配置备份/);
+  assert.deepEqual(await fs.readFile(manifest),original);await preserved();
+  const recoveryParent=path.join(root,'.launcher-connect/profile-recovery');
+  const recoveries=(await fs.readdir(recoveryParent)).filter(name=>name.startsWith('mobile-ui-'));
+  assert.equal(recoveries.length,1);const recovery=path.join(recoveryParent,recoveries[0]);
+  assert.deepEqual(await fs.readFile(path.join(recovery,'package.json')),original);
+  assert.deepEqual(await fs.readFile(path.join(recovery,'cordis.patch.yml')),patch);
+  const metadata=JSON.parse(await fs.readFile(path.join(recovery,'recovery.json')));
+  assert.equal(metadata.action,'install');assert.equal(metadata.id,'mobile-ui');
+  const retried=await manage(request('mobile-ui','install',oldMobile));
+  assert.equal(retried.installed,true);assert.equal(retried.changed,true);assert.equal(retried.version,oldMobile.version);
+  await preserved();
+  assert.deepEqual(await fs.readFile(path.join(recovery,'package.json')),original);
+  // Failed recovery is deliberately retained for inspection; clear only this owned test artifact.
+  await fs.rm(recovery,{recursive:true});
+});
 await check('install old Mobile then upgrade from ownership receipt',async()=>{await manage(request('mobile-ui','install',oldMobile));assert.equal((await manage(request('mobile-ui','inspect'))).version,oldMobile.version);const r=await manage(request('mobile-ui','install',mobile));assert.equal(r.version,mobile.version);assert.equal(r.changed,true);await preserved();});
+await check('Connect remains installed after Mobile update and repair is idempotent',async()=>{
+  const connectReceipt=await fs.readFile(path.join(root,'.launcher-connect/managed-plugins/connect.json'));
+  const before=await fs.readFile(manifest),result=await manage(request('mobile-ui','install',mobile));
+  assert.equal(result.changed,false);assert.deepEqual(await fs.readFile(manifest),before);
+  assert.deepEqual(await fs.readFile(path.join(root,'.launcher-connect/managed-plugins/connect.json')),connectReceipt);
+  const state=await manage(request('connect','inspect'));assert.equal(state.installed,true);assert.equal(state.version,connect.version);
+});
 await check('tampered Mobile installed bytes refuse update and removal',async()=>{const file=path.join(dir,'node_modules/dafeiyu-mobile-ui/lib/index.js'),before=await fs.readFile(file);await fs.appendFile(file,'\n// fixture tamper\n');assert.match((await manage(request('mobile-ui','inspect'))).error,/文件已变化/);await assert.rejects(manage(request('mobile-ui','remove')),/文件已变化/);await assert.rejects(manage(request('mobile-ui','install',mobile)),/文件已变化/);await fs.writeFile(file,before);});
 await check('foreign Mobile link is inspectable but never modified',async()=>{const value=JSON.parse(await fs.readFile(manifest)),original=await fs.readFile(manifest);value.dependencies['dafeiyu-mobile-ui']='link:G:/fixture/external';await fs.writeFile(manifest,JSON.stringify(value));const before=await fs.readFile(manifest);const r=await manage(request('mobile-ui','inspect'));assert.equal(r.installed,true);assert.match(r.error,/其他来源/);await assert.rejects(manage(request('mobile-ui','remove')),/其他来源/);assert.deepEqual(await fs.readFile(manifest),before);await fs.writeFile(manifest,original);});
 await check('remove Mobile keeps Connect and all DSH data',async()=>{const r=await manage(request('mobile-ui','remove'));assert.equal(r.installed,false);assert.equal(r.changed,true);assert.equal((await manage(request('connect','inspect'))).installed,true);await preserved();await assert.rejects(fs.stat(path.join(root,'.launcher-connect/managed-plugins/mobile-ui.json')),{code:'ENOENT'});});

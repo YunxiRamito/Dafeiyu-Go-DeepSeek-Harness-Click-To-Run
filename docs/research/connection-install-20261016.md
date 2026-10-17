@@ -5,7 +5,7 @@
 - 上游：`deepseek-ai/deepseek-harness`，固定 `dsh-v0.2.1-alpha.1` / `5badb15009ae1756c3afe0ae0cef1faafc290ccc`，MIT。
 - 已读取该 commit 的 `README.md`、`LICENSE`、`packages/boot/plugin-manager/src/operations.ts`，实际下载留在 `../Temp_SetupandLauncher/Feedback-20261016/plugin-install/upstream-*`。初次误用 src/types/operations.ts 返回 HTTP 404；GitHub tree API 返回 403，随后正确 raw 源码获取成功，不将失败写成没有现成实现。
 - 复用官方 `runProfilePnpm`、`saveManifest`、`resolveProfileDir`、`resolveBundleDir` 与 `withFileLock`，调用本机固定 SDK。没有复制上游实现或执行仓库安装脚本。
-- 连接包随 PC/Android 交付同一冻结 `dafeiyu-go-connect@0.3.1`，205295 bytes，SHA-256 `8793c4066a7df2e15911322090671e4f1f30bc02093fcda55d74a0a59d835d65`。安装仅添加本地归档，`--offline --ignore-scripts`，不会为安装连接功能请求后端清单或 CA。
+- 连接包随 PC/Android 交付同一冻结 `dafeiyu-go-connect@0.3.1`，205295 bytes，SHA-256 `8793c4066a7df2e15911322090671e4f1f30bc02093fcda55d74a0a59d835d65`。安装仅添加本地归档，`--offline=false --ignore-scripts（2026-10-17 PC 修正：按所选下载源和代理补齐既有依赖及供应链元数据，后端源沿用严格 CA/Git 设置）`，无需后端提供 Connect 归档；既有 profile 依赖按下载源联网校验。
 - 安装前后检查完整文件摘要、未知同名来源、Node/SDK 实际解析、profile bundle、用户 patch 和其他字段。已验证的旧冻结 0.3.0 可升级；外来或被修改的同名包保留并报错。
 - 用户定义连接默认包含 DSH 工作区/对话与网页，因此仅对已确认本应用来源的 Connect bundle 恢复启用，其他插件状态不变。实际远端能力由真实服务 readiness 广告，磁盘安装通过不等于公网互联已验收。
 

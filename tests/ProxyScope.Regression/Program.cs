@@ -64,6 +64,18 @@ child.EnvironmentVariables["HTTP_PROXY"] = "http://inherited.example:8080";
 ProxySupport.ApplyProcessEnvironment(child);
 Assert(!child.EnvironmentVariables.ContainsKey("HTTP_PROXY"), "launcher switch off clears the proxy for child processes");
 
+var snapshotSettings = new LauncherSettings
+{
+    ProxyMode = "Custom", ProxyProtocol = "Http", ProxyHost = "127.0.0.1",
+    ProxyPort = 7891, ProxyForLauncher = true
+};
+child = new ProcessStartInfo { UseShellExecute = false };
+ProxySupport.ApplyProcessEnvironment(child, snapshotSettings);
+Assert(child.EnvironmentVariables["HTTP_PROXY"] == "http://127.0.0.1:7891/",
+    "isolated core preparation uses its explicit proxy snapshot rather than global settings");
+Assert(!settings.ProxyForLauncher && snapshotSettings.ProxyForLauncher,
+    "explicit child proxy setup does not mutate current or supplied launcher settings");
+
 // ---- DSH 开关：默认关闭时一个字节都不动
 settings.ProxyForLauncher = true;
 settings.ProxyForDsh = false;

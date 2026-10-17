@@ -38,7 +38,7 @@ namespace DeepSeekHarnessLauncher
             => (await ListPageAsync(cancellationToken, mine).ConfigureAwait(false)).Feedback;
 
         internal async Task<FeedbackListResponse> ListPageAsync(CancellationToken cancellationToken, bool mine = false, int offset = 0,
-            FeedbackCategory? category = null, FeedbackStatus? status = null, bool updatedOrder = false)
+            FeedbackCategory? category = null, FeedbackStatus? status = null, bool updatedOrder = true)
         {
             if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
             if (category.HasValue && !Enum.IsDefined(typeof(FeedbackCategory), category.Value)) throw new ArgumentException("Invalid feedback category.", nameof(category));
@@ -50,7 +50,7 @@ namespace DeepSeekHarnessLauncher
                 + (mine ? "&mine=true" : String.Empty) + "&offset=" + offset + "&limit=" + FeedbackResponseBudget.PageSize
                 + (category.HasValue ? "&category=" + category.Value : String.Empty)
                 + (status.HasValue ? "&status=" + status.Value : String.Empty)
-                + (updatedOrder ? "&sort=updated" : String.Empty);
+                + (updatedOrder ? "&sort=updated" : "&sort=support");
             var uri = new Uri(root, query);
             FeedbackListResponse response = await SendAsync<FeedbackListResponse>(HttpMethod.Get, uri, null, cancellationToken).ConfigureAwait(false);
             ValidateList(response);

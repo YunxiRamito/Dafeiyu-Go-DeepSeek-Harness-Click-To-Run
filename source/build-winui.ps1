@@ -4,7 +4,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$dotnet = 'G:\DeepSeek DSH\.tools\dotnet\dotnet.exe'
+$projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$dotnetCandidates = @(
+    'G:\DeepSeek DSH\.tools\dotnet\dotnet.exe',
+    (Join-Path $projectRoot 'Temp_SetupandLauncher\DotnetSdk\dotnet.exe')
+)
+$dotnet = $dotnetCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
 $project = Join-Path $PSScriptRoot 'DeepSeekHarness.csproj'
 $iconScript = Join-Path $PSScriptRoot 'make-icon.ps1'
 $sourceImage = Join-Path $PSScriptRoot 'assets\DeepSeek-icon.png'
@@ -15,7 +20,7 @@ $runtimeDetectorSource = Join-Path $PSScriptRoot 'WindowsAppRuntimeDetector.cs'
 $bootstrapManifest = Join-Path $PSScriptRoot 'RuntimeBootstrap.manifest'
 $frameworkCompiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 
-if (-not (Test-Path -LiteralPath $dotnet)) {
+if (-not $dotnet) {
     $dotnet = (Get-Command dotnet -ErrorAction Stop).Source
 }
 

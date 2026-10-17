@@ -7304,9 +7304,7 @@ namespace DeepSeekHarnessLauncher
             _feedbackCancellation?.Cancel();
             _feedbackCancellation?.Dispose();
             _feedbackCancellation = null;
-            _developerFeedbackCancellation?.Cancel();
-            _developerFeedbackCancellation?.Dispose();
-            _developerFeedbackCancellation = null;
+            CancelDeveloperFeedbackOperations(restoreControls: false);
             ClearRemoteIconResources();
             ReleasePublicAcknowledgementResources();
             StopServerMetrics();

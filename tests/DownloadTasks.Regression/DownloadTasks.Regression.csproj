@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
@@ -18,9 +18,11 @@
     <Compile Include="../../source/ProductVersion.cs" Link="ProductVersion.cs" />
     <Compile Include="../../source/InstallerVersionPolicy.cs" Link="InstallerVersionPolicy.cs" />
     <Compile Include="../../source/DshUpdateService.cs" Link="DshUpdateService.cs" />
+    <Compile Include="../../source/DshNpmBundleBuilder.cs" Link="DshNpmBundleBuilder.cs" />
     <Compile Include="../../source/InstallerUpdateService.cs" Link="InstallerUpdateService.cs" />
     <Compile Include="../../source/SkillArchiveTempFiles.cs" Link="SkillArchiveTempFiles.cs" />
     <Compile Include="../../source/ComponentService.cs" Link="ComponentService.cs" />
     <Compile Include="../../source/WindowsAppRuntimeDetector.cs" Link="WindowsAppRuntimeDetector.cs" />
   </ItemGroup>
+  <ItemGroup><Compile Include="../../source/DshBundleDeployment.cs" Link="DshBundleDeployment.cs" /></ItemGroup>
 </Project>

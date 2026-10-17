@@ -339,23 +339,29 @@ try
     popularNewer.Id = Guid.NewGuid().ToString("D"); popularNewer.UpvoteCount = 7; popularNewer.CreatedAt = now.AddMinutes(2); popularNewer.UpdatedAt = now.AddSeconds(20);
     handler.SortedFeedback = new List<FeedbackModel> { popularOlder, item, popularNewer };
     var sortedPage = await client.ListPageAsync(CancellationToken.None);
-    Check(!handler.LastUri.Query.Contains("sort=") && sortedPage.Feedback.Select(value => value.Id)
-        .SequenceEqual(new[] { popularNewer.Id, popularOlder.Id, item.Id }), "public default preserves server votes-descending order with CreatedAt-descending ties");
+    Check(handler.LastUri.Query.Contains("sort=updated") && sortedPage.Feedback.Select(value => value.Id)
+        .SequenceEqual(new[] { item.Id, popularNewer.Id, popularOlder.Id }), "public default requests latest activity first independently of support counts");
+    var supportPage = await client.ListPageAsync(CancellationToken.None, updatedOrder: false);
+    Check(handler.LastUri.Query.Contains("sort=support") && supportPage.Feedback.Select(value => value.Id)
+        .SequenceEqual(new[] { popularNewer.Id, popularOlder.Id, item.Id }), "public explicit support order remains available");
     var updatedPage = await client.ListPageAsync(CancellationToken.None, updatedOrder: true);
     Check(handler.LastUri.Query.Contains("sort=updated") && updatedPage.Feedback.First().Id == item.Id,
         "public notification polling requests UpdatedAt-descending order explicitly");
     var defaultAdminPage = await admin.ListPageAsync(settings.BaseUrl, fakeToken, CancellationToken.None);
-    Check(!handler.LastUri.Query.Contains("sort=") && !handler.LastUri.Query.Contains("machineId=")
+    Check(handler.LastUri.Query.Contains("sort=updated") && !handler.LastUri.Query.Contains("machineId=")
         && defaultAdminPage.Feedback.Select(value => value.Id).SequenceEqual(sortedPage.Feedback.Select(value => value.Id)),
-        "administrator UI preserves server vote sorting without adding a public machine identity to admin list requests");
+        "administrator UI defaults to latest activity first without adding a public machine identity to admin list requests");
     var updatedAdminPage = await admin.ListPageAsync(settings.BaseUrl, fakeToken, CancellationToken.None, updatedOrder: true);
     Check(handler.LastUri.Query.Contains("sort=updated") && updatedAdminPage.Feedback.First().Id == item.Id,
-        "administrator notification polling can opt into UpdatedAt order independently of UI vote sorting");
+        "administrator notification polling retains explicit UpdatedAt order");
+    var supportAdminPage = await admin.ListPageAsync(settings.BaseUrl, fakeToken, CancellationToken.None, updatedOrder: false);
+    Check(handler.LastUri.Query.Contains("sort=support") && supportAdminPage.Feedback.Select(value => value.Id)
+        .SequenceEqual(supportPage.Feedback.Select(value => value.Id)), "administrator explicit support order remains available");
     await client.UpvoteAsync(feedbackId, CancellationToken.None);
     var refreshedVotePage = await client.ListPageAsync(CancellationToken.None);
     Check(refreshedVotePage.Feedback.First().Id == item.Id && refreshedVotePage.Feedback.First().UpvoteCount == 8
-        && refreshedVotePage.Feedback.First().HasUpvoted && !handler.LastUri.Query.Contains("sort="),
-        "refetch after vote obtains server-resorted page and confirmed machine selection");
+        && refreshedVotePage.Feedback.First().HasUpvoted && handler.LastUri.Query.Contains("sort=updated"),
+        "refetch after vote retains time order and confirmed machine selection");
     await client.CancelUpvoteAsync(feedbackId, CancellationToken.None);
     var refreshedCancelPage = await client.ListPageAsync(CancellationToken.None);
     Check(refreshedCancelPage.Feedback.Select(value => value.Id).SequenceEqual(sortedPage.Feedback.Select(value => value.Id)),

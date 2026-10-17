@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
+    <Compile Include="../../source/Features/Connections/Aries/*.cs" />
+    <Compile Include="../../source/Features/Connections/Pairing/ConnectionPairingPrompt.cs" />
+    <Compile Include="../../source/Features/Connections/Settings/SettingsConnectionClient.cs;../../source/Features/Connections/Settings/SettingsConnectionModels.cs;../../source/Features/Connections/Provider/ConnectionProviderMaintenanceDeadline.cs;../../source/LauncherSettings.cs;../../source/LauncherSettingsStore.cs" />
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.6.2" />
+    <PackageReference Include="QRCoder" Version="1.6.0" />
+  </ItemGroup>
+</Project>
