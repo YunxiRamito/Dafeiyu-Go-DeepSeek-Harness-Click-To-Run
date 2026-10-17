@@ -1,0 +1,11 @@
+{
+  "version": "1.8.4",
+  "sha256": "8b4abf6c7418297bc6fa13129a0f7f3ab20788f1c368ef57d9f1e36a412d7150",
+  "subDirectory": "",
+  "assets": {
+    "github": "https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/download/v1.8.4/Dafeiyu-GO.1.8.4.zip",
+    "mirrors": []
+  },
+  "notes": "**启动器 · 2026-10-18 · 已发布**\n\n- 修复开发者反馈回复后刷新列表可能导致的崩溃，以及窗口关闭重开时的旧请求与控件状态问题。\n- 反馈与建议默认按更新时间倒序展示。\n- 修复窗口模式页面持续出现 F5 悬停提示的问题，保留 F5 / Ctrl+F5 刷新快捷键。\n\n手机端与电脑端独立反馈编号的配套服务端迁移已完成本地验证，尚未部署；此项不会仅随本次启动器更新在服务器生效。",
+  "releasedAt": "2026-10-17T16:54:52.8218179Z"
+}
