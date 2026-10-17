@@ -250,23 +250,52 @@ function Assert-LocalReleaseReceipt {
 
 function Set-SnapshotBuildSettings {
     param([string]$BuildScript, [string]$DotnetPath, [string]$NuGetCache)
-    # The committed build entry has legacy machine defaults. Adapt ONLY its two
-    # defaults in the disposable snapshot; keep all publish/InfoHost/detector logic.
+    # Adapt ONLY the two known default RHS expressions in the disposable
+    # snapshot. Keep candidate discovery, fallback and all build logic intact.
     $tokens = $null; $errors = $null
     $ast = [Management.Automation.Language.Parser]::ParseFile($BuildScript, [ref]$tokens, [ref]$errors)
     if ($errors.Count) { throw 'Build script has syntax errors.' }
     $text = [IO.File]::ReadAllText($BuildScript)
+    $candidateDotnet = '$dotnetCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1'
+    $fallbackDotnet = '$dotnet = (Get-Command dotnet -ErrorAction Stop).Source'
+    $fallbackBlocks = @(
+        ('if (-not $dotnet) {' + [char]10 + '    ' + $fallbackDotnet + [char]10 + '}'),
+        ('if (-not (Test-Path -LiteralPath $dotnet)) {' + [char]10 + '    ' + $fallbackDotnet + [char]10 + '}')
+    )
     $edits = @()
     foreach ($setting in @(@('dotnet', $DotnetPath), @('localNuGet', $NuGetCache))) {
         $name = $setting[0]
+        # Count all writes to the setting, not just expressions already known
+        # to be editable: an extra/unknown assignment must fail before writing.
         $nodes = @($ast.FindAll({ param($n)
             $n -is [Management.Automation.Language.AssignmentStatementAst] -and
             $n.Left -is [Management.Automation.Language.VariableExpressionAst] -and
-            $n.Left.VariablePath.UserPath -eq $name -and
-            $n.Right.Extent.Text.StartsWith("'")
+            $n.Left.VariablePath.UserPath -match ('^(?:[^:]+:)?' + [regex]::Escape($name) + '$')
         }, $true))
-        if ($nodes.Count -ne 1) { throw "Build default changed ($name); review compatibility adapter." }
-        $edits += @{ Start = $nodes[0].Right.Extent.StartOffset; End = $nodes[0].Right.Extent.EndOffset
+        $defaults = @($nodes | Where-Object { $_.Parent -eq $ast.EndBlock -and $_.Left.VariablePath.UserPath -eq $name })
+        if ($defaults.Count -ne 1) { throw "Build default changed ($name); review compatibility adapter." }
+        $node = $defaults[0]
+        $right = $node.Right.Extent.Text
+        $literal = $right -match "^'(?:[^']|'')*'$"
+        if ($node.Operator -ne [Management.Automation.Language.TokenKind]::Equals -or
+            (!$literal -and !($name -eq 'dotnet' -and $right -ceq $candidateDotnet))) {
+            throw "Build default changed ($name); review compatibility adapter."
+        }
+        $otherWrites = @($nodes | Where-Object { $_ -ne $node })
+        if ($otherWrites.Count -gt 1 -or ($name -ne 'dotnet' -and $otherWrites.Count)) {
+            throw "Build assignments changed ($name); review compatibility adapter."
+        }
+        if ($otherWrites.Count) {
+            $fallback = $otherWrites[0]
+            $block = $fallback.Parent.Parent
+            $blockText = $block.Extent.Text.Replace([string][char]13, [string]::Empty)
+            if ($fallback.Extent.Text -cne $fallbackDotnet -or
+                $block -isnot [Management.Automation.Language.IfStatementAst] -or
+                $block.Parent -ne $ast.EndBlock -or $blockText -cnotin $fallbackBlocks) {
+                throw "Build assignments changed ($name); review compatibility adapter."
+            }
+        }
+        $edits += @{ Start = $node.Right.Extent.StartOffset; End = $node.Right.Extent.EndOffset
             Value = "'" + $setting[1].Replace("'", "''") + "'" }
     }
     foreach ($edit in ($edits | Sort-Object Start -Descending)) {
