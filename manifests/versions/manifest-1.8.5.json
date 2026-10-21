@@ -1,0 +1,11 @@
+{
+  "version": "1.8.5",
+  "sha256": "1510c8315bd42cdc38ceadd0c77fed05b8e7f073cabf68aab7860c7ab7be928f",
+  "subDirectory": "",
+  "assets": {
+    "github": "https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/download/v1.8.5/Dafeiyu-GO.1.8.5.zip",
+    "mirrors": []
+  },
+  "notes": "优化 DSH更新/安装流程",
+  "releasedAt": "2026-10-21T15:42:46.5035235Z"
+}
