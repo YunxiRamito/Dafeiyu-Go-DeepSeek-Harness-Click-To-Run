@@ -55,6 +55,7 @@ internal static partial class Program
             }
             if (args.Contains("--local-only"))
             {
+                VerifyProgressReporting();
                 var same = new DshUpdatePackage { Version = "0.2.1-alpha.1" };
                 Assert(!DshUpdateService.ShouldInstall(same, same.Version, false, false), "Automatic checks must not reinstall the same version.");
                 Assert(DshUpdateService.ShouldInstall(same, same.Version, true, false), "Explicit install must repair the same version after an incomplete installation.");
@@ -93,24 +94,25 @@ internal static partial class Program
                         Assert(text.Length <= 16 && !text.Contains("\\") && !text.Contains(".dsh-bundle"), "UI progress stays short and excludes implementation paths.");
                     }
                 foreach (var phase in new (double Value, bool Preparing, string Text)[] {
-                    (-1, true, "正在准备依赖…"), (80, true, "正在检查安装包…"),
+                    (-1, true, "正在准备 DSH…"), (80, true, "正在检查安装包…"),
                     (90, true, "正在整理安装包…"), (100, true, "安装包已就绪"),
-                    (0, false, "正在校验安装包…"), (0.1, false, "正在解压文件…"),
-                    (80, false, "正在解压文件…"), (81, false, "正在检查组件…"),
-                    (84.9, false, "正在检查组件…"), (85, false, "正在安装 DSH…"),
-                    (99, false, "正在安装 DSH…"), (99.59, false, "正在安装 DSH…"),
-                    (99.6, false, "正在清理…"), (99.9, false, "正在清理…"), (100, false, "安装完成") })
+                    (-1, false, "正在解压 DSH…"), (0, false, "正在解压 DSH…"),
+                    (0.1, false, "正在解压 DSH…"), (49.99, false, "正在解压 DSH…"),
+                    (50, false, "正在部署 DSH…"), (52, false, "正在部署 DSH…"),
+                    (60, false, "正在部署 DSH…"), (61.99, false, "正在部署 DSH…"),
+                    (62, false, "正在清理安装文件…"), (80, false, "正在清理安装文件…"),
+                    (99.9, false, "正在清理安装文件…"), (100, false, "DSH 安装完成") })
                     Assert(DshUpdateService.ProgressText(phase.Value, phase.Preparing) == phase.Text, "Documented progress text must match actual phase boundaries.");
-                foreach (string detail in new[] { "准备依赖（已写入1.2 MB）", "解压文件（0/100）", "解压文件（100/100）", "清理（0/2）", "清理（2/2）" })
+                foreach (string detail in new[] { "正在准备 DSH…（已处理 1.2 MB）", "正在解压 DSH…（已解压 0/100 个文件）", "正在解压 DSH…（已解压 100/100 个文件）", "正在清理安装文件…（已清理 0/2 项）", "正在清理安装文件…（已清理 2/2 项）", "解压文件（100/100）", "清理（2/2）" })
                     Assert(DshUpdateService.ProgressText(detail, 99.6, false) == detail, "Real shared progress counters must not be replaced with counterless UI labels.");
                 string cleanupCounted = DafeiyuGo.Shared.DshBundleDeployment.CreateWorkDirectory(fixture, "download", same.Version);
                 string cleanupCountedArchive = Path.Combine(cleanupCounted, "counted.zip");
                 File.WriteAllText(cleanupCountedArchive, "fixture archive");
                 var cleanupCounts = new List<(int Done, int Total)>();
                 DshUpdateService.CleanupPackage(cleanupCountedArchive, null, (done, total) => cleanupCounts.Add((done, total)));
-                Assert(cleanupCounts.Count >= 2 && cleanupCounts[0].Done == 0 && cleanupCounts[0].Total == 2
-                    && cleanupCounts[^1].Done == 2 && cleanupCounts[^1].Total == 2 && !Directory.Exists(cleanupCounted),
-                    "Launcher archive cleanup preserves actual zero/total and completed file counts.");
+                Assert(cleanupCounts.Count >= 2 && cleanupCounts[0].Done == 0 && cleanupCounts[0].Total == 3
+                    && cleanupCounts[^1].Done == 3 && cleanupCounts[^1].Total == 3 && !Directory.Exists(cleanupCounted),
+                    "Launcher archive cleanup includes the payload, ownership marker, and root directory before completion.");
                 string owned = Path.Combine(testRoot, ".dsh-bundle-" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(owned);
                 string invalidArchive = Path.Combine(owned, "broken.zip");
@@ -202,9 +204,17 @@ internal static partial class Program
                 File.WriteAllText(marker, archive);
             }
             Assert(before == JsonSerializer.Serialize(Settings), "Original source/proxy settings mutated.");
-            Assert(archive != null && archive.EndsWith(".zip") && File.Exists(archive + ".manifest.json"), "Expected complete ZIP artifact with manifest.");
-            using (var manifest = JsonDocument.Parse(File.ReadAllText(archive + ".manifest.json")))
+            bool preparedDirectory = archive != null && Directory.Exists(archive);
+            if (preparedDirectory)
             {
+                Assert(DafeiyuGo.Shared.DshBundleDeployment.TryGetPreparedVersion(archive, out string preparedVersion)
+                    && preparedVersion == version, "Expected owned prepared stage for the exact version.");
+                DafeiyuGo.Shared.DshBundleDeployment.ValidateLayout(archive, version);
+            }
+            else
+            {
+                Assert(archive != null && archive.EndsWith(".zip") && File.Exists(archive + ".manifest.json"), "Expected complete ZIP artifact with manifest.");
+                using var manifest = JsonDocument.Parse(File.ReadAllText(archive + ".manifest.json"));
                 var value = manifest.RootElement;
                 Assert(new FileInfo(archive).Length == value.GetProperty("sizeBytes").GetInt64(), "Downloaded size mismatch.");
                 using var input = File.OpenRead(archive);
@@ -232,17 +242,19 @@ internal static partial class Program
                 lock (gate)
                 {
                     Assert(percent >= lastInstall && percent >= 0 && percent <= 100, "Deployment progress regressed or became indeterminate.");
-                    if (percent >= 100) Assert(!File.Exists(archive), "Installation completion must be reported only after owned package cleanup.");
+                    if (percent >= 100) Assert(!File.Exists(archive) && !Directory.Exists(archive), "Installation completion must be reported only after owned package cleanup.");
                     lastInstall = percent; messages.Add(message);
                     Console.WriteLine($"INSTALL {percent:F2}% {message}");
                 }
             }, out string installError), installError);
             Assert(lastInstall == 100, "Deployment never reached 100.");
-            Assert(messages.Any(x => x.StartsWith("解压文件（", StringComparison.Ordinal))
-                && messages.Any(x => x.StartsWith("清理（0/", StringComparison.Ordinal))
-                && messages.Contains("正在安装 DSH…"), "Missing concise extraction/install/cleanup phases with actual counts.");
+            Assert((preparedDirectory || messages.Any(x => x.StartsWith("正在解压 DSH…（", StringComparison.Ordinal)))
+                && messages.Any(x => x.StartsWith("正在清理安装文件…（已清理 0/", StringComparison.Ordinal))
+                && messages.Contains("正在部署 DSH…"), "Missing concise extraction/grouped-deployment/cleanup phases with actual counts.");
             Assert(messages.All(x => !x.Contains(fixture) && !x.Contains(".dsh-bundle")), "UI progress exposes technical paths.");
-            Assert(!File.Exists(archive), "Completed install did not release its owned archive.");
+            Assert(!File.Exists(archive) && !Directory.Exists(archive), "Completed install did not release its owned package.");
+            if (preparedDirectory) Assert(!messages.Any(x => x.StartsWith("正在解压 DSH…（", StringComparison.Ordinal)),
+                "Prepared installation must not create and extract an intermediate ZIP.");
             Assert(DshUpdateService.GetInstalledVersion(fixture) == version, "Installed DSH version incorrect.");
             Assert(!File.Exists(npmTrap), "npm trap ran.");
             foreach (string package in new[] { "docx", "pptxgenjs", "node" })

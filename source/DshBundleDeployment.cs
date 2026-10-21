@@ -18,6 +18,24 @@ namespace DafeiyuGo.Shared
 {
     public static class DshBundleDeployment
     {
+        // Calibrated against the 2026-10-21 local update log: file processing and
+        // cleanup dominate, while metadata/CLI checks and directory moves are brief.
+        public const double PreparationEndPercent = 35;
+        public const double ExtractionEndPercent = 50;
+        public const double CleanupStartPercent = 62;
+        private const double CleanupEndPercent = 99.8;
+
+        public static double PreparationProgress(double percent, bool prepared = false)
+            => percent < 0 ? -1 : Math.Min(1, Math.Max(0, percent) / (prepared ? 80 : 100)) * PreparationEndPercent;
+
+        public static double DeploymentProgress(double percent, bool prepared = false, bool waitForService = false)
+        {
+            if (percent < 0) return -1;
+            // Locally prepared files skip extraction; do not jump over its entire range.
+            double fraction = prepared ? (percent - ExtractionEndPercent) / (100 - ExtractionEndPercent) : percent / 100;
+            return PreparationEndPercent + Math.Min(1, Math.Max(0, fraction)) * ((waitForService ? 98 : 100) - PreparationEndPercent);
+        }
+
         private const string PackageName = "@deepseek-ai/dsh";
         private const string EntryPoint = "node_modules/@deepseek-ai/dsh/lib/bin.js";
         private static readonly string[] AllowedItems = { "node_modules", "package.json", "package-lock.json", "dsh-bundle.json" };
@@ -78,33 +96,83 @@ namespace DafeiyuGo.Shared
         }
 
         public static bool CleanupWorkDirectory(string work, Action<string> log = null, Action<int, int> progress = null)
+            => CleanupWorkDirectories(new[] { work }, log, progress);
+
+        private static bool CleanupWorkDirectories(IEnumerable<string> workDirectories, Action<string> log, Action<int, int> progress)
         {
+            var plans = new List<(string Work, CleanupPlan Plan)>();
+            int offset = 0, total = 0;
+            bool success = true;
+            var cleanupClock = Stopwatch.StartNew();
+            foreach (string candidate in workDirectories.Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    string work = Absolute(candidate);
+                    if (!Directory.Exists(work)) { success = false; continue; }
+                    GuardAncestors(work);
+                    string container = Path.GetDirectoryName(work);
+                    if (!string.Equals(Path.GetFileName(container), "updatepackage", StringComparison.OrdinalIgnoreCase)
+                        || !string.Equals(Path.GetFileName(Path.GetDirectoryName(container)), "temp", StringComparison.OrdinalIgnoreCase)
+                        || File.Exists(Path.Combine(work, RecoveryFile)) || !TryReadOwner(work, out _, out _))
+                    { success = false; continue; }
+                    var plan = new CleanupPlan(work, (done, _) => progress?.Invoke(offset + done, total));
+                    plans.Add((work, plan));
+                    total += plan.Total;
+                }
+                catch (Exception error)
+                {
+                    success = false;
+                    try { log?.Invoke("更新临时目录清理失败：" + candidate + "；" + error.Message); } catch { }
+                }
+            }
+            log?.Invoke("清理扫描完成：" + total + " 项；耗时 " + cleanupClock.Elapsed.TotalSeconds.ToString("F3") + " 秒。");
+            cleanupClock.Restart();
+            foreach (var item in plans)
+            {
+                try
+                {
+                    for (int attempt = 0; ; attempt++)
+                    {
+                        try { item.Plan.Delete(); break; }
+                        catch (Exception error) when ((error is IOException || error is UnauthorizedAccessException) && attempt < 3)
+                        { Thread.Sleep(100 * (attempt + 1)); }
+                    }
+                    string container = Path.GetDirectoryName(item.Work);
+                    try { Directory.Delete(container); Directory.Delete(Path.GetDirectoryName(container)); } catch { }
+                }
+                catch (Exception error)
+                {
+                    success = false;
+                    try { log?.Invoke("更新临时目录清理失败：" + item.Work + "；" + error.Message); } catch { }
+                }
+                offset += item.Plan.Completed;
+            }
+            log?.Invoke("清理删除结束：" + offset + "/" + total + " 项；耗时 " + cleanupClock.Elapsed.TotalSeconds.ToString("F3") + " 秒。");
+            return plans.Count > 0 && success;
+        }
+
+        public static bool TryGetPreparedVersion(string stage, out string version)
+        {
+            version = null;
             try
             {
-                if (string.IsNullOrWhiteSpace(work)) return false;
-                work = Absolute(work);
-                if (!Directory.Exists(work)) return false;
-                GuardAncestors(work);
+                stage = Absolute(stage);
+                GuardAncestors(stage);
+                string work = Path.GetDirectoryName(stage);
                 string container = Path.GetDirectoryName(work);
-                if (!string.Equals(Path.GetFileName(container), "updatepackage", StringComparison.OrdinalIgnoreCase)
+                if (!string.Equals(Path.GetFileName(stage), "package", StringComparison.Ordinal)
+                    || !string.Equals(Path.GetFileName(container), "updatepackage", StringComparison.OrdinalIgnoreCase)
                     || !string.Equals(Path.GetFileName(Path.GetDirectoryName(container)), "temp", StringComparison.OrdinalIgnoreCase)
                     || File.Exists(Path.Combine(work, RecoveryFile)) || !TryReadOwner(work, out _, out _)) return false;
-                var cleanup = new CleanupPlan(work, progress);
-                for (int attempt = 0; ; attempt++)
-                {
-                    try { cleanup.Delete(); break; }
-                    catch (Exception error) when ((error is IOException || error is UnauthorizedAccessException) && attempt < 3)
-                    { Thread.Sleep(100 * (attempt + 1)); }
-                }
-                // Only remove empty containers; unrelated temporary files are never touched.
-                try { Directory.Delete(container); Directory.Delete(Path.GetDirectoryName(container)); } catch { }
+                using var owner = JsonDocument.Parse(File.ReadAllText(Path.Combine(work, OwnerFile)));
+                if (owner.RootElement.GetProperty("phase").GetString() != "prepare") return false;
+                string expected = owner.RootElement.GetProperty("version").GetString();
+                ValidateLayout(stage, expected);
+                version = expected;
                 return true;
             }
-            catch (Exception error)
-            {
-                try { log?.Invoke("更新临时目录清理失败：" + work + "；" + error.Message); } catch { }
-                return false;
-            }
+            catch { return false; }
         }
 
         private static bool TryReadOwner(string work, out int pid, out long started)
@@ -157,51 +225,90 @@ namespace DafeiyuGo.Shared
         }
 
         public static void Deploy(string archive, string manifestJson, string exactVersion, string root, string nodeExe,
-            Action<string, double> progress, CancellationToken token, Action<string> log = null)
+            Action<string, double> progress, CancellationToken token, Action<string> log = null, string downloadWork = null)
         {
             var manifest = ParseManifest(manifestJson, exactVersion);
             root = Absolute(root);
             GuardAncestors(root);
-            string parent = Path.GetDirectoryName(root);
-            if (string.IsNullOrEmpty(parent)) throw new IOException("不能将 DSH 部署到磁盘根目录。");
+            if (string.IsNullOrEmpty(Path.GetDirectoryName(root))) throw new IOException("不能将 DSH 部署到磁盘根目录。");
             token.ThrowIfCancellationRequested();
             string work = CreateWorkDirectory(root, "extract", exactVersion, log);
             string stage = Path.Combine(work, "package");
+            string ownedDownload = null;
+            if (!string.IsNullOrWhiteSpace(downloadWork))
+            {
+                string candidate = Absolute(downloadWork);
+                if (string.Equals(Path.GetDirectoryName(candidate), Path.Combine(root, "temp", "updatepackage"), StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(Path.GetDirectoryName(Absolute(archive)), candidate, StringComparison.OrdinalIgnoreCase)
+                    && TryReadOwner(candidate, out _, out _))
+                {
+                    using var owner = JsonDocument.Parse(File.ReadAllText(Path.Combine(candidate, OwnerFile)));
+                    if (owner.RootElement.GetProperty("phase").GetString() == "download"
+                        && owner.RootElement.GetProperty("version").GetString() == exactVersion) ownedDownload = candidate;
+                }
+            }
+            DeployCore(stage, work, exactVersion, root, nodeExe, progress, token, log, () =>
+            {
+                progress?.Invoke("正在解压 DSH…", 0);
+                log?.Invoke("校验完整包，部署目标：" + root + "；解压暂存：" + stage);
+                ExtractAndValidate(archive, stage, manifest, token, (count, bytes, total, files) =>
+                {
+                    // File count accounts for small-file filesystem overhead; byte count
+                    // accounts for large native modules. Neither alone reflects the workload.
+                    double fraction = (Percent(count, files) * .65 + Percent(bytes, total) * .35) / 100;
+                    progress?.Invoke("正在解压 DSH…（已解压 " + count + "/" + files + " 个文件）", fraction * ExtractionEndPercent);
+                    log?.Invoke("解压至 " + stage + " · " + count + "/" + files + " 文件 · "
+                        + Bytes(bytes) + "/" + Bytes(total) + " · " + Percent(bytes, total).ToString("F1") + "%");
+                });
+            }, ownedDownload);
+        }
+
+        public static void DeployPrepared(string stage, string exactVersion, string root, string nodeExe,
+            Action<string, double> progress, CancellationToken token, Action<string> log = null)
+        {
+            stage = Absolute(stage); root = Absolute(root);
+            GuardAncestors(root);
+            if (!TryGetPreparedVersion(stage, out string version) || version != exactVersion
+                || !string.Equals(Path.GetDirectoryName(Path.GetDirectoryName(stage)), Path.Combine(root, "temp", "updatepackage"), StringComparison.OrdinalIgnoreCase))
+                throw new IOException("DSH 依赖暂存目录不属于本次安装，拒绝提交。");
+            DeployCore(stage, Path.GetDirectoryName(stage), exactVersion, root, nodeExe, progress, token, log, null, null);
+        }
+
+        private static void DeployCore(string stage, string work, string exactVersion, string root, string nodeExe,
+            Action<string, double> progress, CancellationToken token, Action<string> log, Action extract, string downloadWork)
+        {
             bool preserve = false;
             try
             {
-                progress?.Invoke("正在校验…", 0);
-                log?.Invoke("校验完整包，部署目标：" + root + "；解压暂存：" + stage);
-                ExtractAndValidate(archive, stage, manifest, token,
-                    (count, bytes, total, files) => {
-                        progress?.Invoke("解压文件（" + count + "/" + files + "）", Percent(bytes, total) * .80);
-                        log?.Invoke("解压至 " + stage + " · " + count + "/" + files + " 文件 · "
-                            + Bytes(bytes) + "/" + Bytes(total) + " · " + Percent(bytes, total).ToString("F1") + "%");
-                    });
-                progress?.Invoke("正在检查组件…", 82);
+                token.ThrowIfCancellationRequested();
+                extract?.Invoke();
+                if (extract == null) ValidatePreparedTree(stage, token);
+                progress?.Invoke("正在部署 DSH…", ExtractionEndPercent);
+                ValidateLayout(stage, exactVersion);
                 ValidateRuntime(stage, nodeExe, exactVersion, work, token, log);
                 token.ThrowIfCancellationRequested();
                 var protectedPackages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 string runtimeDirectory = Path.GetDirectoryName(Absolute(nodeExe));
                 foreach (string item in DeploymentItems(stage))
                     if (Contains(Path.Combine(root, item), runtimeDirectory)) protectedPackages.Add(item);
-                // An interrupted commit may need its previous files on the next run.
-                // Mark recovery before moving anything so stale cleanup cannot erase them.
                 File.WriteAllText(Path.Combine(work, RecoveryFile), "正在提交安装；如操作中断，请保留 previous 目录。");
                 var commitUpdate = Stopwatch.StartNew();
                 bool commitReported = false;
                 Commit(stage, root, token, (detail, percent) =>
                 {
                     log?.Invoke(detail);
-                    if (!commitReported || percent >= 100 || commitUpdate.ElapsedMilliseconds >= 1000)
+                    if (!commitReported || percent >= 100 || commitUpdate.ElapsedMilliseconds >= 100)
                     {
-                        progress?.Invoke("正在安装…", 85 + percent * .14);
+                        progress?.Invoke("正在部署 DSH…", 52 + percent * .06);
                         commitReported = true; commitUpdate.Restart();
                     }
-                },
-                    () => ValidateRuntime(root, nodeExe, exactVersion, work, token, log), protectedPackages);
+                }, () =>
+                {
+                    progress?.Invoke("正在部署 DSH…", 60);
+                    ValidateRuntime(root, nodeExe, exactVersion, work, token, log);
+                }, protectedPackages);
                 File.Delete(Path.Combine(work, RecoveryFile));
-                log?.Invoke("完整包部署完成；本体安装未启动 npm：" + root);
+                log?.Invoke("DSH 部署完成：" + root);
             }
             catch (RecoveryException)
             {
@@ -215,10 +322,13 @@ namespace DafeiyuGo.Shared
                 if (!preserve)
                 {
                     File.Delete(Path.Combine(work, RecoveryFile));
-                    CleanupWorkDirectory(work, log, (done, total) => progress?.Invoke("清理（" + done + "/" + total + "）", 99.6 + Percent(done, total) * .003));
+                    progress?.Invoke("正在清理安装文件…", CleanupStartPercent);
+                    bool cleaned = CleanupWorkDirectories(new[] { work, downloadWork }, log,
+                        (done, total) => progress?.Invoke("正在清理安装文件…（已清理 " + done + "/" + total + " 项）", CleanupStartPercent + Percent(done, total) * (CleanupEndPercent - CleanupStartPercent) / 100));
+                    if (!cleaned) log?.Invoke("安装文件已处理；部分更新临时文件暂时被占用，已保留归属标记供后续安全重试。");
                 }
             }
-            progress?.Invoke("安装完成", 100);
+            progress?.Invoke("DSH 安装完成", 100);
         }
 
         public static void ExtractAndValidate(string archive, string stage, Manifest manifest, CancellationToken token,
@@ -243,46 +353,72 @@ namespace DafeiyuGo.Shared
                 if (total > 4L * 1024 * 1024 * 1024 || entry.Length > 512L * 1024 * 1024)
                     throw new InvalidDataException("DSH 完整包解压大小超过限制。");
             }
+            // Validate entries before writing. Each bounded worker owns a separate
+            // archive and input stream; ZipArchive instance access is never shared.
             Directory.CreateDirectory(stage);
-            long received = 0; int count = 0;
-            byte[] buffer = new byte[128 * 1024];
-            var update = Stopwatch.StartNew();
-            var yield = Stopwatch.StartNew();
-            progress?.Invoke(0, 0, total, files);
-            // One extraction worker, one reusable buffer, no rescans of node_modules.
+            var entries = zip.Entries.Select((entry, index) => (entry, index))
+                .Where(item => !item.entry.FullName.EndsWith("/", StringComparison.Ordinal)
+                    && !item.entry.FullName.EndsWith(((char)92).ToString(), StringComparison.Ordinal)).Select(item => item.index).ToArray();
+            var directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var entry in zip.Entries)
             {
-                token.ThrowIfCancellationRequested();
-                string relative = ValidateEntry(entry);
+                string relative = entry.FullName.Replace((char)92, '/');
                 string destination = Path.Combine(stage, relative.Replace('/', Path.DirectorySeparatorChar));
-                if (relative.EndsWith("/", StringComparison.Ordinal)) { Directory.CreateDirectory(destination); continue; }
-                Directory.CreateDirectory(Path.GetDirectoryName(destination));
-                using (var input = entry.Open())
-                using (var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write))
-                {
-                    long bytes = 0; int read;
-                    while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
-                    {
-                        token.ThrowIfCancellationRequested();
-                        bytes += read;
-                        if (bytes > entry.Length) throw new InvalidDataException("ZIP 字节数超过条目声明。");
-                        output.Write(buffer, 0, read);
-                        received += read;
-                        if (update.ElapsedMilliseconds >= 1000)
-                        { progress?.Invoke(count, received, total, files); update.Restart(); }
-                        if (yield.ElapsedMilliseconds >= 32)
-                        { Thread.Sleep(4); yield.Restart(); }
-                    }
-                    if (bytes != entry.Length) throw new InvalidDataException("DSH 完整包文件截断。");
-                }
-                count++;
-                if (update.ElapsedMilliseconds >= 1000)
-                { progress?.Invoke(count, received, total, files); update.Restart(); }
-                if (yield.ElapsedMilliseconds >= 32)
-                { Thread.Sleep(4); yield.Restart(); }
+                directories.Add(relative.EndsWith("/", StringComparison.Ordinal) ? destination : Path.GetDirectoryName(destination));
             }
+            foreach (string directory in directories) { token.ThrowIfCancellationRequested(); Directory.CreateDirectory(directory); }
+            long received = 0; int count = 0, next = -1;
+            var update = Stopwatch.StartNew();
+            object progressGate = new object();
+            void Report(bool force = false)
+            {
+                lock (progressGate)
+                {
+                    if (!force && update.ElapsedMilliseconds < 100) return;
+                    progress?.Invoke(Volatile.Read(ref count), Interlocked.Read(ref received), total, files);
+                    update.Restart();
+                }
+            }
+            Report(true);
+            int workers = Math.Min(entries.Length, Math.Min(4, Math.Max(1, Environment.ProcessorCount)));
+            using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
+            Task[] tasks = Enumerable.Range(0, workers).Select(_ => Task.Run(() =>
+            {
+                try
+                {
+                    using var workerZip = ZipFile.OpenRead(archive);
+                    byte[] buffer = new byte[128 * 1024];
+                    int item;
+                    while ((item = Interlocked.Increment(ref next)) < entries.Length)
+                    {
+                        cancellation.Token.ThrowIfCancellationRequested();
+                        var entry = workerZip.Entries[entries[item]];
+                        string relative = entry.FullName.Replace((char)92, '/');
+                        string destination = Path.Combine(stage, relative.Replace('/', Path.DirectorySeparatorChar));
+                        using (var input = entry.Open())
+                        using (var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024))
+                        {
+                            long bytes = 0; int read;
+                            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+                            {
+                                cancellation.Token.ThrowIfCancellationRequested();
+                                bytes += read;
+                                if (bytes > entry.Length) throw new InvalidDataException("ZIP 字节数超过条目声明。");
+                                output.Write(buffer, 0, read);
+                                Interlocked.Add(ref received, read);
+                                Report();
+                            }
+                            if (bytes != entry.Length) throw new InvalidDataException("DSH 完整包文件截断。");
+                        }
+                        Interlocked.Increment(ref count);
+                        Report();
+                    }
+                }
+                catch { cancellation.Cancel(); throw; }
+            })).ToArray();
+            Task.WhenAll(tasks).GetAwaiter().GetResult();
             ValidateLayout(stage, manifest.Version);
-            progress?.Invoke(count, received, total, files);
+            Report(true);
         }
 
         private static string ValidateEntry(ZipArchiveEntry entry)
@@ -291,6 +427,13 @@ namespace DafeiyuGo.Shared
             int unixMode = (entry.ExternalAttributes >> 16) & 0xF000;
             if (path.StartsWith("/", StringComparison.Ordinal) || path.Contains(':') || path.Contains((char)0)
                 || unixMode == 0xA000 || (entry.ExternalAttributes & (int)FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("完整包包含绝对路径或链接。");
+            return ValidateRelativePath(path);
+        }
+
+        private static string ValidateRelativePath(string path)
+        {
+            if (path.StartsWith("/", StringComparison.Ordinal) || path.Contains(':') || path.Contains((char)0))
                 throw new InvalidDataException("完整包包含绝对路径或链接。");
             string[] parts = path.TrimEnd('/').Split('/');
             if (parts.Length == 0 || !AllowedItems.Contains(parts[0], StringComparer.Ordinal)
@@ -302,6 +445,38 @@ namespace DafeiyuGo.Shared
                     || Regex.IsMatch(part.Split('.')[0], @"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
                     throw new InvalidDataException("完整包包含无效或越界路径。");
             return path;
+        }
+
+        private static void ValidatePreparedTree(string stage, CancellationToken token)
+        {
+            // The former ZIP path rejected links/oversized files before any CLI
+            // execution or target writes. Keep that guarantee without making a ZIP.
+            var pending = new Stack<string>(); pending.Push(stage);
+            int files = 0; long total = 0;
+            while (pending.Count > 0)
+            {
+                token.ThrowIfCancellationRequested();
+                string directory = pending.Pop();
+                foreach (var item in new DirectoryInfo(directory).EnumerateFileSystemInfos())
+                {
+                    token.ThrowIfCancellationRequested();
+                    var attributes = item.Attributes;
+                    if ((attributes & FileAttributes.ReparsePoint) != 0)
+                        throw new InvalidDataException("DSH 依赖暂存目录不能包含链接：" + item.FullName);
+                    bool isDirectory = (attributes & FileAttributes.Directory) != 0;
+                    if (isDirectory) pending.Push(item.FullName);
+                    string relative = Path.GetRelativePath(stage, item.FullName).Replace(Path.DirectorySeparatorChar, '/');
+                    // Match the archive builder's tolerance for unrelated transient root files.
+                    if (relative != "node_modules" && !relative.StartsWith("node_modules/", StringComparison.Ordinal)
+                        && relative != "package.json" && relative != "package-lock.json" && relative != "dsh-bundle.json") continue;
+                    ValidateRelativePath(relative + (isDirectory ? "/" : string.Empty));
+                    if (isDirectory) continue;
+                    long length = ((FileInfo)item).Length;
+                    total = checked(total + length);
+                    if (++files > 150000 || length > 512L * 1024 * 1024 || total > 4L * 1024 * 1024 * 1024)
+                        throw new InvalidDataException("DSH 依赖暂存文件数量或大小超过完整包限制。");
+                }
+            }
         }
 
         public static void ValidateLayout(string root, string exactVersion)
@@ -390,7 +565,8 @@ namespace DafeiyuGo.Shared
             string ownedWork = Path.GetDirectoryName(stage);
             bool ownedStage = string.Equals(stage, Path.Combine(ownedWork, "package"), StringComparison.OrdinalIgnoreCase)
                 && string.Equals(Path.GetDirectoryName(ownedWork), Path.Combine(target, "temp", "updatepackage"), StringComparison.OrdinalIgnoreCase)
-                && Path.GetFileName(ownedWork).StartsWith("extract-", StringComparison.Ordinal) && TryReadOwner(ownedWork, out _, out _);
+                && (Path.GetFileName(ownedWork).StartsWith("extract-", StringComparison.Ordinal)
+                    || Path.GetFileName(ownedWork).StartsWith("prepare-", StringComparison.Ordinal)) && TryReadOwner(ownedWork, out _, out _);
             if (Contains(stage, target) || (Contains(target, stage) && !ownedStage)) throw new IOException("DSH 暂存目录与部署目标不能重叠。");
             string bundleJson = File.ReadAllText(Path.Combine(stage, "dsh-bundle.json"));
             using var metadata = JsonDocument.Parse(bundleJson);
@@ -521,13 +697,19 @@ namespace DafeiyuGo.Shared
             return string.Equals(root, path, StringComparison.OrdinalIgnoreCase)
                 || path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
         }
-        private static void GuardAncestors(string path)
+        private static void GuardAncestors(string path, ISet<string> checkedPaths = null)
         {
             string current = Absolute(path);
             while (!string.IsNullOrEmpty(current))
             {
-                if ((Directory.Exists(current) || File.Exists(current)) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
-                    throw new IOException("DSH 部署路径不能穿过链接：" + current);
+                if (checkedPaths != null && !checkedPaths.Add(current)) break;
+                try
+                {
+                    if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                        throw new IOException("DSH 部署路径不能穿过链接：" + current);
+                }
+                catch (FileNotFoundException) { }
+                catch (DirectoryNotFoundException) { }
                 current = Path.GetDirectoryName(current);
             }
         }
@@ -537,68 +719,88 @@ namespace DafeiyuGo.Shared
             private readonly List<string> directories = new List<string>();
             private readonly Action<int, int> progress;
             private readonly Stopwatch update = Stopwatch.StartNew();
-            private readonly Stopwatch yield = Stopwatch.StartNew();
             private int deleted;
             private int directoryIndex;
             private readonly string ownerContents;
+            private bool rootDeleted;
+            public int Total => files.Count + directories.Count;
+            public int Completed => deleted + (directories.Count - 1 - directoryIndex) + (rootDeleted ? 1 : 0);
             public CleanupPlan(string root, Action<int, int> progress)
             {
                 this.progress = progress;
                 var pending = new Stack<string>(); pending.Push(root);
                 string owner = Path.Combine(root, OwnerFile);
+                var checkedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 while (pending.Count > 0)
                 {
                     string directory = pending.Pop();
-                    GuardAncestors(directory);
+                    GuardAncestors(directory, checkedPaths);
                     directories.Add(directory);
-                    foreach (string path in Directory.EnumerateFileSystemEntries(directory))
+                    // Native directory enumeration already returns attributes. Do not
+                    // reopen every file just to query the same metadata a second time.
+                    foreach (var item in new DirectoryInfo(directory).EnumerateFileSystemInfos())
                     {
-                        var attributes = File.GetAttributes(path);
+                        var attributes = item.Attributes;
+                        string path = item.FullName;
                         if ((attributes & FileAttributes.Directory) != 0 && (attributes & FileAttributes.ReparsePoint) == 0) pending.Push(path);
                         else if (!string.Equals(path, owner, StringComparison.OrdinalIgnoreCase)) files.Add(path);
-                        Yield();
                     }
                 }
                 // Preserve proof of ownership until every payload file is removed, including retries.
                 ownerContents = File.ReadAllText(owner);
                 files.Add(owner);
                 directoryIndex = directories.Count - 1;
-                Notify();
             }
             public void Delete()
             {
                 // The final file is the ownership marker. Keep it until all child
                 // directories have also been removed so a failed cleanup can be retried.
+                Notify();
                 while (deleted < files.Count - 1)
                 {
-                    string path = files[deleted];
-                    GuardAncestors(Path.GetDirectoryName(path));
-                    if (File.Exists(path) || Directory.Exists(path))
+                    int start = deleted, end = Math.Min(files.Count - 1, start + 128);
+                    // Check shared parents once per batch instead of walking every
+                    // ancestor separately for each of thousands of tiny files.
+                    var checkedParents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (string parent in files.Skip(start).Take(end - start).Select(Path.GetDirectoryName).Distinct(StringComparer.OrdinalIgnoreCase))
+                        GuardAncestors(parent, checkedParents);
+                    try
                     {
-                        var attributes = File.GetAttributes(path);
-                        if ((attributes & FileAttributes.ReparsePoint) != 0 && (attributes & FileAttributes.Directory) != 0) Directory.Delete(path);
-                        else
+                        Parallel.For(start, end, new ParallelOptions { MaxDegreeOfParallelism = Math.Min(4, Math.Max(1, Environment.ProcessorCount)) }, index =>
                         {
-                            if ((attributes & FileAttributes.ReadOnly) != 0 && (attributes & FileAttributes.ReparsePoint) == 0) File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
-                            File.Delete(path);
-                        }
+                            string path = files[index];
+                            FileAttributes attributes;
+                            try { attributes = File.GetAttributes(path); }
+                            catch (FileNotFoundException) { return; }
+                            catch (DirectoryNotFoundException) { return; }
+                            if ((attributes & FileAttributes.ReparsePoint) != 0 && (attributes & FileAttributes.Directory) != 0) Directory.Delete(path);
+                            else
+                            {
+                                if ((attributes & FileAttributes.ReadOnly) != 0 && (attributes & FileAttributes.ReparsePoint) == 0) File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
+                                File.Delete(path);
+                            }
+                        });
                     }
-                    deleted++;
-                    if (update.ElapsedMilliseconds >= 1000) Notify();
-                    Yield();
+                    catch (AggregateException error) when (error.InnerExceptions.All(item => item is IOException || item is UnauthorizedAccessException))
+                    { throw new IOException("部分更新临时文件暂时被占用。", error); }
+                    deleted = end;
+                    if (update.ElapsedMilliseconds >= 100) Notify();
                 }
+                var checkedDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 while (directoryIndex >= 1)
                 {
+                    if (directoryIndex % 128 == 0) checkedDirectories.Clear();
                     string path = directories[directoryIndex];
-                    if (Directory.Exists(path))
+                    GuardAncestors(path, checkedDirectories);
+                    try
                     {
-                        GuardAncestors(path);
                         var attributes = File.GetAttributes(path);
                         if ((attributes & FileAttributes.ReadOnly) != 0) File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
                         Directory.Delete(path);
                     }
+                    catch (DirectoryNotFoundException) { }
                     directoryIndex--;
-                    Yield();
+                    if (update.ElapsedMilliseconds >= 100) Notify();
                 }
                 if (deleted < files.Count)
                 {
@@ -616,7 +818,7 @@ namespace DafeiyuGo.Shared
                     GuardAncestors(directories[0]);
                     var attributes = File.GetAttributes(directories[0]);
                     if ((attributes & FileAttributes.ReadOnly) != 0) File.SetAttributes(directories[0], attributes & ~FileAttributes.ReadOnly);
-                    try { Directory.Delete(directories[0]); }
+                    try { Directory.Delete(directories[0]); rootDeleted = true; }
                     catch
                     {
                         // Preserve ownership proof if a late write or open directory
@@ -627,16 +829,13 @@ namespace DafeiyuGo.Shared
                         throw;
                     }
                 }
+                rootDeleted = true;
                 Notify();
             }
             private void Notify()
             {
-                try { progress?.Invoke(deleted, files.Count); } catch { }
+                try { progress?.Invoke(Completed, Total); } catch { }
                 update.Restart();
-            }
-            private void Yield()
-            {
-                if (yield.ElapsedMilliseconds >= 32) { Thread.Sleep(4); yield.Restart(); }
             }
         }
         private static double Percent(long done, long total) => total > 0 ? Math.Min(100, done * 100.0 / total) : 100;

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -547,15 +547,15 @@ namespace DeepSeekHarnessLauncher
             if (package == null || String.IsNullOrWhiteSpace(package.Version))
             { error = "DSH 更新版本缺失。"; return false; }
             bool unavailable;
-            var downloadClock = Stopwatch.StartNew();
+            Action<string, double> prepareProgress = ShortProgress(progress, log, true);
+            prepareProgress("初始化更新引擎…", -1);
             if (TryDownloadOfflineBundle(package.Version, settings, (done, total) =>
             {
-                if (done == 0 || done == total || downloadClock.ElapsedMilliseconds >= 2000)
-                { log?.Invoke("DSH 完整包下载：" + done + "/" + total + " 字节"); downloadClock.Restart(); }
-                progress?.Invoke("正在下载安装包…",
+                prepareProgress(DownloadProgressText(done),
                     total > 0 ? Math.Min(100, done * 100.0 / total) : -1);
             },
-                out packagePath, out error, out unavailable)) return true;
+                out packagePath, out error, out unavailable,
+                () => log?.Invoke("正在校验 DSH 安装包…"))) return true;
             // Only an explicit missing manifest authorizes isolated reconstruction.
             // Transport, certificate, archive, and integrity failures stay failures.
             if (!unavailable) return false;
@@ -568,12 +568,8 @@ namespace DeepSeekHarnessLauncher
                 PackageDownloadEnvironment.Apply(process, settings);
                 var environment = new Dictionary<string, string>(process.Environment, StringComparer.OrdinalIgnoreCase);
                 log?.Invoke("DSH " + package.Version + " 没有现成完整包，将在隔离目录准备依赖；现有服务继续运行。");
-                progress?.Invoke("正在准备依赖…", -1);
-                packagePath = DafeiyuGo.Shared.DshNpmBundleBuilder.Build(package.Version, root, node,
-                    ResolveInstallRegistry(settings), environment, ShortProgress(progress, log, true), CancellationToken.None, log);
-                var manifest = DafeiyuGo.Shared.DshBundleDeployment.ParseManifest(
-                    File.ReadAllText(packagePath + ".manifest.json", Encoding.UTF8), package.Version);
-                DafeiyuGo.Shared.DshBundleDeployment.VerifyArchive(packagePath, manifest);
+                packagePath = DafeiyuGo.Shared.DshNpmBundleBuilder.Prepare(package.Version, root, node,
+                    ResolveInstallRegistry(settings), environment, prepareProgress, CancellationToken.None, log);
                 error = null;
                 return true;
             }
@@ -604,7 +600,8 @@ namespace DeepSeekHarnessLauncher
             Action<long, long> progress,
             out string archivePath,
             out string error,
-            out bool unavailable)
+            out bool unavailable,
+            Action verifying = null)
         {
             archivePath = null;
             error = null;
@@ -680,6 +677,8 @@ namespace DeepSeekHarnessLauncher
                         return false;
                     }
 
+                    progress?.Invoke(size, size);
+                    verifying?.Invoke();
                     FileInfo archiveInfo = new FileInfo(targetPath);
                     if (archiveInfo.Length != size
                         || !String.Equals(UpdateSupport.ComputeSha256(targetPath), sha256, StringComparison.OrdinalIgnoreCase))
@@ -692,7 +691,6 @@ namespace DeepSeekHarnessLauncher
                         targetPath + ".manifest.json",
                         manifestText,
                         Encoding.UTF8);
-                    if (progress != null) progress(size, size);
                     archivePath = targetPath;
                     return true;
                 }
@@ -740,7 +738,8 @@ namespace DeepSeekHarnessLauncher
                     Action<string, double> shortProgress = ShortProgress(progress, log, false);
                     DafeiyuGo.Shared.DshBundleDeployment.Deploy(archivePath, manifestText,
                         version, dshRoot, node,
-                        (detail, percent) => shortProgress(detail, Math.Min(99.9, percent)), CancellationToken.None, log);
+                        (detail, percent) => { if (percent < 100) shortProgress(detail, percent); }, CancellationToken.None, log,
+                        downloadWork: OwnedDownloadWorkDirectory(archivePath));
                 }
                 return true;
             }
@@ -754,32 +753,101 @@ namespace DeepSeekHarnessLauncher
         internal static string ProgressText(double percent, bool preparing)
         {
             if (preparing)
-                return percent < 0 ? "正在准备依赖…" : percent < 90 ? "正在检查安装包…"
+                return percent < 0 ? "正在准备 DSH…" : percent < 90 ? "正在检查安装包…"
                     : percent < 100 ? "正在整理安装包…" : "安装包已就绪";
-            return percent <= 0 ? "正在校验安装包…" : percent < 81 ? "正在解压文件…"
-                : percent < 85 ? "正在检查组件…" : percent < 99.6 ? "正在安装 DSH…"
-                : percent < 100 ? "正在清理…" : "安装完成";
+            return percent <= 0 ? "正在解压 DSH…"
+                : percent < DafeiyuGo.Shared.DshBundleDeployment.ExtractionEndPercent ? "正在解压 DSH…"
+                : percent < DafeiyuGo.Shared.DshBundleDeployment.CleanupStartPercent ? "正在部署 DSH…"
+                : percent < 100 ? "正在清理安装文件…" : "DSH 安装完成";
         }
 
-        private static Action<string, double> ShortProgress(Action<string, double> progress, Action<string> log, bool preparing)
+        internal static string OwnedDownloadWorkDirectory(string archivePath)
+        {
+            try
+            {
+                string work = Path.GetDirectoryName(Path.GetFullPath(archivePath));
+                string container = Path.GetDirectoryName(work);
+                if (!String.Equals(Path.GetFileName(container), "updatepackage", StringComparison.OrdinalIgnoreCase)
+                    || !String.Equals(Path.GetFileName(Path.GetDirectoryName(container)), "temp", StringComparison.OrdinalIgnoreCase)
+                    || File.Exists(Path.Combine(work, "recovery-required.txt"))) return null;
+                for (string path = work; !String.IsNullOrEmpty(path); path = Path.GetDirectoryName(path))
+                    if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) return null;
+                string marker = Path.Combine(work, ".dsh-update-owner.json");
+                if (!File.Exists(marker) || new FileInfo(marker).Length > 4096
+                    || (File.GetAttributes(marker) & FileAttributes.ReparsePoint) != 0) return null;
+                using var document = JsonDocument.Parse(File.ReadAllText(marker, Encoding.UTF8));
+                var owner = document.RootElement;
+                string version = owner.GetProperty("version").GetString();
+                string prefix = "download-" + version, name = Path.GetFileName(work);
+                if (owner.GetProperty("kind").GetString() != "DafeiyuGo.DshUpdate"
+                    || owner.GetProperty("phase").GetString() != "download"
+                    || String.IsNullOrEmpty(version) || owner.GetProperty("pid").GetInt32() <= 0
+                    || owner.GetProperty("started").GetInt64() <= 0
+                    || (name != prefix && (!name.StartsWith(prefix + "-", StringComparison.Ordinal)
+                        || !Int32.TryParse(name.Substring(prefix.Length + 1), out int suffix) || suffix < 2))) return null;
+                return work;
+            }
+            catch { return null; }
+        }
+
+        internal static string DownloadProgressText(long bytes)
+            => "已下载（" + (Math.Max(0, bytes) / 1048576.0).ToString("0.0", CultureInfo.InvariantCulture) + " MB）";
+
+        internal static Action<string, double> ShortProgress(Action<string, double> progress, Action<string> log, bool preparing)
         {
             string lastPhase = null;
-            var clock = Stopwatch.StartNew();
+            string lastText = null;
+            double lastPercent = double.NaN;
+            var uiClock = Stopwatch.StartNew();
+            var logClock = Stopwatch.StartNew();
             return (detail, percent) =>
             {
-                string phase = ProgressText(detail, percent, preparing);
-                if (phase != lastPhase || clock.ElapsedMilliseconds >= 2000 || percent >= 100)
-                { log?.Invoke(detail); lastPhase = phase; clock.Restart(); }
-                progress?.Invoke(phase, percent);
+                string text = ProgressText(detail, percent, preparing);
+                int counterStart = text.IndexOf('（');
+                string phase = counterStart < 0 ? text : text.Substring(0, counterStart);
+                bool phaseChanged = phase != lastPhase;
+                bool changed = text != lastText || percent != lastPercent;
+                bool completed = changed && (percent >= 100 || IsCompletedProgressCounter(text));
+                // Counters are data, not a new phase. Updating two windows or writing
+                // a log for every file would compete with the actual disk work.
+                if (phaseChanged || logClock.ElapsedMilliseconds >= 2000 || completed)
+                { log?.Invoke(detail); logClock.Restart(); }
+                if (phaseChanged || completed || uiClock.ElapsedMilliseconds >= 100)
+                {
+                    if (changed) progress?.Invoke(text, percent);
+                    lastText = text; lastPercent = percent; uiClock.Restart();
+                }
+                lastPhase = phase;
             };
+        }
+
+        private static bool IsCompletedProgressCounter(string text)
+        {
+            int start = text.IndexOf('（');
+            if (start < 0 || !text.EndsWith("）", StringComparison.Ordinal)) return false;
+            var counter = System.Text.RegularExpressions.Regex.Match(text.Substring(start), @"^（(?:已解压 |已清理 )?([0-9]+)/([0-9]+)(?: 个文件| 项)?）$");
+            return counter.Success
+                && long.TryParse(counter.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out long done)
+                && long.TryParse(counter.Groups[2].Value, NumberStyles.None, CultureInfo.InvariantCulture, out long total)
+                && total >= 0 && done == total;
         }
 
         internal static string ProgressText(string detail, double percent, bool preparing)
         {
+            if (detail == "初始化更新引擎…" || detail == "正在校验安装包…"
+                || detail == "正在解压 DSH…" || detail == "正在部署 DSH…"
+                || detail == "正在准备 DSH…" || detail == "正在检查组件…"
+                || detail == "正在验证安装文件…" || detail == "正在验证安装…"
+                || detail == "正在清理安装文件…" || detail == "DSH 安装完成" || detail == "DSH 更新完成") return detail;
             if (detail != null && detail.EndsWith("）", StringComparison.Ordinal)
-                && (detail.StartsWith("准备依赖（", StringComparison.Ordinal)
+                && (detail.StartsWith("已下载（", StringComparison.Ordinal)
+                    || detail.StartsWith("正在准备 DSH…（", StringComparison.Ordinal)
+                    || detail.StartsWith("正在解压 DSH…（", StringComparison.Ordinal)
+                    || detail.StartsWith("正在清理安装文件…（", StringComparison.Ordinal)
+                    || detail.StartsWith("准备依赖（", StringComparison.Ordinal)
                     || detail.StartsWith("解压文件（", StringComparison.Ordinal)
-                    || detail.StartsWith("清理（", StringComparison.Ordinal))) return detail;
+                    || detail.StartsWith("清理（", StringComparison.Ordinal)
+                    || detail.StartsWith("清理临时文件（", StringComparison.Ordinal))) return detail;
             return ProgressText(percent, preparing);
         }
 
@@ -788,7 +856,17 @@ namespace DeepSeekHarnessLauncher
             if (String.IsNullOrWhiteSpace(packagePath)) return;
             try
             {
-                string directory = Path.GetDirectoryName(Path.GetFullPath(packagePath));
+                string fullPath = Path.GetFullPath(packagePath);
+                string directory = Path.GetDirectoryName(fullPath);
+                if (Directory.Exists(fullPath))
+                {
+                    // The shared cleanup validates the owner marker, phase, ancestors
+                    // and recovery flag even when a failed preparation has no metadata.
+                    if (Path.GetFileName(fullPath) == "package"
+                        && Path.GetFileName(directory).StartsWith("prepare-", StringComparison.Ordinal))
+                        DafeiyuGo.Shared.DshBundleDeployment.CleanupWorkDirectory(directory, log, progress);
+                    return;
+                }
                 if (DafeiyuGo.Shared.DshBundleDeployment.CleanupWorkDirectory(directory, log, progress)) return;
                 string name = Path.GetFileName(directory);
                 if (name.StartsWith(".dsh-bundle-", StringComparison.Ordinal)
@@ -916,6 +994,32 @@ namespace DeepSeekHarnessLauncher
             out string error,
             Action<string> log = null)
         {
+            if (!String.IsNullOrWhiteSpace(packagePath) && Directory.Exists(packagePath))
+            {
+                bool installed = false;
+                try
+                {
+                    if (!DafeiyuGo.Shared.DshBundleDeployment.TryGetPreparedVersion(packagePath, out string version))
+                        throw new InvalidDataException("DSH 准备目录归属无效或需要恢复，已拒绝部署。");
+                    string node = ResolveCompatibleNode(dshRoot, nodePath, log);
+                    Action<string, double> shortProgress = ShortProgress(progress, log, false);
+                    DafeiyuGo.Shared.DshBundleDeployment.DeployPrepared(packagePath, version, dshRoot, node,
+                        (detail, percent) => { if (percent < 100) shortProgress(detail, percent); }, CancellationToken.None, log);
+                    installed = true;
+                    error = null;
+                }
+                catch (Exception exception)
+                {
+                    error = "DSH 准备目录部署失败：" + exception.Message;
+                }
+                finally
+                {
+                    CleanupPackage(packagePath, log);
+                }
+                if (installed) progress?.Invoke("DSH 安装完成", 100);
+                return installed;
+            }
+
             if (String.IsNullOrWhiteSpace(packagePath)
                 || !File.Exists(packagePath))
             {
@@ -934,9 +1038,11 @@ namespace DeepSeekHarnessLauncher
                 }
                 finally
                 {
-                    CleanupPackage(packagePath, log, (done, total) => progress?.Invoke("清理（" + done + "/" + total + "）", 99.99));
+                    // Deployment aggregates its extraction and download work into
+                    // one cleanup phase. Keep only a silent failure-path fallback.
+                    CleanupPackage(packagePath, log);
                 }
-                if (installed) progress?.Invoke("安装完成", 100);
+                if (installed) progress?.Invoke("DSH 安装完成", 100);
                 return installed;
             }
 

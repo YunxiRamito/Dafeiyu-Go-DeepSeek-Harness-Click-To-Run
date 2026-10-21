@@ -43,7 +43,7 @@ namespace DeepSeekHarnessLauncher
     {
         public const string Title = "Dafeiyu-Go";
         public const string EnglishTitle = "Dafeiyu-Go";
-        public const string Version = "1.8.4";
+        public const string Version = "1.8.5";
         public const string Repository = "YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run";
         public const string LegacyRepository = "YunxiRamito/DSH-Launcher";
         public const string UserAgent = "Dafeiyu-Go/" + Version;
@@ -3738,19 +3738,20 @@ namespace DeepSeekHarnessLauncher
                 UpdateDshUi(
                     UpdateUiActivity.Installing,
                     latest,
-                    "正在准备…",
+                    "初始化更新引擎…",
                     -1,
                     true,
                     String.Empty);
                 ShowUpdateWindow(
                     changingVersion ? "正在更换版本" : "正在更新 DSH",
-                    "正在准备…");
+                    "初始化更新引擎…");
                 UpdateWindow(
                     changingVersion ? "正在更换版本" : "正在更新 DSH",
-                    "正在准备…",
+                    "初始化更新引擎…",
                     -1);
 
                 string downloadError;
+                bool preparingDependencies = false;
                 bool downloaded = DshUpdateService.PreparePackage(
                     package,
                     _settings.NodePath,
@@ -3758,11 +3759,10 @@ namespace DeepSeekHarnessLauncher
                     delegate(string text, double packagePercent)
                     {
                         bool indeterminate = packagePercent < 0;
-                        // 下载和安装共用一条进度条：下载占前半段，安装占后半段，
-                        // 避免下载到 100% 后切回安装 0% 造成明显跳动。
-                        double percent = indeterminate
-                            ? -1
-                            : Math.Min(50.0, Math.Max(0.0, packagePercent * 0.5));
+                        // Keep a larger range for extraction and cleanup, measured in local logs.
+                        if (text != null && (text.StartsWith("正在准备 DSH", StringComparison.Ordinal)
+                            || text.StartsWith("准备依赖", StringComparison.Ordinal))) preparingDependencies = true;
+                        double percent = DafeiyuGo.Shared.DshBundleDeployment.PreparationProgress(packagePercent, preparingDependencies);
                         UpdateDshUi(
                             UpdateUiActivity.Installing,
                             latest,
@@ -3796,17 +3796,19 @@ namespace DeepSeekHarnessLauncher
                     return;
                 }
 
+                bool preparedDirectory = Directory.Exists(packagePath);
+                string deploymentDetail = preparedDirectory ? "正在部署 DSH…" : "正在解压 DSH…";
                 UpdateDshUi(
                     UpdateUiActivity.Installing,
                     latest,
-                    "正在安装…",
-                    50,
+                    deploymentDetail,
+                    DafeiyuGo.Shared.DshBundleDeployment.PreparationEndPercent,
                     false,
                     String.Empty);
                 UpdateWindow(
                     changingVersion ? "正在更换版本" : "正在更新 DSH",
-                    "正在安装…",
-                    50);
+                    deploymentDetail,
+                    DafeiyuGo.Shared.DshBundleDeployment.PreparationEndPercent);
                 StopService();
                 string installError;
                 bool installedOk = DshUpdateService.InstallPackage(
@@ -3816,11 +3818,9 @@ namespace DeepSeekHarnessLauncher
                     DshUpdateService.ResolveInstallRegistry(_settings),
                     delegate(string text, double percent)
                     {
-                        // 文案由进度跟踪器统一给，安装进度映射到下载后的后半段。
-                        // 这里不要再拼第二遍，否则设置页会把同一句话连着显示两遍。
-                        double installPercent = percent < 0
-                            ? -1
-                            : 50.0 + Math.Min(100.0, Math.Max(0.0, percent)) * 0.5;
+                        // Prepared dependencies skip extraction; retain the final 2% for service readiness.
+                        double installPercent = DafeiyuGo.Shared.DshBundleDeployment.DeploymentProgress(
+                            percent, preparedDirectory, waitForService: true);
                         UpdateDshUi(
                             UpdateUiActivity.Installing,
                             latest,
@@ -3841,7 +3841,7 @@ namespace DeepSeekHarnessLauncher
                         0);
                     // 完整归档部署在提交前会校验并保留旧目录；失败时旧版本仍在原位。
                     // 不要为了回滚归档再次启动 npm，避免把失败路径重新拖回生命周期脚本。
-                    if (!String.IsNullOrWhiteSpace(installed)
+                    if (!preparedDirectory && !String.IsNullOrWhiteSpace(installed)
                         && (String.IsNullOrWhiteSpace(packagePath)
                             || !packagePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)))
                     {
@@ -3875,8 +3875,8 @@ namespace DeepSeekHarnessLauncher
                     UpdateDshUi(
                         UpdateUiActivity.Installing,
                         latest,
-                        "正在重启服务…",
-                        100,
+                        "正在启动 DSH…",
+                        98,
                         false,
                         String.Empty);
                     WriteLog((changingVersion ? "DSH 版本更换完成: " : "DSH 更新完成: ") + latest);
@@ -3895,9 +3895,12 @@ namespace DeepSeekHarnessLauncher
                 {
                     UpdateWindow(
                         changingVersion ? "正在更换版本" : "正在更新 DSH",
-                        "等待服务就绪…",
-                        -1);
-                    RestartThreadProc(preserveVersionChangeProgress: changingVersion, dshUpdateOwner: true);
+                        "正在启动 DSH…",
+                        98);
+                    RestartThreadProc(preserveVersionChangeProgress: changingVersion, dshUpdateOwner: true,
+                        dshCompletionTitle: installedOk
+                            ? (String.IsNullOrWhiteSpace(installed) ? "DSH 安装完成" : "DSH 更新完成")
+                            : (changingVersion ? "DSH 版本更换失败，原服务已恢复" : "DSH 更新失败，原服务已恢复"));
                 }
                 if (installedOk)
                 {
@@ -3907,7 +3910,7 @@ namespace DeepSeekHarnessLauncher
                         UpdateDshUi(
                             UpdateUiActivity.UpToDate,
                             latest,
-                            changingVersion ? "版本更换完成" : "已是新版本",
+                            String.IsNullOrWhiteSpace(installed) ? "DSH 安装完成" : "DSH 更新完成",
                             0,
                             false,
                             changingVersion ? "已更换到 v" + latest : String.Empty);
@@ -6368,7 +6371,8 @@ namespace DeepSeekHarnessLauncher
             });
         }
 
-        private void RestartThreadProc(bool preserveVersionChangeProgress = false, bool dshUpdateOwner = false, bool startupClaimed = false)
+        private void RestartThreadProc(bool preserveVersionChangeProgress = false, bool dshUpdateOwner = false, bool startupClaimed = false,
+            string dshCompletionTitle = null)
         {
             if (!startupClaimed && !TryBeginServiceRestart(dshUpdateOwner)) return;
             WriteLog("Restart requested.");
@@ -6378,11 +6382,11 @@ namespace DeepSeekHarnessLauncher
 
             // 重启路径（托盘菜单 / 设置页插件区 / 插件自更新 / DSH 更新后）统一在这里
             // 拉起右下角信息窗口：重启中 -> 已重启 / 重启失败。
-            string initialDetail = dshUpdateOwner ? "正在重启服务…" : restarting
+            string initialDetail = dshUpdateOwner ? "正在启动 DSH…" : restarting
                 ? "正在停止旧的 DSH 服务"
                 : "正在解析 DSH 目录与端口";
-            if (preserveVersionChangeProgress)
-                UpdateWindow("正在更换版本", initialDetail, -1);
+            if (preserveVersionChangeProgress || dshUpdateOwner)
+                UpdateWindow(preserveVersionChangeProgress ? "正在更换版本" : "正在更新 DSH", initialDetail, dshUpdateOwner ? 98 : -1);
             else
                 ShowServiceWindow(restarting, initialDetail);
             try
@@ -6407,11 +6411,11 @@ namespace DeepSeekHarnessLauncher
                 _suppressExitNotification = false;
                 _startupInProgress = true;
 
-                string startDetail = dshUpdateOwner ? "正在重启服务…" : restarting
+                string startDetail = dshUpdateOwner ? "正在启动 DSH…" : restarting
                     ? "已停止旧进程，正在重新拉起"
                     : "正在拉起 DSH 服务进程";
-                if (preserveVersionChangeProgress)
-                    UpdateWindow("正在更换版本", startDetail, -1);
+                if (preserveVersionChangeProgress || dshUpdateOwner)
+                    UpdateWindow(preserveVersionChangeProgress ? "正在更换版本" : "正在更新 DSH", startDetail, dshUpdateOwner ? 98 : -1);
                 else
                     UpdateServiceWindow(startDetail);
                 string startFailureMessage;
@@ -6421,10 +6425,10 @@ namespace DeepSeekHarnessLauncher
                     return;
                 }
 
-                string readyDetail = dshUpdateOwner ? "等待服务就绪…"
+                string readyDetail = dshUpdateOwner ? "正在启动 DSH…"
                     : "等待服务就绪（" + Program.BuildServiceUrl(_port) + "）";
-                if (preserveVersionChangeProgress)
-                    UpdateWindow("正在更换版本", readyDetail, -1);
+                if (preserveVersionChangeProgress || dshUpdateOwner)
+                    UpdateWindow(preserveVersionChangeProgress ? "正在更换版本" : "正在更新 DSH", readyDetail, dshUpdateOwner ? 98 : -1);
                 else
                     UpdateServiceWindow(readyDetail);
                 string failureMessage;
@@ -6436,6 +6440,7 @@ namespace DeepSeekHarnessLauncher
                     return;
                 }
 
+                if (dshUpdateOwner) UpdateWindow(dshCompletionTitle ?? "DSH 更新完成", "服务已就绪", 100);
                 FinishSuccessfulStartup(false);
             }
             catch (Exception exception)

@@ -11,9 +11,9 @@ using DeepSeekHarnessLauncher;
 [assembly: AssemblyCompany("高性能萝卜子鲸鲸有限公司")]
 [assembly: AssemblyDescription("Dafeiyu-Go，面向 DeepSeek Harness 的 Windows 安装、启动与管理工具。")]
 [assembly: AssemblyCopyright("Copyright © 2026 Deepseek/KitamaruRamito")]
-[assembly: AssemblyVersion("1.8.4.0")]
-[assembly: AssemblyFileVersion("1.8.4.0")]
-[assembly: AssemblyInformationalVersion("1.8.4")]
+[assembly: AssemblyVersion("1.8.5.0")]
+[assembly: AssemblyFileVersion("1.8.5.0")]
+[assembly: AssemblyInformationalVersion("1.8.5")]
 
 namespace DeepSeekHarnessBootstrap
 {

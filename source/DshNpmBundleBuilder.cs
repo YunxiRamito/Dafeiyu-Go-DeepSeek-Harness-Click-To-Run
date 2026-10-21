@@ -21,54 +21,17 @@ namespace DafeiyuGo.Shared
         private const string Package = "@deepseek-ai/dsh";
         private const string Entry = "node_modules/@deepseek-ai/dsh/lib/bin.js";
 
+        // Reusable archive output. Normal local installation calls Prepare + DeployPrepared.
         public static string Build(string exactVersion, string root, string nodeExe, string registry,
             IDictionary<string, string> environment, Action<string, double> progress, CancellationToken token, Action<string> log = null)
         {
-            if (string.IsNullOrWhiteSpace(exactVersion) || !Regex.IsMatch(exactVersion, @"^[0-9]+[.][0-9]+[.][0-9]+(?:-[0-9A-Za-z.-]+)?(?:[+][0-9A-Za-z.-]+)?$"))
-                throw new ArgumentException("DSH 构包需要精确版本。");
-            if (string.IsNullOrWhiteSpace(root) || !Path.IsPathFullyQualified(root)) throw new ArgumentException("DSH 安装目录必须是绝对路径。");
-            root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
-            string parent = Path.GetDirectoryName(root);
-            if (string.IsNullOrEmpty(parent)) throw new IOException("不能将 DSH 部署到磁盘根目录。");
-            GuardAncestors(root);
-            if (string.IsNullOrWhiteSpace(nodeExe) || !Path.IsPathFullyQualified(nodeExe) || !File.Exists(nodeExe))
-                throw new FileNotFoundException("未找到所选 Node.js，请选择 Node 22 或 24。", nodeExe);
-            nodeExe = Path.GetFullPath(nodeExe);
-            if (!Uri.TryCreate(registry, UriKind.Absolute, out var registryUri) || registryUri.Scheme != Uri.UriSchemeHttps
-                || !string.IsNullOrEmpty(registryUri.UserInfo) || !string.IsNullOrEmpty(registryUri.Query) || !string.IsNullOrEmpty(registryUri.Fragment))
-                throw new ArgumentException("DSH npm 下载源必须是有效 HTTPS 地址。");
-            token.ThrowIfCancellationRequested();
-            string work = DshBundleDeployment.CreateWorkDirectory(root, "prepare", exactVersion, log);
+            string stage = Prepare(exactVersion, root, nodeExe, registry, environment, progress, token, log);
+            string work = Path.GetDirectoryName(stage);
             bool complete = false;
             try
             {
-                string stage = Path.Combine(work, "package");
-                Directory.CreateDirectory(stage);
-                var env = CreateEnvironment(nodeExe, work, environment);
-                string originalPath = environment != null && environment.TryGetValue("PATH", out string suppliedPath)
-                    ? suppliedPath : Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-                log?.Invoke("安装子进程 PATH 长度：" + originalPath.Length + " → " + env["PATH"].Length + "；所选 Node 目录置首。");
-                string nodeVersion = Run(nodeExe, new[] { "--version" }, stage, env, TimeSpan.FromSeconds(15), token, null).Trim();
-                var majorMatch = Regex.Match(nodeVersion, @"^v(22|24)[.]");
-                if (!majorMatch.Success) throw new InvalidDataException("DSH 安装需要 Node 22/24；所选运行时为 " + nodeVersion + "。请在设置中更换 Node.js 路径。");
-                int nodeMajor = int.Parse(majorMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
-                string npm = FindNpmCli(nodeExe, env);
-                File.WriteAllText(Path.Combine(stage, "package.json"), JsonSerializer.Serialize(new { name = "dafeiyu-dsh-install", version = "1.0.0", @private = true }), new UTF8Encoding(false));
-                log?.Invoke("隔离 npm 构包：DSH " + exactVersion + "；Node " + nodeExe + "；暂存 " + work);
-                using (var written = new WrittenBytesTracker(stage, bytes => progress?.Invoke("准备依赖（已写入"
-                    + (bytes / 1048576.0).ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + " MB）", -1), log))
-                {
-                Run(nodeExe, new[] { npm, "install", Package + "@" + exactVersion, "--save-exact", "--no-audit", "--no-fund",
-                    "--include=optional", "--omit=dev", "--ignore-scripts=false", "--package-lock=true", "--global=false",
-                    "--install-strategy=hoisted", "--foreground-scripts", "--loglevel=notice", "--registry", registryUri.AbsoluteUri },
-                    stage, env, TimeSpan.FromMinutes(20), token, log, written.Pulse);
-                    written.Complete();
-                }
-                File.WriteAllText(Path.Combine(stage, "dsh-bundle.json"), JsonSerializer.Serialize(new {
-                    package = Package, version = exactVersion, platform = "win-x64", nodeMajor, entryPoint = Entry
-                }), new UTF8Encoding(false));
-                progress?.Invoke("正在检查安装包…", 80);
-                DshBundleDeployment.ValidateLayout(stage, exactVersion);
+                using var bundle = JsonDocument.Parse(File.ReadAllText(Path.Combine(stage, "dsh-bundle.json")));
+                int nodeMajor = bundle.RootElement.GetProperty("nodeMajor").GetInt32();
                 DshBundleDeployment.ValidateRuntime(stage, nodeExe, exactVersion, work, token, log);
                 string fileName = "dsh-" + exactVersion + "-win-x64-node" + nodeMajor + ".zip";
                 string archive = Path.Combine(work, fileName);
@@ -85,9 +48,73 @@ namespace DafeiyuGo.Shared
             }
             finally
             {
+                if (!complete) DshBundleDeployment.CleanupWorkDirectory(work, log,
+                    (done, total) => progress?.Invoke("正在清理安装文件…（已清理 " + done + "/" + total + " 项）", -1));
+            }
+        }
+
+        // A successful call transfers ownership of the stage to DeployPrepared or the caller.
+        // Layout is checked here; the deployment path validates runtime before committing.
+        public static string Prepare(string exactVersion, string root, string nodeExe, string registry,
+            IDictionary<string, string> environment, Action<string, double> progress, CancellationToken token, Action<string> log = null)
+        {
+            if (string.IsNullOrWhiteSpace(exactVersion) || !Regex.IsMatch(exactVersion, @"^[0-9]+[.][0-9]+[.][0-9]+(?:-[0-9A-Za-z.-]+)?(?:[+][0-9A-Za-z.-]+)?$"))
+                throw new ArgumentException("DSH 构包需要精确版本。");
+            if (string.IsNullOrWhiteSpace(root) || !Path.IsPathFullyQualified(root)) throw new ArgumentException("DSH 安装目录必须是绝对路径。");
+            root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+            string parent = Path.GetDirectoryName(root);
+            if (string.IsNullOrEmpty(parent)) throw new IOException("不能将 DSH 部署到磁盘根目录。");
+            GuardAncestors(root);
+            if (string.IsNullOrWhiteSpace(nodeExe) || !Path.IsPathFullyQualified(nodeExe) || !File.Exists(nodeExe))
+                throw new FileNotFoundException("未找到所选 Node.js，请选择 Node 22 或 24。", nodeExe);
+            nodeExe = Path.GetFullPath(nodeExe);
+            if (!Uri.TryCreate(registry, UriKind.Absolute, out var registryUri) || registryUri.Scheme != Uri.UriSchemeHttps
+                || !string.IsNullOrEmpty(registryUri.UserInfo) || !string.IsNullOrEmpty(registryUri.Query) || !string.IsNullOrEmpty(registryUri.Fragment))
+                throw new ArgumentException("DSH npm 下载源必须是有效 HTTPS 地址。");
+            token.ThrowIfCancellationRequested();
+            progress?.Invoke("初始化更新引擎…", -1);
+            string work = DshBundleDeployment.CreateWorkDirectory(root, "prepare", exactVersion, log);
+            bool complete = false;
+            try
+            {
+                string stage = Path.Combine(work, "package");
+                Directory.CreateDirectory(stage);
+                var env = CreateEnvironment(nodeExe, work, environment);
+                string originalPath = environment != null && environment.TryGetValue("PATH", out string suppliedPath)
+                    ? suppliedPath : Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+                log?.Invoke("安装子进程 PATH 长度：" + originalPath.Length + " → " + env["PATH"].Length + "；所选 Node 目录置首。");
+                string nodeVersion = Run(nodeExe, new[] { "--version" }, stage, env, TimeSpan.FromSeconds(15), token, null).Trim();
+                var majorMatch = Regex.Match(nodeVersion, @"^v(22|24)[.]");
+                if (!majorMatch.Success) throw new InvalidDataException("DSH 安装需要 Node 22/24；所选运行时为 " + nodeVersion + "。请在设置中更换 Node.js 路径。");
+                int nodeMajor = int.Parse(majorMatch.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+                string npm = FindNpmCli(nodeExe, env);
+                File.WriteAllText(Path.Combine(stage, "package.json"), JsonSerializer.Serialize(new { name = "dafeiyu-dsh-install", version = "1.0.0", @private = true }), new UTF8Encoding(false));
+                log?.Invoke("隔离 npm 安装：DSH " + exactVersion + "；Node " + nodeExe + "；暂存 " + work);
+                using (var written = new WrittenBytesTracker(stage, bytes => progress?.Invoke("正在准备 DSH…（已处理 "
+                    + (bytes / 1048576.0).ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + " MB）", -1), log))
+                {
+                    Run(nodeExe, new[] { npm, "install", Package + "@" + exactVersion, "--save-exact", "--no-audit", "--no-fund",
+                    "--include=optional", "--omit=dev", "--ignore-scripts=false", "--package-lock=true", "--global=false",
+                    "--install-strategy=hoisted", "--foreground-scripts", "--loglevel=notice", "--registry", registryUri.AbsoluteUri },
+                    stage, env, TimeSpan.FromMinutes(20), token, log, written.Pulse);
+                    written.Complete();
+                }
+                File.WriteAllText(Path.Combine(stage, "dsh-bundle.json"), JsonSerializer.Serialize(new {
+                    package = Package, version = exactVersion, platform = "win-x64", nodeMajor, entryPoint = Entry
+                }), new UTF8Encoding(false));
+                progress?.Invoke("正在部署 DSH…", 80);
+                token.ThrowIfCancellationRequested();
+                DshBundleDeployment.ValidateLayout(stage, exactVersion);
+                token.ThrowIfCancellationRequested();
+                log?.Invoke("npm 安装文件已就绪，可直接提交；不生成中间 ZIP 归档。");
+                complete = true;
+                return stage;
+            }
+            finally
+            {
                 if (!complete)
                 {
-                    DshBundleDeployment.CleanupWorkDirectory(work, log, (done, total) => progress?.Invoke("清理（" + done + "/" + total + "）", -1));
+                    DshBundleDeployment.CleanupWorkDirectory(work, log, (done, total) => progress?.Invoke("正在清理安装文件…（已清理 " + done + "/" + total + " 项）", -1));
                 }
             }
         }
@@ -212,16 +239,21 @@ namespace DafeiyuGo.Shared
             }
         }
 
-        // File system notifications only queue paths. Metadata is sampled at most once per
-        // second on the existing process-wait worker, never on a recursive polling timer.
+        // Notifications only queue paths. Sample at most four times per second on the
+        // existing worker. Reconcile dropped notifications once; only a missing watcher
+        // falls back to bounded full snapshots, no more than once every two seconds.
         private sealed class WrittenBytesTracker : IDisposable
         {
             private readonly string root;
             private readonly Action<long> progress;
             private readonly Action<string> log;
             private readonly ConcurrentDictionary<string, byte> changed = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+            private readonly ConcurrentDictionary<string, byte> movedDirectories = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
             private readonly Dictionary<string, long> sizes = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            private readonly HashSet<string> knownDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             private readonly Stopwatch update = Stopwatch.StartNew();
+            private readonly Stopwatch recovery = Stopwatch.StartNew();
+            private long nextRecoveryMilliseconds;
             private FileSystemWatcher watcher;
             private long bytes;
             private int overflow;
@@ -231,29 +263,88 @@ namespace DafeiyuGo.Shared
                 try
                 {
                     watcher = new FileSystemWatcher(root) { IncludeSubdirectories = true,
-                        NotifyFilter = NotifyFilters.FileName | NotifyFilters.Size | NotifyFilters.LastWrite, InternalBufferSize = 64 * 1024 };
+                        NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.Size | NotifyFilters.LastWrite, InternalBufferSize = 64 * 1024 };
                     watcher.Created += Changed; watcher.Changed += Changed; watcher.Deleted += Changed;
-                    watcher.Renamed += (sender, item) => { Queue(item.OldFullPath); Queue(item.FullPath); };
+                    watcher.Renamed += (sender, item) =>
+                    {
+                        Queue(item.OldFullPath); Queue(item.FullPath);
+                        movedDirectories.TryAdd(item.OldFullPath, 0); movedDirectories.TryAdd(item.FullPath, 0);
+                    };
                     watcher.Error += (sender, item) => Interlocked.Exchange(ref overflow, 1);
                     watcher.EnableRaisingEvents = true;
                 }
                 catch (Exception error) when (error is IOException || error is ArgumentException || error is PlatformNotSupportedException)
-                { watcher?.Dispose(); watcher = null; Interlocked.Exchange(ref overflow, 1); }
+                { watcher?.Dispose(); watcher = null; nextRecoveryMilliseconds = 2000; }
+                knownDirectories.Add(root);
                 foreach (string path in Directory.EnumerateFiles(root)) Queue(path);
                 Drain();
                 progress?.Invoke(bytes);
             }
-            private void Changed(object sender, FileSystemEventArgs item) => Queue(item.FullPath);
+            private void Changed(object sender, FileSystemEventArgs item)
+            {
+                Queue(item.FullPath);
+                // Moving a populated directory from outside the watched root is a
+                // Created event. Resolve its type later on the sampling worker.
+                if (item.ChangeType == WatcherChangeTypes.Created || item.ChangeType == WatcherChangeTypes.Deleted)
+                    movedDirectories.TryAdd(item.FullPath, 0);
+            }
             private void Queue(string path) { changed.TryAdd(path, 0); }
             public void Pulse()
             {
-                if (update.ElapsedMilliseconds < 1000) return;
+                if (update.ElapsedMilliseconds < 250) return;
+                if ((watcher == null || Volatile.Read(ref overflow) != 0)
+                    && recovery.ElapsedMilliseconds >= nextRecoveryMilliseconds)
+                {
+                    Interlocked.Exchange(ref overflow, 0);
+                    RebuildSnapshot();
+                    nextRecoveryMilliseconds = recovery.ElapsedMilliseconds + 2000;
+                    log?.Invoke(watcher == null ? "文件通知不可用，已按两秒最小间隔核对依赖进度。"
+                        : "依赖文件通知溢出，已单次核对并恢复实时进度。");
+                }
                 Drain();
                 progress?.Invoke(bytes);
                 update.Restart();
             }
             private void Drain()
             {
+                var checkedDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                // npm may rename a fully populated directory. Windows reports the
+                // directory rename, not a Created event for every contained file.
+                var scannedDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (string moved in movedDirectories.Keys)
+                {
+                    if (!movedDirectories.TryRemove(moved, out _)) continue;
+                    if (!Directory.Exists(moved))
+                    {
+                        // Unknown missing paths are usually short-lived npm files,
+                        // not deleted directories. Never scan all known files for them.
+                        if (!knownDirectories.Remove(moved)) continue;
+                        string prefix = moved + Path.DirectorySeparatorChar;
+                        knownDirectories.RemoveWhere(directory => directory.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+                        foreach (string previous in sizes.Keys)
+                            if (previous.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) Queue(previous);
+                        continue;
+                    }
+                    var pending = new Stack<string>(); pending.Push(moved);
+                    while (pending.Count > 0)
+                    {
+                        string directory = pending.Pop();
+                        if (!scannedDirectories.Add(directory)) continue;
+                        try
+                        {
+                            if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0) continue;
+                            knownDirectories.Add(directory);
+                            foreach (string entry in Directory.EnumerateFileSystemEntries(directory))
+                            {
+                                var attributes = File.GetAttributes(entry);
+                                if ((attributes & FileAttributes.ReparsePoint) != 0) continue;
+                                if ((attributes & FileAttributes.Directory) != 0) pending.Push(entry); else Queue(entry);
+                            }
+                        }
+                        catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
+                        { Interlocked.Exchange(ref overflow, 1); }
+                    }
+                }
                 foreach (string path in changed.Keys)
                 {
                     if (!changed.TryRemove(path, out _)) continue;
@@ -262,8 +353,17 @@ namespace DafeiyuGo.Shared
                     {
                         if (File.Exists(path))
                         {
-                            GuardAncestors(path);
-                            length = new FileInfo(path).Length;
+                            string directory = Path.GetDirectoryName(path);
+                            while (!string.IsNullOrEmpty(directory) && !checkedDirectories.Contains(directory))
+                            {
+                                if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+                                    throw new IOException("依赖进度路径不能穿过目录链接：" + directory);
+                                checkedDirectories.Add(directory);
+                                knownDirectories.Add(directory);
+                                directory = Path.GetDirectoryName(directory);
+                            }
+                            var file = new FileInfo(path);
+                            if ((file.Attributes & FileAttributes.ReparsePoint) == 0) length = file.Length;
                         }
                     }
                     catch (Exception error) when (error is IOException || error is UnauthorizedAccessException) { continue; }
@@ -272,25 +372,43 @@ namespace DafeiyuGo.Shared
                     if (length == 0) sizes.Remove(path); else sizes[path] = length;
                 }
             }
+            private void RebuildSnapshot()
+            {
+                // Clear before walking so concurrent notifications remain queued.
+                // Drain then re-stats them against this new baseline without double counting.
+                changed.Clear(); movedDirectories.Clear(); sizes.Clear(); knownDirectories.Clear();
+                bytes = 0; GuardAncestors(root);
+                var pending = new Stack<string>(); pending.Push(root);
+                while (pending.Count > 0)
+                {
+                    string directory = pending.Pop();
+                    try
+                    {
+                        if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0) continue;
+                        knownDirectories.Add(directory);
+                        foreach (string path in Directory.EnumerateFileSystemEntries(directory))
+                        {
+                            try
+                            {
+                                var info = new FileInfo(path);
+                                var attributes = info.Attributes;
+                                if ((attributes & FileAttributes.ReparsePoint) != 0) continue;
+                                if ((attributes & FileAttributes.Directory) != 0) pending.Push(path);
+                                else { long length = info.Length; sizes[path] = length; bytes += length; }
+                            }
+                            catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
+                            { Interlocked.Exchange(ref overflow, 1); }
+                        }
+                    }
+                    catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
+                    { Interlocked.Exchange(ref overflow, 1); }
+                }
+            }
             public void Complete()
             {
                 if (watcher != null) watcher.EnableRaisingEvents = false;
-                // One final walk reconciles dropped notifications and files moved as a
-                // whole directory; normal progress never rescans node_modules.
-                long actual = 0; var pending = new Stack<string>(); pending.Push(root);
-                while (pending.Count > 0)
-                {
-                    string directory = pending.Pop(); GuardAncestors(directory);
-                    foreach (string path in Directory.EnumerateFileSystemEntries(directory))
-                    {
-                        var attributes = File.GetAttributes(path);
-                        if ((attributes & FileAttributes.ReparsePoint) != 0) continue;
-                        if ((attributes & FileAttributes.Directory) != 0) pending.Push(path);
-                        else actual += new FileInfo(path).Length;
-                    }
-                }
-                bytes = actual;
-                if (Volatile.Read(ref overflow) != 0) log?.Invoke("依赖写入通知不完整，已在安装结束时单次核对实际文件大小；未启用递归轮询。");
+                // Final exact snapshot also reconciles files moved during the last sample.
+                RebuildSnapshot();
                 progress?.Invoke(bytes);
             }
             public void Dispose() { watcher?.Dispose(); }
@@ -325,6 +443,7 @@ namespace DafeiyuGo.Shared
         private static void CreateArchive(string stage, string archive, CancellationToken token)
         {
             using var zip = ZipFile.Open(archive, ZipArchiveMode.Create);
+            byte[] buffer = new byte[128 * 1024];
             var pending = new Stack<string>(); pending.Push(stage);
             while (pending.Count > 0)
             {
@@ -341,7 +460,7 @@ namespace DafeiyuGo.Shared
                         && name != "package.json" && name != "package-lock.json" && name != "dsh-bundle.json") continue;
                     var entry = zip.CreateEntry(name, CompressionLevel.Fastest);
                     using var input = File.OpenRead(path); using var output = entry.Open();
-                    byte[] buffer = new byte[128 * 1024]; int count;
+                    int count;
                     while ((count = input.Read(buffer, 0, buffer.Length)) > 0) { token.ThrowIfCancellationRequested(); output.Write(buffer, 0, count); }
                 }
             }

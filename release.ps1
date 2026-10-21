@@ -8,9 +8,10 @@ param(
     [string]$DotnetPath,
     [string]$NuGetCache,
     [string]$Proxy = 'http://127.0.0.1:7890',
-    [ValidateSet('Focused','Full')][string]$TestMode = 'Focused',
+    [ValidateSet('Focused','Full','DshInstall')][string]$TestMode = 'Focused',
     [string]$FocusedSdkNodeModules,
     [string]$FocusedPnpmPath,
+    [string]$DshInstallNodePath,
     [string]$Otp,
     [switch]$NoManifest,
     [switch]$FunctionsOnly
@@ -87,6 +88,133 @@ function Invoke-LocalFocusedChecks {
     # Keep the report and runner; the SDK junction is not part of the acceptance artifact.
     Remove-Item -LiteralPath (Join-Path $fixture 'node_modules') -Force
     [ordered]@{report=(New-LocalReleaseInput $report); runner=(New-LocalReleaseInput $runner); core=$core; inputs=$inputs; passed=12}
+}
+
+function Invoke-DshInstallNative {
+    param([string]$File, [string[]]$Arguments, [string]$Log)
+    & $File @Arguments 2>&1 | Tee-Object -FilePath $Log | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "DSH installation check failed ($LASTEXITCODE). Log: $Log" }
+}
+
+function Invoke-LocalDshInstallChecks {
+    param([string]$Root,[string]$Snapshot,[string]$Run,[string]$Dist,[string]$DotnetPath,[string]$NodePath)
+    if (-not $NodePath) { $NodePath = 'G:/DeepSeek DSH/node_modules/node/bin/node.exe' }
+    $NodePath = (Resolve-Path -LiteralPath $NodePath -ErrorAction Stop).Path
+    $output = Join-Path $Run 'dsh-install'
+    if ($Run -match '^[cC]:' -or $NodePath -match '^[cC]:' -or (Test-Path -LiteralPath $output)) {
+        throw 'DshInstall requires a fresh project-drive output directory and a non-C Node runtime.'
+    }
+    $npm = $env:DSH_BUILDER_TEST_NPM_CLI
+    if (-not $npm) {
+        $directories = @(); $directory = Split-Path $NodePath -Parent
+        for ($depth=0; $depth -lt 4 -and $directory; $depth++) { $directories += $directory; $directory=Split-Path $directory -Parent }
+        $npmCommand = Get-Command npm -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($npmCommand -and $npmCommand.Source) { $directories += Split-Path $npmCommand.Source -Parent }
+        foreach ($directory in $directories) {
+            foreach ($relative in @('node_modules/npm/bin/npm-cli.js','npm/bin/npm-cli.js','npm-cli.js','lib/node_modules/npm/bin/npm-cli.js')) {
+                $candidate=Join-Path $directory $relative
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) { $npm=$candidate; break }
+            }
+            if ($npm) { break }
+        }
+    }
+    if (-not $npm) { throw 'DshInstall requires an existing real npm-cli.js; set DSH_BUILDER_TEST_NPM_CLI if discovery cannot find it.' }
+    $npm = (Resolve-Path -LiteralPath $npm -ErrorAction Stop).Path
+    New-Item -ItemType Directory -Path $output -Force | Out-Null
+    $relativeInputs = @('release.ps1','verify.ps1','source/build-winui.ps1','source/DeepSeekHarness.csproj','source/WinUIProgram.cs')
+    foreach ($suite in @('DshBundle','DshNpmBundle')) {
+        $suiteDirectory=Join-Path $Root "tests/$suite.Regression"
+        $relativeInputs += Get-ChildItem -LiteralPath $suiteDirectory -File | Where-Object Extension -In @('.cs','.csproj') | ForEach-Object {
+            "tests/$suite.Regression/" + $_.Name
+        }
+        [xml]$project=Get-Content -LiteralPath (Join-Path $suiteDirectory "$suite.Regression.csproj") -Raw
+        foreach ($compile in $project.SelectNodes('/Project/ItemGroup/Compile[@Include]')) {
+            $source=[IO.Path]::GetFullPath((Join-Path $suiteDirectory $compile.Include))
+            $relativeInputs += [IO.Path]::GetRelativePath($Root,$source).Replace('\','/')
+        }
+    }
+    $inputs = @($relativeInputs | Sort-Object -Unique | ForEach-Object {
+        if ($_ -match '^\.\./|^[A-Za-z]:|^/') { throw 'DshInstall source input escaped its repository.' }
+        $input=New-LocalReleaseInput (Join-Path $Root $_)
+        $input.relative=$_
+        $input.gitBlob=Get-ReleaseGit $Root @('hash-object',('--path='+$_),'--',$input.path)
+        # build-winui.ps1 has the reviewed SDK/cache adapter applied only in the disposable snapshot.
+        if ($_ -ne 'source/build-winui.ps1') {
+            $snapshotInput=New-LocalReleaseInput (Join-Path $Snapshot $_)
+            if ((Get-ReleaseGit $Root @('hash-object',('--path='+$_),'--',$snapshotInput.path)) -cne $input.gitBlob) {
+                throw 'DshInstall snapshot source differs from captured input.'
+            }
+        }
+        $input
+    })
+    $runtimeInputs=@(New-LocalReleaseInput $DotnetPath; New-LocalReleaseInput $NodePath; New-LocalReleaseInput $npm)
+    $npmManifest=Join-Path (Split-Path (Split-Path $npm -Parent) -Parent) 'package.json'
+    $runtimeInputs += New-LocalReleaseInput $npmManifest
+    $core=New-LocalReleaseInput (Join-Path $Dist 'DeepSeek Harness.Core.dll')
+    # npm lifecycle uses cmd.exe and needs a short working directory even when the release journal path is long.
+    $scratchParent=[IO.Path]::GetFullPath($Run)
+    while ($scratchParent -and (Split-Path $scratchParent -Leaf) -ne 'Temp_SetupandLauncher') { $scratchParent=Split-Path $scratchParent -Parent }
+    if (-not $scratchParent) { throw 'DshInstall must run beneath a project Temp_SetupandLauncher directory.' }
+    $scratch=Join-Path $scratchParent ('DI/'+[guid]::NewGuid().ToString('N').Substring(0,8))
+    New-Item -ItemType Directory -Path $scratch -ErrorAction Stop | Out-Null
+    $variables=@{DAFEIYU_BUNDLE_TEST_ROOT=(Join-Path $scratch 'B');DAFEIYU_BUNDLE_TEST_NODE=$NodePath;
+        DAFEIYU_BUNDLE_TEST_UNSUPPORTED_NODE=$null;DSH_BUILDER_TEST_NPM_CLI=$npm;TEMP=(Join-Path $output 'temp');TMP=(Join-Path $output 'temp')}
+    $saved=@{}; $artifacts=@(); $results=@()
+    try {
+        foreach ($name in $variables.Keys) {
+            $saved[$name]=[Environment]::GetEnvironmentVariable($name,'Process')
+            [Environment]::SetEnvironmentVariable($name,$variables[$name],'Process')
+        }
+        New-Item -ItemType Directory -Path $variables.TEMP -Force | Out-Null
+        $nodeVersion=(& $NodePath --version | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $nodeVersion -notmatch '^v(?:22|24)\.') { throw 'DshInstall requires a supported Node 22/24 executable.' }
+        foreach ($suite in @('DshBundle','DshNpmBundle')) {
+            $suiteOutput=Join-Path $output $suite
+            $runnerOutput=Join-Path $suiteOutput 'runner'
+            New-Item -ItemType Directory -Path $suiteOutput -Force | Out-Null
+            $suiteProjectPath=Join-Path $Snapshot "tests/$suite.Regression/$suite.Regression.csproj"
+            $buildLog=Join-Path $suiteOutput 'build.log'; $runLog=Join-Path $suiteOutput 'run.log'
+            Invoke-DshInstallNative $DotnetPath @('build',$suiteProjectPath,'-c','Release','--output',$runnerOutput,
+                '--configfile',(Join-Path $Snapshot 'source/NuGet.config'),'-p:UseSharedCompilation=false',
+                ('-p:BaseIntermediateOutputPath='+(Join-Path $suiteOutput 'obj')+[IO.Path]::DirectorySeparatorChar)) $buildLog
+            $assembly=if ($suite -eq 'DshBundle') { 'DshBundle.Regression.dll' } else { 'DshNpmBundleRegression.dll' }
+            $runner=Join-Path $runnerOutput $assembly
+            $arguments=if ($suite -eq 'DshBundle') { @($runner,'--local-only') } else { @($runner,(Join-Path $scratch 'N'),$NodePath) }
+            # Run the actual built DLL directly; never dotnet run, GUI or a real DSH/npm install.
+            Invoke-DshInstallNative $DotnetPath $arguments $runLog
+            $text=[IO.File]::ReadAllText($runLog)
+            if ($suite -eq 'DshBundle') {
+                $metrics=Join-Path $variables.DAFEIYU_BUNDLE_TEST_ROOT 'launcher-bundle-result.json'
+                if ((Get-Content -LiteralPath $metrics -Raw | ConvertFrom-Json).success -ne $true -or
+                    $text -notmatch 'PASS ZIP/prepared progress mapping' -or $text -notmatch 'PASS truthful installation phases') {
+                    throw 'DshBundle did not produce successful local installation results.'
+                }
+                $savedMetrics=Join-Path $suiteOutput 'launcher-bundle-result.json'
+                Copy-Item -LiteralPath $metrics -Destination $savedMetrics
+                $artifacts += New-LocalReleaseInput $savedMetrics
+                $results += [ordered]@{name='DshBundle.LocalOnly';exitCode=0;passed=$true}
+            } else {
+                $summary=[regex]::Match($text,'(?m)^PASS (\d+) DSH npm bundle builder checks; no real npm install or network used\.')
+                if (-not $summary.Success -or [int]$summary.Groups[1].Value -ne 90) { throw 'DshNpmBundle must complete its 90 real offline checks.' }
+                $results += [ordered]@{name='DshNpmBundle.Offline90';exitCode=0;passed=$true;checks=90}
+            }
+            foreach ($path in @($buildLog,$runLog) + @(Get-ChildItem -LiteralPath $runnerOutput -File | ForEach-Object FullName)) {
+                $artifacts += New-LocalReleaseInput $path
+            }
+        }
+        foreach ($input in @($inputs) + @($runtimeInputs)) {
+            $current=New-LocalReleaseInput $input.path
+            if ($current.sha256 -cne $input.sha256 -or $current.bytes -ne $input.bytes) { throw 'DshInstall input changed during acceptance.' }
+        }
+        $report=Join-Path $output 'dsh-install-report.json'
+        Write-ReleaseJson $report ([ordered]@{schema=1;profile='DshInstall';executionMode='SourceLinked';success=$true;
+            sourceCommit=(Get-ReleaseGit $Root @('rev-parse','HEAD'));nodeVersion=$nodeVersion;suites=$results;
+            inputs=$inputs;runtimeInputs=$runtimeInputs;artifacts=$artifacts;core=$core})
+        [ordered]@{schema=1;profile='DshInstall';report=(New-LocalReleaseInput $report);inputs=$inputs;runtimeInputs=$runtimeInputs;artifacts=$artifacts;core=$core}
+    } finally {
+        foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name,$saved[$name],'Process') }
+        Remove-ReleaseScratch $scratch $scratchParent
+    }
 }
 
 function Invoke-ReleaseNative {
@@ -214,8 +342,9 @@ function Assert-LocalReleaseReceipt {
         throw 'Invalid local acceptance receipt.'
     }
     $mode = if ($receipt.PSObject.Properties['testMode']) { $receipt.testMode } else { 'Full' }
-    if ($mode -cnotin @('Focused','Full')) { throw 'Unknown acceptance test mode.' }
+    if ($mode -cnotin @('Focused','Full','DshInstall')) { throw 'Unknown acceptance test mode.' }
     $expected = if ($mode -eq 'Focused') { @('ManagedConnectionPlugins.Compiled12','verify') }
+        elseif ($mode -eq 'DshInstall') { @('DshBundle.LocalOnly','DshNpmBundle.Offline90','verify') }
         else { @((Get-LocalReleaseSuites) + @('StartupUpdateOwnership', 'RuntimeBootstrap.Compiled', 'verify')) }
     if (@(Compare-Object $expected @($receipt.checks)).Count -or $receipt.checks.Count -ne $expected.Count) {
         throw 'Receipt checks differ from the explicitly selected test mode.'
@@ -236,13 +365,52 @@ function Assert-LocalReleaseReceipt {
         $report = Get-Content -LiteralPath $receipt.focused.report.path -Raw | ConvertFrom-Json
         if ($report.passed -ne 12 -or $report.failed -ne 0 -or $report.checks.Count -ne 12 -or
             $report.coreSha256.ToLowerInvariant() -cne $receipt.focused.core.sha256) { throw 'Focused report/Core binding differs.' }
+    }
+    if ($mode -eq 'DshInstall') {
+        $proof=$receipt.dshInstall
+        if ($null -eq $proof -or $proof.schema -ne 1 -or $proof.profile -cne 'DshInstall' -or
+            $proof.inputs.Count -lt 20 -or $proof.runtimeInputs.Count -lt 4 -or $proof.artifacts.Count -lt 8) {
+            throw 'DshInstall acceptance proof is incomplete.'
+        }
+        foreach ($input in @($proof.inputs) + @($proof.runtimeInputs) + @($proof.artifacts) + @($proof.report,$proof.core)) {
+            $actual=New-LocalReleaseInput $input.path
+            if ($actual.sha256 -cne $input.sha256 -or $actual.bytes -ne $input.bytes) { throw 'DshInstall input or result changed.' }
+        }
+        foreach ($input in $proof.inputs) {
+            if (-not $input.relative -or $input.relative -match '^\.\./|^[A-Za-z]:|^/|(^|/)\.\.(/|$)') { throw 'Invalid DshInstall source input.' }
+            $sourcePath=Join-Path $Root $input.relative
+            if ($input.gitBlob -cnotmatch '^[a-f0-9]{40}$' -or
+                (Get-ReleaseGit $Root @('hash-object',('--path='+$input.relative),'--',$sourcePath)) -cne $input.gitBlob) {
+                throw 'DshInstall proof does not match accepted source.'
+            }
+        }
+        foreach ($relative in @('release.ps1','source/WinUIProgram.cs','source/DshUpdateService.cs','source/DshBundleDeployment.cs','source/DshNpmBundleBuilder.cs',
+            'tests/DshBundle.Regression/Program.cs','tests/DshBundle.Regression/ProgressChecks.cs','tests/DshNpmBundle.Regression/Program.cs')) {
+            if ($relative -cnotin @($proof.inputs.relative)) { throw 'DshInstall required source input is missing.' }
+        }
+        $report=Get-Content -LiteralPath $proof.report.path -Raw | ConvertFrom-Json
+        if ($report.schema -ne 1 -or $report.profile -cne 'DshInstall' -or $report.executionMode -cne 'SourceLinked' -or
+            $report.success -ne $true -or $report.sourceCommit -cne $receipt.commit -or $report.suites.Count -ne 2 -or
+            $report.suites[0].name -cne 'DshBundle.LocalOnly' -or $report.suites[1].name -cne 'DshNpmBundle.Offline90' -or
+            @($report.suites | Where-Object { $_.exitCode -ne 0 -or $_.passed -ne $true }).Count -or
+            $report.suites[1].checks -ne 90 -or $report.core.sha256 -cne $proof.core.sha256) {
+            throw 'DshInstall report does not prove both successful installation suites.'
+        }
+        foreach ($name in @('inputs','runtimeInputs','artifacts','core')) {
+            if (($report.$name | ConvertTo-Json -Depth 20 -Compress) -cne ($proof.$name | ConvertTo-Json -Depth 20 -Compress)) {
+                throw 'DshInstall report/input binding differs.'
+            }
+        }
+    }
+    if ($mode -in @('Focused','DshInstall')) {
+        $acceptedCore=if ($mode -eq 'Focused') { $receipt.focused.core.sha256 } else { $receipt.dshInstall.core.sha256 }
         $zip = [IO.Compression.ZipFile]::OpenRead($receipt.zipPath)
         try {
             $core = @($zip.Entries | Where-Object FullName -CEQ 'DeepSeek Harness.Core.dll')
             if ($core.Count -ne 1) { throw 'Accepted ZIP must contain the tested Core once.' }
             $stream=$core[0].Open(); $sha=[Security.Cryptography.SHA256]::Create()
             try { $hash=[Convert]::ToHexString($sha.ComputeHash($stream)).ToLowerInvariant() } finally { $stream.Dispose();$sha.Dispose() }
-            if ($hash -cne $receipt.focused.core.sha256) { throw 'ZIP Core differs from the actual focused test candidate.' }
+            if ($hash -cne $acceptedCore) { throw 'ZIP Core differs from the accepted test candidate.' }
         } finally { $zip.Dispose() }
     }
     $receipt
@@ -306,7 +474,7 @@ function Set-SnapshotBuildSettings {
 
 function Invoke-LocalReleaseBuild {
     param([string]$Root, [string]$WorkRoot, [string]$DotnetPath,
-        [ValidateSet('Focused','Full')][string]$TestMode='Focused',[string]$FocusedSdkNodeModules,[string]$FocusedPnpmPath)
+        [ValidateSet('Focused','Full','DshInstall')][string]$TestMode='Focused',[string]$FocusedSdkNodeModules,[string]$FocusedPnpmPath,[string]$DshInstallNodePath)
     Assert-ReleaseClean $Root
     $commit = Get-ReleaseGit $Root @('rev-parse', 'HEAD')
     [xml]$project = Get-Content -LiteralPath (Join-Path $Root 'source/DeepSeekHarness.csproj') -Raw
@@ -333,10 +501,13 @@ function Invoke-LocalReleaseBuild {
             $build = Join-Path $snapshot 'source/build-winui.ps1'
             Set-SnapshotBuildSettings $build $DotnetPath $env:NUGET_PACKAGES
             Invoke-ReleaseNative $pwsh @('-NoProfile', '-File', $build, '-OutputDirectory', $dist)
-            $focused = $null
+            $focused = $null; $dshInstall = $null
             if ($TestMode -eq 'Focused') {
                 $focused = Invoke-LocalFocusedChecks $Root $snapshot $run $dist $DotnetPath $FocusedSdkNodeModules $FocusedPnpmPath
                 $checks += 'ManagedConnectionPlugins.Compiled12'
+            } elseif ($TestMode -eq 'DshInstall') {
+                $dshInstall = Invoke-LocalDshInstallChecks $Root $snapshot $run $dist $DotnetPath $DshInstallNodePath
+                $checks += @('DshBundle.LocalOnly','DshNpmBundle.Offline90')
             } else {
                 Invoke-ReleaseNative $DotnetPath @('run', '--project', 'tests/StartupUpdateOwnership.Regression/StartupUpdateOwnership.Regression.csproj', '-c', 'Release', '-p:UseSharedCompilation=false', '--', $dist)
                 $checks += 'StartupUpdateOwnership'
@@ -348,7 +519,7 @@ function Invoke-LocalReleaseBuild {
             Assert-ReleaseClean $Root $commit
             $zip = Join-Path $run "Dafeiyu-GO $version.zip"
             Compress-Archive -Path (Join-Path $dist '*') -DestinationPath $zip -CompressionLevel Optimal
-            $receipt = [ordered]@{ schema = 1; version = $version; commit = $commit; checks = $checks; testMode=$TestMode; focused=$focused
+            $receipt = [ordered]@{ schema = 1; version = $version; commit = $commit; checks = $checks; testMode=$TestMode; focused=$focused; dshInstall=$dshInstall
                 zipPath = $zip; sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
                 acceptedAt = [DateTime]::UtcNow.ToString('o') }
             $receiptPath = Join-Path $run 'acceptance.json'
@@ -381,7 +552,7 @@ if (-not $NuGetCache) {
     }
 }
 Invoke-LocalReleaseEnvironment $WorkRoot $Proxy $NuGetCache {
-    $receiptPath = Invoke-LocalReleaseBuild $PSScriptRoot $WorkRoot $DotnetPath $TestMode $FocusedSdkNodeModules $FocusedPnpmPath
+    $receiptPath = Invoke-LocalReleaseBuild $PSScriptRoot $WorkRoot $DotnetPath $TestMode $FocusedSdkNodeModules $FocusedPnpmPath $DshInstallNodePath
     if ($Publish) {
         & (Join-Path $PSScriptRoot 'publish-release.ps1') -ReceiptPath $receiptPath -Repository $Repository -WorkRoot $WorkRoot -Proxy $Proxy -Otp $Otp -PushCommit:$PushCommit
     } else {

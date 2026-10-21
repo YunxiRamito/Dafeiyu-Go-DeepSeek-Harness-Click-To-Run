@@ -130,6 +130,8 @@ try
     }
     Check(before.SequenceEqual(File.ReadAllBytes(sentinel)) && Directory.GetFileSystemEntries(target).Length == 1, "in-flight cancellation preserves existing target");
     Check(!Directory.EnumerateDirectories(sandbox, ".dsh-bundle-*").Any(), "in-flight cancellation cleans owned stage completely");
+    TrackerProbe.Validate(sandbox, Check);
+    PreparedProbe.Validate(sandbox, fixtureNode, adjacentNpm, fixtureEnvironment, Check);
     string realNpm = Environment.GetEnvironmentVariable("DSH_BUILDER_TEST_NPM_CLI");
     if (string.IsNullOrWhiteSpace(realNpm) || !File.Exists(realNpm))
         throw new FileNotFoundException("Set DSH_BUILDER_TEST_NPM_CLI to an existing real npm-cli.js for the offline lifecycle regression.");
