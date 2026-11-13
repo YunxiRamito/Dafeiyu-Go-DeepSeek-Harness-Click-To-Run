@@ -8,14 +8,18 @@ param(
     [string]$DotnetPath,
     [string]$NuGetCache,
     [string]$Proxy = 'http://127.0.0.1:7890',
-    [ValidateSet('Focused','Full','DshInstall')][string]$TestMode = 'Focused',
+    [ValidateSet('Focused','Full','DshInstall','Launcher186')][string]$TestMode = 'Focused',
     [string]$FocusedSdkNodeModules,
     [string]$FocusedPnpmPath,
     [string]$DshInstallNodePath,
+    [string]$Launcher186NodePath,
+    [string]$Launcher186CordisEntry,
     [string]$Otp,
     [switch]$NoManifest,
     [switch]$FunctionsOnly
 )
+
+. (Join-Path $PSScriptRoot 'tools/Launcher186Acceptance.ps1')
 
 function Get-LocalReleaseSuites {
     @('PluginUpdateCompare', 'PluginInstallRepair', 'PatchSystem', 'SettingsSearch',
@@ -276,6 +280,7 @@ function Invoke-LocalReleaseEnvironment {
         NUGET_PACKAGES = $(if ($NuGetCache) { [IO.Path]::GetFullPath($NuGetCache) } else { Join-Path $WorkRoot 'nuget/packages' })
         NUGET_HTTP_CACHE_PATH = (Join-Path $WorkRoot 'nuget/http')
         NUGET_PLUGINS_CACHE_PATH = (Join-Path $WorkRoot 'nuget/plugins')
+        NUGET_SCRATCH = (Join-Path $WorkRoot 'nuget/scratch')
         npm_config_cache = (Join-Path $WorkRoot 'npm-cache')
         npm_config_update_notifier = 'false'
         HTTP_PROXY = $Proxy; HTTPS_PROXY = $Proxy; ALL_PROXY = $Proxy
@@ -289,7 +294,7 @@ function Invoke-LocalReleaseEnvironment {
     foreach ($name in $values.Keys) { $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
     try {
         foreach ($name in $values.Keys) { [Environment]::SetEnvironmentVariable($name, $values[$name], 'Process') }
-        foreach ($name in @('TEMP', 'DOTNET_CLI_HOME', 'NUGET_PACKAGES', 'NUGET_HTTP_CACHE_PATH', 'NUGET_PLUGINS_CACHE_PATH', 'npm_config_cache')) {
+        foreach ($name in @('TEMP', 'DOTNET_CLI_HOME', 'NUGET_PACKAGES', 'NUGET_HTTP_CACHE_PATH', 'NUGET_PLUGINS_CACHE_PATH', 'NUGET_SCRATCH', 'npm_config_cache')) {
             New-Item -ItemType Directory -Path $values[$name] -Force | Out-Null
         }
         & $Action
@@ -342,9 +347,10 @@ function Assert-LocalReleaseReceipt {
         throw 'Invalid local acceptance receipt.'
     }
     $mode = if ($receipt.PSObject.Properties['testMode']) { $receipt.testMode } else { 'Full' }
-    if ($mode -cnotin @('Focused','Full','DshInstall')) { throw 'Unknown acceptance test mode.' }
+    if ($mode -cnotin @('Focused','Full','DshInstall','Launcher186')) { throw 'Unknown acceptance test mode.' }
     $expected = if ($mode -eq 'Focused') { @('ManagedConnectionPlugins.Compiled12','verify') }
         elseif ($mode -eq 'DshInstall') { @('DshBundle.LocalOnly','DshNpmBundle.Offline90','verify') }
+        elseif ($mode -eq 'Launcher186') { @('DshStartup','NativeDshProcessQuery','DshPortResolver','ServiceStartup','DsHarnessRemote','DsHarnessRemote.Runtime','verify') }
         else { @((Get-LocalReleaseSuites) + @('StartupUpdateOwnership', 'RuntimeBootstrap.Compiled', 'verify')) }
     if (@(Compare-Object $expected @($receipt.checks)).Count -or $receipt.checks.Count -ne $expected.Count) {
         throw 'Receipt checks differ from the explicitly selected test mode.'
@@ -402,8 +408,9 @@ function Assert-LocalReleaseReceipt {
             }
         }
     }
-    if ($mode -in @('Focused','DshInstall')) {
-        $acceptedCore=if ($mode -eq 'Focused') { $receipt.focused.core.sha256 } else { $receipt.dshInstall.core.sha256 }
+    if ($mode -eq 'Launcher186') { Assert-Launcher186Proof $Root $receipt }
+    if ($mode -in @('Focused','DshInstall','Launcher186')) {
+        $acceptedCore=if ($mode -eq 'Focused') { $receipt.focused.core.sha256 } elseif ($mode -eq 'DshInstall') { $receipt.dshInstall.core.sha256 } else { $receipt.launcher186.core.sha256 }
         $zip = [IO.Compression.ZipFile]::OpenRead($receipt.zipPath)
         try {
             $core = @($zip.Entries | Where-Object FullName -CEQ 'DeepSeek Harness.Core.dll')
@@ -474,7 +481,7 @@ function Set-SnapshotBuildSettings {
 
 function Invoke-LocalReleaseBuild {
     param([string]$Root, [string]$WorkRoot, [string]$DotnetPath,
-        [ValidateSet('Focused','Full','DshInstall')][string]$TestMode='Focused',[string]$FocusedSdkNodeModules,[string]$FocusedPnpmPath,[string]$DshInstallNodePath)
+        [ValidateSet('Focused','Full','DshInstall','Launcher186')][string]$TestMode='Focused',[string]$FocusedSdkNodeModules,[string]$FocusedPnpmPath,[string]$DshInstallNodePath,[string]$Launcher186NodePath,[string]$Launcher186CordisEntry)
     Assert-ReleaseClean $Root
     $commit = Get-ReleaseGit $Root @('rev-parse', 'HEAD')
     [xml]$project = Get-Content -LiteralPath (Join-Path $Root 'source/DeepSeekHarness.csproj') -Raw
@@ -501,13 +508,16 @@ function Invoke-LocalReleaseBuild {
             $build = Join-Path $snapshot 'source/build-winui.ps1'
             Set-SnapshotBuildSettings $build $DotnetPath $env:NUGET_PACKAGES
             Invoke-ReleaseNative $pwsh @('-NoProfile', '-File', $build, '-OutputDirectory', $dist)
-            $focused = $null; $dshInstall = $null
+            $focused = $null; $dshInstall = $null; $launcher186 = $null
             if ($TestMode -eq 'Focused') {
                 $focused = Invoke-LocalFocusedChecks $Root $snapshot $run $dist $DotnetPath $FocusedSdkNodeModules $FocusedPnpmPath
                 $checks += 'ManagedConnectionPlugins.Compiled12'
             } elseif ($TestMode -eq 'DshInstall') {
                 $dshInstall = Invoke-LocalDshInstallChecks $Root $snapshot $run $dist $DotnetPath $DshInstallNodePath
                 $checks += @('DshBundle.LocalOnly','DshNpmBundle.Offline90')
+            } elseif ($TestMode -eq 'Launcher186') {
+                $launcher186 = Invoke-Launcher186Checks $Root $snapshot $run $dist $DotnetPath $Launcher186NodePath $Launcher186CordisEntry
+                $checks += @('DshStartup','NativeDshProcessQuery','DshPortResolver','ServiceStartup','DsHarnessRemote','DsHarnessRemote.Runtime')
             } else {
                 Invoke-ReleaseNative $DotnetPath @('run', '--project', 'tests/StartupUpdateOwnership.Regression/StartupUpdateOwnership.Regression.csproj', '-c', 'Release', '-p:UseSharedCompilation=false', '--', $dist)
                 $checks += 'StartupUpdateOwnership'
@@ -519,7 +529,7 @@ function Invoke-LocalReleaseBuild {
             Assert-ReleaseClean $Root $commit
             $zip = Join-Path $run "Dafeiyu-GO $version.zip"
             Compress-Archive -Path (Join-Path $dist '*') -DestinationPath $zip -CompressionLevel Optimal
-            $receipt = [ordered]@{ schema = 1; version = $version; commit = $commit; checks = $checks; testMode=$TestMode; focused=$focused; dshInstall=$dshInstall
+            $receipt = [ordered]@{ schema = 1; version = $version; commit = $commit; checks = $checks; testMode=$TestMode; focused=$focused; dshInstall=$dshInstall; launcher186=$launcher186
                 zipPath = $zip; sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
                 acceptedAt = [DateTime]::UtcNow.ToString('o') }
             $receiptPath = Join-Path $run 'acceptance.json'
@@ -552,7 +562,7 @@ if (-not $NuGetCache) {
     }
 }
 Invoke-LocalReleaseEnvironment $WorkRoot $Proxy $NuGetCache {
-    $receiptPath = Invoke-LocalReleaseBuild $PSScriptRoot $WorkRoot $DotnetPath $TestMode $FocusedSdkNodeModules $FocusedPnpmPath $DshInstallNodePath
+    $receiptPath = Invoke-LocalReleaseBuild $PSScriptRoot $WorkRoot $DotnetPath $TestMode $FocusedSdkNodeModules $FocusedPnpmPath $DshInstallNodePath $Launcher186NodePath $Launcher186CordisEntry
     if ($Publish) {
         & (Join-Path $PSScriptRoot 'publish-release.ps1') -ReceiptPath $receiptPath -Repository $Repository -WorkRoot $WorkRoot -Proxy $Proxy -Otp $Otp -PushCommit:$PushCommit
     } else {

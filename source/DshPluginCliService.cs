@@ -805,6 +805,19 @@ namespace DeepSeekHarnessLauncher
             }
 
             result.CommandLine = startInfo.FileName + " " + startInfo.Arguments;
+            if (!desktop)
+            {
+                // The official CLI resolves pnpm from its child PATH. Match the
+                // launcher's component selection instead of an unrelated global
+                // installation. Desktop carriers provide their own manager.
+                string pnpm = PackageManagerRunner.LocatePnpm(settings);
+                if (!String.IsNullOrWhiteSpace(pnpm))
+                {
+                    string directory = Path.GetDirectoryName(Path.GetFullPath(pnpm));
+                    startInfo.Environment.TryGetValue("PATH", out string inheritedPath);
+                    startInfo.Environment["PATH"] = directory + Path.PathSeparator + inheritedPath;
+                }
+            }
             ProxySupport.ApplyProcessEnvironment(startInfo);
             try { PackageDownloadEnvironment.Apply(startInfo, downloadSettings); }
             catch (Exception exception)

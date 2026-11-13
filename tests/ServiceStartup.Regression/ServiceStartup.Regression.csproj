@@ -1,12 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../source/DshPortResolver.cs" Link="DshPortResolver.cs" />
-    <Compile Include="../../source/PowerShellRunner.cs" Link="PowerShellRunner.cs" />
+    <Compile Include="../../source/NativeDshProcessQuery.cs" Link="NativeDshProcessQuery.cs" />
+    <Compile Include="../../source/DshStartupCompatibility.cs" Link="DshStartupCompatibility.cs" />
+    <PackageReference Include="System.Management" Version="8.0.0" />
   </ItemGroup>
 </Project>

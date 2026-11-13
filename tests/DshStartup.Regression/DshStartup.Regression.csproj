@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../source/DshStartupDiagnostics.cs" Link="DshStartupDiagnostics.cs" />
+    <Compile Include="../../source/DshStartupCompatibility.cs" Link="DshStartupCompatibility.cs" />
+    <None Include="fixtures/session-pwsh.original.js" CopyToOutputDirectory="PreserveNewest" TargetPath="session-pwsh.original.js" />
+    <None Include="fixtures/feedback5.sanitized.txt" CopyToOutputDirectory="PreserveNewest" TargetPath="feedback5.sanitized.txt" />
+  </ItemGroup>
+</Project>

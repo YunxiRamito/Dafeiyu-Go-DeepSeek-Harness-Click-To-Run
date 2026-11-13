@@ -1,0 +1,2 @@
+# The compatibility gate verifies the exact bytes of the official npm module.
+session-pwsh.original.js -text

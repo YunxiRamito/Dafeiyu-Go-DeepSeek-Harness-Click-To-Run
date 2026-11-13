@@ -1,0 +1,8 @@
+[fixture] ERR dsh: startup failed: 4 required plugins did not activate
+[fixture] ERR Failed plugins (23):
+[fixture] ERR plugin-manager
+[fixture] ERR Package: @deepseek-ai/dsh-plugin-manager
+[fixture] ERR TypeError: Cannot read properties of null (reading 'entry')
+[fixture] ERR     at loaderCtx.on.global (file:///fixture/node_modules/dsh-ops/lib/session-pwsh.js:19:25)
+[fixture] ERR     at Object.apply (file:///fixture/node_modules/@deepseek-ai/cordis/lib/index.js:1508:20)
+[fixture] ERR     at Proxy.waterfall (file:///fixture/node_modules/@deepseek-ai/cordis/lib/index.js:917:10)

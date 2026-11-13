@@ -13,11 +13,13 @@ param(
 )
 
 # Import definitions only, so the library's parameters cannot overwrite this command's switches.
-$libraryTokens = $null; $libraryErrors = $null
-$library = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'release.ps1'), [ref]$libraryTokens, [ref]$libraryErrors)
-if ($libraryErrors.Count) { throw 'release.ps1 syntax errors.' }
-foreach ($definition in $library.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.FunctionDefinitionAst] }) {
-    . ([scriptblock]::Create($definition.Extent.Text))
+foreach ($file in @('release.ps1', 'tools/Launcher186Acceptance.ps1')) {
+    $libraryTokens = $null; $libraryErrors = $null
+    $library = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $file), [ref]$libraryTokens, [ref]$libraryErrors)
+    if ($libraryErrors.Count) { throw "$file syntax errors." }
+    foreach ($definition in $library.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.FunctionDefinitionAst] }) {
+        . ([scriptblock]::Create($definition.Extent.Text))
+    }
 }
 
 function Test-ReleaseTarball {

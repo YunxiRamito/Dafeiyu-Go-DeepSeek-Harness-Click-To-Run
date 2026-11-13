@@ -1,890 +1,178 @@
-﻿using System;
-using System.IO;
+using System;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.UI.Dispatching;
-using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media.Animation;
-using Microsoft.UI.Xaml.Media.Imaging;
-using Windows.ApplicationModel.DataTransfer;
 
 namespace DeepSeekHarnessLauncher
 {
     internal sealed partial class SettingsWindow
     {
-        private ISettingsConnectionClient _connectionsClient;
-        private ConnectionStateSnapshot _connectionState;
-        private ConnectionPairingInvitation _connectionInvitation;
-        private DispatcherQueueTimer _connectionsRefreshTimer;
-        private DispatcherQueueTimer _connectionsInvitationTimer;
-        private CancellationTokenSource _connectionsCancellation;
-        private int _connectionsGeneration;
-        private bool _connectionsInitialized;
-        private bool _connectionsPageActive;
-        private bool _connectionsStateBusy;
-        private int _connectionsStateRevision;
-        private bool _connectionsActionBusy;
-        private bool _connectionsDialogBusy;
-        private bool _applyingConnectionState;
-        private bool _connectionUriEdited;
-        private bool _connectionsFirstVisit;
-        private bool _connectionPairFlyoutOpen;
-        private int _connectionPairFlyoutVersion;
-        private CancellationTokenSource _connectionPairFlyoutCancellation;
-        private Task _connectionPairingTask = Task.CompletedTask;
-        private bool _connectionPairStateChecking;
-        private bool _connectionInvitationGenerating;
-        private TextBlock _connectionServerSummary;
-        private readonly ManagedConnectionPluginUiState _connectPluginUi = new ManagedConnectionPluginUiState();
-        private readonly ManagedConnectionPluginUiState _mobilePluginUi = new ManagedConnectionPluginUiState();
-        private bool _managedPluginsInspectBusy;
-        private bool _managedPluginsActionBusy;
-        private sealed class ManagedConnectionPluginUiState
-        {
-            internal bool Loaded;
-            internal bool Installed;
-            internal string Version;
-            internal string Error;
-            internal string UpdateAvailableVersion;
-        }
-
-        private void BuildConnectionSections()
-        {
-            if (_connectionServerSummary != null) return;
-            var sync = (StackPanel)ConnectionSyncCard.Child;
-            sync.ChildrenTransitions = new TransitionCollection
-                { new EntranceThemeTransition(), new RepositionThemeTransition(), new AddDeleteThemeTransition() };
-            foreach (var child in sync.Children)
-                if (child is Grid row)
-                {
-                    row.ChildrenTransitions = new TransitionCollection
-                        { new EntranceThemeTransition(), new RepositionThemeTransition(), new AddDeleteThemeTransition() };
-                    foreach (var content in row.Children)
-                        if (content is StackPanel panel)
-                            panel.ChildrenTransitions = new TransitionCollection
-                                { new EntranceThemeTransition(), new RepositionThemeTransition(), new AddDeleteThemeTransition() };
-                }
-            ((TextBlock)sync.Children[0]).Text = "连接服务";
-            var status = (StackPanel)((Grid)((StackPanel)ConnectionStatusCard.Child).Children[0]).Children[1];
-            ((TextBlock)status.Children[0]).Text = "设备详情";
-            foreach (var card in new[] { ConnectionPairingCard, ConnectionStatusCard, ConnectionSyncCard, ConnectionServerCard })
-                ConnectionsPage.Children.Remove(card);
-            ConnectionsPage.Children.Remove(ConnectionActionNotice);
-
-            var sections = new StackPanel { Spacing = 16 };
-            sections.ChildrenTransitions = new TransitionCollection { new EntranceThemeTransition(), new RepositionThemeTransition() };
-            Grid.SetRow(sections, 3);
-            _connectionServerSummary = new TextBlock { Text = "服务器 · 尚未连接", TextWrapping = TextWrapping.Wrap };
-            var pairing = new StackPanel { Spacing = 8 };
-            pairing.Children.Add(_connectionServerSummary);
-            pairing.Children.Add(ConnectionPairingCard);
-            sections.Children.Add(pairing);
-            sections.Children.Add(ConnectionStatusCard);
-            sections.Children.Add(ConnectionSyncCard);
-            var advancedContent = new StackPanel { Spacing = 16 };
-            advancedContent.Children.Add(ConnectionServerCard);
-            sections.Children.Add(new Expander { Header = "高级设置", HorizontalAlignment = HorizontalAlignment.Stretch,
-                HorizontalContentAlignment = HorizontalAlignment.Stretch, Content = advancedContent });
-            sections.Children.Add(ConnectionActionNotice);
-            ConnectionsPage.Children.Add(sections);
-            while (ConnectionsPage.RowDefinitions.Count > 4)
-                ConnectionsPage.RowDefinitions.RemoveAt(ConnectionsPage.RowDefinitions.Count - 1);
-        }
-
-        private bool HasConnectionPeer => _connectionState?.HasRemotePeer == true;
-        private bool HasConnectionPair => HasConnectionPeer || _connectionState?.HasPairMembership == true;
-        private bool CanCancelConnectionPair => _connectionState?.CanCancelPairing == true
-            && _connectionsClient?.CanUnpair == true;
-        private bool ConnectionClientAvailable => _connectionsClient != null && _connectionsClient.IsAvailable;
-        private bool ConnectionReady => _connectionsCancellation != null && _connectionsPageActive && !_settingsClosed && !_settingsDestroyed;
-        private bool ConnectionControlsBusy => _connectionsActionBusy || _connectionsDialogBusy || _managedPluginsActionBusy;
+        private bool _remotePageActive;
+        private bool _remoteBusy;
+        private bool _remoteReleased;
+        private int _remoteRevision;
+        private CancellationTokenSource _remoteCancellation;
+        private DsHarnessRemoteService.State _remoteState;
 
         private void InitializeConnectionsPage()
         {
-            if (_connectionsInitialized) return;
-            BuildConnectionSections();
-            _connectionsRefreshTimer = DispatcherQueue.CreateTimer();
-            _connectionsRefreshTimer.Interval = TimeSpan.FromSeconds(3);
-            _connectionsRefreshTimer.Tick += ConnectionsRefreshTimer_Tick;
-            _connectionsInvitationTimer = DispatcherQueue.CreateTimer();
-            _connectionsInvitationTimer.Interval = TimeSpan.FromSeconds(1);
-            _connectionsInvitationTimer.Tick += ConnectionsInvitationTimer_Tick;
-            SettingsRoot.Loaded += ConnectionsRoot_Loaded;
-            SettingsRoot.Unloaded += ConnectionsRoot_Unloaded;
-            _appWindow.Changed += ConnectionsAppWindow_Changed;
-            _connectionsClient = new SettingsConnectionClient(_host.AriesService, _settings);
-            ConnectionServerUriBox.Text = _settings.AriesServerUrl ?? String.Empty;
-            ConnectionDeviceNameText.Text = "尚未连接其他设备";
-            ConnectionPreferencesHintText.Text = "连接后自动同步本机 DSH 工作区与对话，并广播 DSH 网页。";
-            _connectionsInitialized = true;
-            UpdateConnectionsControls();
+            ApplyRemoteTransitions(ConnectionsPage);
+            RemoteVersionText.Text = "适配版本 " + DsHarnessRemoteService.SupportedVersion;
+            UpdateRemoteControls();
         }
 
-        internal void ConfigureConnectionClient(ISettingsConnectionClient client)
+        private static void ApplyRemoteTransitions(DependencyObject element)
         {
-            StopConnectionsRefresh();
-            _connectionsClient = client;
-            ApplyConnectionState(new ConnectionStateSnapshot { ServerUri = _settings.AriesServerUrl });
-            UpdateConnectionsControls();
-            if (_connectionsPageActive) StartConnectionsRefresh();
+            if (element is Panel panel)
+            {
+                panel.ChildrenTransitions = new TransitionCollection { new EntranceThemeTransition(), new RepositionThemeTransition(), new AddDeleteThemeTransition() };
+                foreach (var child in panel.Children) ApplyRemoteTransitions(child);
+            }
+            else if (element is Border border && border.Child != null) ApplyRemoteTransitions(border.Child);
+            else if (element is ContentControl control && control.Content is DependencyObject content) ApplyRemoteTransitions(content);
         }
-
-        private void ConnectionsRoot_Loaded(object sender, RoutedEventArgs args)
-        {
-            if (_connectionsPageActive) StartConnectionsRefresh();
-        }
-
-        private void ConnectionsRoot_Unloaded(object sender, RoutedEventArgs args) => StopConnectionsRefresh();
-
-        private void ConnectionsAppWindow_Changed(AppWindow sender, AppWindowChangedEventArgs args)
-        {
-            if (!args.DidVisibilityChange) return;
-            if (sender.IsVisible && _connectionsPageActive) StartConnectionsRefresh();
-            else if (!sender.IsVisible) StopConnectionsRefresh();
-        }
-
         private void SetConnectionsPageActive(bool active)
         {
-            _connectionsPageActive = active;
-            if (active)
-            {
-                if (!_connectionsFirstVisit)
-                {
-                    _connectionsFirstVisit = true;
-                    ConnectionsPluginNotice.IsOpen = false;
-                }
-                StartConnectionsRefresh();
-            }
-            else StopConnectionsRefresh();
+            _remotePageActive = active;
+            if (active && !_remoteReleased && !_remoteBusy) _ = RefreshRemoteStateAsync();
         }
 
-        private void StartConnectionsRefresh()
-        {
-            if (!_connectionsInitialized || !_connectionsPageActive || _settingsClosed || _settingsDestroyed || _connectionsCancellation != null) return;
-            ++_connectionsGeneration;
-            _connectionsCancellation = new CancellationTokenSource();
-            _connectionsRefreshTimer.Start();
-            _ = RefreshConnectionStateAsync();
-            _ = RefreshManagedConnectionPluginsAsync();
-            UpdateConnectionsControls();
-        }
+        private bool CanApplyRemoteResult(int revision) => !_remoteReleased && !_settingsClosed && !_settingsDestroyed && revision == _remoteRevision;
 
-        private void StopConnectionsRefresh()
+        private async Task RefreshRemoteStateAsync()
         {
-            ++_connectionsGeneration;
-            _connectionsRefreshTimer?.Stop();
-            _connectionsInvitationTimer?.Stop();
-            ConnectionPairFlyout?.Hide();
-            var cancellation = _connectionsCancellation;
-            _connectionsCancellation = null;
-            cancellation?.Cancel();
-            cancellation?.Dispose();
-            ClearConnectionInvitation();
-            // Busy guards persist until old work finishes: rapid navigation must
-            // never start a second capture or service action while the first runs.
-        }
-
-        private bool IsCurrentConnection(int generation, CancellationToken token) => ConnectionReady
-            && generation == _connectionsGeneration && !token.IsCancellationRequested;
-
-        private void ConnectionsRefreshTimer_Tick(DispatcherQueueTimer sender, object args)
-        {
-            _ = RefreshConnectionStateAsync();
-            if (!_connectPluginUi.Loaded || !_mobilePluginUi.Loaded) _ = RefreshManagedConnectionPluginsAsync();
-        }
-
-        private async Task RefreshConnectionStateAsync()
-        {
-            if (!ConnectionReady || !ConnectionClientAvailable || _connectionsStateBusy || ConnectionControlsBusy) return;
-            int generation = _connectionsGeneration;
-            int revision = _connectionsStateRevision;
-            var token = _connectionsCancellation.Token;
-            var client = _connectionsClient;
-            _connectionsStateBusy = true;
+            if (_remoteBusy || _remoteReleased) return;
+            int revision = ++_remoteRevision;
+            _remoteBusy = true;
+            RemoteNotice.IsOpen = false;
+            RemoteProgressText.Text = "正在读取本机插件状态…";
+            UpdateRemoteControls();
             try
             {
-                var state = await client.GetStateAsync(token);
-                if (IsCurrentConnection(generation, token) && revision == _connectionsStateRevision
-                    && ReferenceEquals(client, _connectionsClient) && !ConnectionControlsBusy) ApplyConnectionState(state);
+                var state = await Task.Run(() => DsHarnessRemoteService.Inspect(_settings));
+                if (!CanApplyRemoteResult(revision)) return;
+                _remoteState = state;
+                RenderRemoteState();
             }
-            catch (OperationCanceledException) { }
-            catch (Exception exception)
+            catch (Exception ex)
             {
-                if (IsCurrentConnection(generation, token) && revision == _connectionsStateRevision
-                    && ReferenceEquals(client, _connectionsClient))
-                {
-                    ConnectionOnlineText.Text = HasConnectionPeer ? "在线状态未知" : "尚未连接其他设备";
-                    if (_connectionState != null) _connectionState.PeerStatus = "在线状态未知";
-                    ConnectionPairSummaryText.Text = HasConnectionPeer ? "被连接设备 · 在线状态未知" : "尚未配对";
-                    ConnectionServerHintText.Text = "连接暂不可用，正在自动重试；也可检查地址后点击连接。";
-                    if (_connectionServerSummary != null)
-                        _connectionServerSummary.Text = "服务器 · 连接暂不可用，正在自动重试";
-                }
-                _host.Log("连接页读取状态失败：" + exception.Message);
+                if (CanApplyRemoteResult(revision)) ShowRemoteNotice("读取失败", ex.Message, InfoBarSeverity.Error);
             }
-            finally { _connectionsStateBusy = false; if (ConnectionReady) UpdateConnectionsControls(); }
-        }
-
-        private static string ConnectionValue(string value) => String.IsNullOrWhiteSpace(value) ? "暂不可用" : value;
-
-        private static bool TryConnectionUri(string text, out Uri uri)
-        {
-            try { uri = AriesConnectionService.ValidateServerUrl(text); return true; }
-            catch (AriesServiceException) { uri = null; return false; }
-        }
-        private void UpdateConnectionsControls()
-        {
-            if (!_connectionsInitialized) return;
-            bool available = ConnectionClientAvailable;
-            bool editable = available && !ConnectionControlsBusy;
-            bool connected = _connectionState?.ServerOnline == true;
-            bool pairing = editable && connected && _connectionsClient.SupportsPairing && !HasConnectionPair;
-            bool approvals = editable && connected && _connectionsClient.SupportsPairingApprovals;
-            bool hasUri = TryConnectionUri(ConnectionServerUriBox.Text, out _);
-            ConnectionServerUriBox.IsEnabled = editable;
-            ConnectionSaveUriButton.IsEnabled = editable && hasUri && _connectionUriEdited;
-            ConnectionConnectButton.IsEnabled = editable && hasUri;
-            ConnectionDetectButton.IsEnabled = editable && hasUri && !_connectionUriEdited;
-            ConnectionPairButton.IsEnabled = !ConnectionControlsBusy;
-            ConnectionPairButton.Content = CanCancelConnectionPair ? "取消配对" : HasConnectionPair ? "配对状态" : "配对";
-            ConnectionRefreshCodeButton.IsEnabled = pairing;
-            ConnectionQrButton.IsEnabled = pairing;
-            ConnectionRefreshCodeButton.Content = _connectionInvitationGenerating ? "生成中…" : "刷新";
-            ConnectionManualCodeBox.IsEnabled = editable && !HasConnectionPair;
-            ConnectionRequestPairButton.IsEnabled = pairing && !String.IsNullOrWhiteSpace(ConnectionManualCodeBox.Text);
-            ConnectionCopyCodeButton.IsEnabled = pairing && _connectionInvitation != null && _connectionInvitation.ExpiresAt > DateTimeOffset.UtcNow;
-            ConnectionApproveButton.IsEnabled = approvals && !HasConnectionPeer && _connectionState?.PendingRequest != null;
-            ConnectionRejectButton.IsEnabled = approvals && _connectionState?.PendingRequest != null && !_connectionState.PendingRequest.KeyDelivery;
-            ConnectionUnpairButton.IsEnabled = editable && CanCancelConnectionPair;
-            ConnectionClearCacheButton.IsEnabled = editable && HasConnectionPeer && _connectionsClient.CanClearCurrentPairCache;
-            UpdateManagedConnectionPluginControls();
-            ConnectionCacheHintText.Text = available && _connectionsClient.CanClearCurrentPairCache
-                ? HasConnectionPeer ? "只清理当前连接的文件缓存。" : "配对后可清理当前连接的文件缓存。"
-                : "当前服务器暂不支持清理配对文件缓存。";
-            ConnectionPairFlyoutTitleText.Text = HasConnectionPeer ? "当前已配对" : HasConnectionPair ? "等待配对确认" : "配对另一台设备";
-            ConnectionPairFlyoutStatusText.Text = HasConnectionPeer
-                ? ConnectionValue(_connectionState.PairedDeviceName) + " · " + ConnectionPeerStatus(_connectionState)
-                    + "\n在线状态未知或离线不代表配对已解除。"
-                : HasConnectionPair ? _connectionState.PairingDescription
-                : _connectionPairStateChecking ? "正在检查配对状态…"
-                    : _connectionInvitationGenerating ? "正在生成配对码和二维码…" : "尚未配对";
-            ConnectionInvitationPanel.Visibility = HasConnectionPair || _connectionPairStateChecking
-                ? Visibility.Collapsed : Visibility.Visible;
-            ConnectionUnpairButton.Visibility = CanCancelConnectionPair ? Visibility.Visible : Visibility.Collapsed;
-            ConnectionPairFlyoutHintText.Text = HasConnectionPair
-                ? _connectionsClient?.CanUnpair == true ? "取消当前配对后才能配对另一台设备。" : "取消配对需要服务器支持，确认后会检查；未支持时会提示升级，不会仅在本机解除。"
-                : !available ? "连接服务暂不可用，无法生成邀请。"
-                    : _connectionPairStateChecking ? "正在读取当前配对，请稍候。"
-                    : _connectionInvitationGenerating ? "正在生成配对码和二维码，请稍候。"
-                    : ConnectionControlsBusy ? "当前操作尚未完成，请稍后重试。"
-                    : !connected ? "请先在服务器区域连接 Aries 服务器。"
-                    : !_connectionsClient.SupportsPairing ? "当前连接服务不支持生成配对邀请。"
-                    : "请另一台设备扫描二维码或输入配对码，然后由你确认请求。";
-            if (_connectionInvitation == null) ConnectionQrHintText.Text = _connectionInvitationGenerating
-                ? "正在生成二维码…" : pairing ? "点击生成二维码" : "连接服务器后可生成二维码";
-            if (_connectionState?.PendingRequest != null && HasConnectionPeer)
-                ConnectionApprovalText.Text = "已有一台远端设备。可拒绝此请求，或先解除当前配对。";
-        }
-
-        private void ApplyConnectionState(ConnectionStateSnapshot state)
-        {
-            if (state == null) throw new InvalidOperationException("服务器未返回连接状态。");
-            _connectionState = state;
-            _applyingConnectionState = true;
-            try
-            {
-                if (!_connectionUriEdited) ConnectionServerUriBox.Text = state.ServerUri ?? String.Empty;
-                ConnectionOnlineText.Text = HasConnectionPeer ? ConnectionPeerStatus(state) : "尚未连接其他设备";
-                ConnectionPairStatusText.Text = HasConnectionPeer ? "已配对" : state.AwaitingKeyConfirmation ? "等待确认" : "尚未配对";
-                ConnectionPairSummaryText.Text = HasConnectionPeer
-                    ? "被连接设备 · " + (String.IsNullOrWhiteSpace(state.PairedDeviceName) ? "设备" : state.PairedDeviceName)
-                    : String.IsNullOrWhiteSpace(state.PairingDescription) ? "与另一台设备配对，连接请求需要你确认。" : state.PairingDescription;
-                if (HasConnectionPeer) ConnectionPairSummaryText.Text += " · " + ConnectionPeerStatus(state);
-                ConnectionDeviceNameText.Text = HasConnectionPeer
-                    ? ConnectionValue(state.PairedDeviceName)
-                    : "尚未连接其他设备";
-                string peerUnavailable = HasConnectionPeer ? "对方暂未共享此信息" : "配对后显示被连接设备信息";
-                ConnectionSystemText.Text = !HasConnectionPeer || String.IsNullOrWhiteSpace(state.PeerSystem) ? peerUnavailable : state.PeerSystem;
-                ConnectionCpuText.Text = !HasConnectionPeer || String.IsNullOrWhiteSpace(state.PeerCpu) ? peerUnavailable : state.PeerCpu;
-                ConnectionMemoryText.Text = !HasConnectionPeer || String.IsNullOrWhiteSpace(state.PeerMemory) ? peerUnavailable : state.PeerMemory;
-                ConnectionGpuText.Text = !HasConnectionPeer || String.IsNullOrWhiteSpace(state.PeerGpu) ? peerUnavailable : state.PeerGpu;
-                ConnectionNetworkText.Text = !HasConnectionPeer || String.IsNullOrWhiteSpace(state.PeerNetwork) ? peerUnavailable : state.PeerNetwork;
-                ConnectionStorageText.Text = !HasConnectionPeer || String.IsNullOrWhiteSpace(state.PeerStorage) ? peerUnavailable : state.PeerStorage;
-                ConnectionTelemetryHintText.Text = HasConnectionPeer && !String.IsNullOrWhiteSpace(state.PeerClientVersion)
-                    ? "被连接设备客户端版本 · " + state.PeerClientVersion + " · 连接状态每 3 秒刷新"
-                    : "仅显示被连接设备的信息 · 连接状态每 3 秒刷新";
-                ConnectionServerHintText.Text = String.IsNullOrWhiteSpace(state.ServerUri)
-                    ? "请填写你的 Aries 服务器地址。" : state.ServerOnline ? "已连接 Aries 服务器。" : "正在自动连接；失败后会自动重试，也可点击连接或检测。";
-                if (_connectionServerSummary != null)
-                    _connectionServerSummary.Text = state.ServerOnline ? "服务器 · 已连接"
-                        : "服务器 · 正在自动连接，失败后自动重试";
-                if (!state.ServerOnline && !String.IsNullOrWhiteSpace(state.ErrorMessage))
-                    ConnectionServerHintText.Text = state.ErrorMessage + " 正在自动重试，也可检查地址后点击连接。";
-                ConnectionCacheHintText.Text = state.CacheSummary ?? "缓存统计暂不可用";
-                ConnectionPreferencesHintText.Text = String.IsNullOrWhiteSpace(state.DshServicesStatus)
-                    ? "正在等待 DSH 工作区、对话与网页服务。" : state.DshServicesStatus;
-                ConnectionApprovalPanel.Visibility = state.PendingRequest?.KeyDelivery == true
-                    ? Visibility.Visible : Visibility.Collapsed;
-                ConnectionApprovalText.Text = state.PendingRequest != null
-                    ? "有新的设备【" + ConnectionPairingPrompt.SafeDeviceName(state.PendingRequest.DeviceName) + "】请求配对，是否允许？"
-                    : String.Empty;
-                if (HasConnectionPair) ClearConnectionInvitation();
-            }
-            finally { _applyingConnectionState = false; }
-            UpdateConnectionsControls();
-        }
-
-        private static string ConnectionPeerStatus(ConnectionStateSnapshot state) =>
-            !state.ServerOnline || String.IsNullOrWhiteSpace(state.PeerStatus) ? "在线状态未知" : state.PeerStatus;
-
-        private async Task RunConnectionActionAsync(
-            Func<ISettingsConnectionClient, CancellationToken, Task<ConnectionStateSnapshot>> action, string successMessage,
-            Func<bool> isCurrent = null)
-        {
-            if (!ConnectionReady || !ConnectionClientAvailable || ConnectionControlsBusy) return;
-            var client = _connectionsClient;
-            int generation = _connectionsGeneration;
-            var token = _connectionsCancellation.Token;
-            ++_connectionsStateRevision;
-            _connectionsActionBusy = true;
-            UpdateConnectionsControls();
-            try
-            {
-                var state = await action(client, token);
-                if (!IsCurrentConnection(generation, token) || !ReferenceEquals(client, _connectionsClient)
-                    || (isCurrent != null && !isCurrent())) return;
-                if (state != null) ApplyConnectionState(state);
-                if (!String.IsNullOrWhiteSpace(successMessage)) ShowConnectionNotice(successMessage, InfoBarSeverity.Success);
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception exception)
-            {
-                if (IsCurrentConnection(generation, token) && ReferenceEquals(client, _connectionsClient)
-                    && (isCurrent == null || isCurrent()))
-                {
-                    ShowConnectionNotice(exception.Message, InfoBarSeverity.Warning);
-                }
-            }
-            finally { _connectionsActionBusy = false; if (ConnectionReady) UpdateConnectionsControls(); }
-        }
-
-        private void ConnectionPair_Click(object sender, RoutedEventArgs args)
-        {
-            if (!ConnectionReady || ConnectionControlsBusy) return;
-            if (!ConnectionClientAvailable)
-            {
-                ShowConnectionNotice("连接服务暂不可用，请稍后重试。", InfoBarSeverity.Warning);
-                return;
-            }
-            if (CanCancelConnectionPair) ConnectionUnpair_Click(sender, args);
-            else ConnectionPairFlyout.ShowAt(ConnectionPairButton);
-        }
-
-        private async void ConnectionPairFlyout_Opened(object sender, object args)
-        {
-            if (!_connectionsInitialized || !ConnectionReady) return;
-            _connectionPairFlyoutCancellation?.Cancel();
-            _connectionPairFlyoutCancellation?.Dispose();
-            _connectionPairFlyoutCancellation = CancellationTokenSource.CreateLinkedTokenSource(_connectionsCancellation.Token);
-            _connectionPairFlyoutOpen = true;
-            ++_connectionPairFlyoutVersion;
-            ConnectionPairFlyoutNotice.IsOpen = false;
-            _connectionPairStateChecking = true;
-            UpdateConnectionsControls();
-            await CreateConnectionInvitationAsync(false);
-        }
-
-        private void ConnectionPairFlyout_Closed(object sender, object args)
-        {
-            _connectionPairFlyoutOpen = false;
-            ++_connectionPairFlyoutVersion;
-            _connectionPairFlyoutCancellation?.Cancel();
-            _connectionPairFlyoutCancellation?.Dispose();
-            _connectionPairFlyoutCancellation = null;
-            _connectionPairStateChecking = false;
-            UpdateConnectionsControls();
-        }
-
-        private async Task CreateConnectionInvitationAsync(bool force = true)
-        {
-            if (!ConnectionReady || !ConnectionClientAvailable || !_connectionPairFlyoutOpen) return;
-            if (force && ConnectionControlsBusy) return;
-            int version = _connectionPairFlyoutVersion;
-            int generation = _connectionsGeneration;
-            var cancellation = _connectionPairFlyoutCancellation;
-            var flyoutToken = cancellation.Token;
-            var clientAtOpen = _connectionsClient;
-            bool Current() => _connectionPairFlyoutOpen && version == _connectionPairFlyoutVersion
-                && IsCurrentConnection(generation, flyoutToken) && ReferenceEquals(clientAtOpen, _connectionsClient);
-            await _connectionPairingTask;
-            if (!Current()) return;
-            if (ConnectionControlsBusy)
-            {
-                _connectionPairStateChecking = false;
-                UpdateConnectionsControls();
-                return;
-            }
-            _connectionPairStateChecking = true;
-            ConnectionPairFlyoutNotice.IsOpen = false;
-            var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _connectionPairingTask = completion.Task;
-            var work = RunConnectionActionAsync(async (client, token) =>
-            {
-                try
-                {
-                var latest = await client.GetStateAsync(flyoutToken);
-                if (!Current()) return null;
-                ApplyConnectionState(latest);
-                _connectionPairStateChecking = false;
-                UpdateConnectionsControls();
-                if (HasConnectionPair || !latest.ServerOnline || !client.SupportsPairing) return null;
-                if (!force && _connectionInvitation?.ExpiresAt > DateTimeOffset.UtcNow)
-                {
-                    UpdateConnectionCountdown();
-                    _connectionsInvitationTimer.Start();
-                    return null;
-                }
-                ClearConnectionInvitation();
-                _connectionInvitationGenerating = true;
-                UpdateConnectionsControls();
-                var invitation = await client.CreatePairingInvitationAsync(flyoutToken);
-                if (!Current() || HasConnectionPair) return null;
-                if (invitation == null || String.IsNullOrWhiteSpace(invitation.DisplayCode) || invitation.ExpiresAt <= DateTimeOffset.UtcNow)
-                    throw new InvalidOperationException("未取得有效的配对码，请刷新重试。");
-                BitmapImage bitmap = null;
-                if (invitation.QrPng != null && invitation.QrPng.Length > 0)
-                {
-                    bitmap = new BitmapImage();
-                    using (var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream())
-                    {
-                        using (var writer = new Windows.Storage.Streams.DataWriter(stream))
-                        {
-                            writer.WriteBytes(invitation.QrPng);
-                            await writer.StoreAsync();
-                            writer.DetachStream();
-                        }
-                        stream.Seek(0);
-                        await bitmap.SetSourceAsync(stream);
-                    }
-                }
-                if (!Current() || HasConnectionPair) return null;
-                if (invitation.ExpiresAt <= DateTimeOffset.UtcNow)
-                    throw new InvalidOperationException("配对码已过期，请重新生成。");
-                _connectionInvitation = invitation;
-                ConnectionInvitationCodeBox.Text = invitation.DisplayCode;
-                if (bitmap != null)
-                {
-                    ConnectionQrImage.Source = bitmap;
-                    ConnectionQrImage.Visibility = Visibility.Visible;
-                    ConnectionQrPlaceholder.Visibility = Visibility.Collapsed;
-                }
-                else
-                {
-                    ConnectionQrHintText.Text = "未取得二维码，可复制配对码或点击重试";
-                    ShowConnectionNotice("未取得二维码，可复制下方配对码或点击重试。", InfoBarSeverity.Warning);
-                }
-                UpdateConnectionCountdown();
-                _connectionsInvitationTimer.Start();
-                return null;
-                }
-                catch
-                {
-                    if (Current()) ClearConnectionInvitation();
-                    throw;
-                }
-            }, null, Current);
-            try { await work; }
             finally
             {
-                _connectionInvitationGenerating = false;
-                if (Current()) _connectionPairStateChecking = false;
-                if (ConnectionReady) UpdateConnectionsControls();
-                completion.TrySetResult(true);
+                if (CanApplyRemoteResult(revision)) { _remoteBusy = false; UpdateRemoteControls(); }
             }
         }
 
-        private void ClearConnectionInvitation()
+        private void RenderRemoteState()
         {
-            _connectionsInvitationTimer?.Stop();
-            _connectionInvitation = null;
-            if (!_connectionsInitialized) return;
-            ConnectionInvitationCodeBox.Text = String.Empty;
-            ConnectionInvitationCountdownText.Text = "配对码有效期为 3 分钟";
-            ConnectionQrImage.Source = null;
-            ConnectionQrImage.Visibility = Visibility.Collapsed;
-            ConnectionQrPlaceholder.Visibility = Visibility.Visible;
-            ConnectionCopyCodeButton.IsEnabled = false;
+            var state = _remoteState;
+            RemoteStatusText.Text = state?.Installed == true ? "已安装 · " + state.Version : state?.HasRegistration == true ? "需要修复" : "尚未安装";
+            RemoteProfileText.Text = state?.ProfileName == null ? "尚未选择 DSH 安装目录" : "当前配置：" + state.ProfileName;
+            RemoteVersionText.Text = "启动器适配版本 " + DsHarnessRemoteService.SupportedVersion
+                + (state?.PackagePresent == true && !DsHarnessRemoteService.CanInstallSupportedVersion(state) ? " · 已安装其他或更新版本，请在 DSH 内管理" : String.Empty);
+            if (!String.IsNullOrEmpty(state?.Error)) ShowRemoteNotice("插件状态", state.Error, InfoBarSeverity.Warning);
         }
 
-        private void ConnectionsInvitationTimer_Tick(DispatcherQueueTimer sender, object args) => UpdateConnectionCountdown();
-
-        private void UpdateConnectionCountdown()
+        private void UpdateRemoteControls()
         {
-            if (_connectionInvitation == null) { _connectionsInvitationTimer.Stop(); return; }
-            double seconds = Math.Ceiling((_connectionInvitation.ExpiresAt - DateTimeOffset.UtcNow).TotalSeconds);
-            if (seconds <= 0)
-            {
-                _connectionsInvitationTimer.Stop();
-                ConnectionInvitationCountdownText.Text = "配对码已过期，请刷新";
-                ConnectionCopyCodeButton.IsEnabled = false;
-                ConnectionQrImage.Source = null;
-                ConnectionQrImage.Visibility = Visibility.Collapsed;
-                ConnectionQrPlaceholder.Visibility = Visibility.Visible;
-                ConnectionQrHintText.Text = "配对码已过期";
-                return;
-            }
-            ConnectionInvitationCountdownText.Text = "有效期剩余 " + ((int)seconds / 60).ToString("00") + ":" + ((int)seconds % 60).ToString("00");
+            RemoteProgress.Visibility = _remoteBusy && _remoteCancellation != null ? Visibility.Visible : Visibility.Collapsed;
+            RemoteProgress.IsActive = _remoteBusy && _remoteCancellation != null;
+            RemoteProgressText.Visibility = _remoteBusy ? Visibility.Visible : Visibility.Collapsed;
+            RemoteRefreshButton.IsEnabled = !_remoteBusy;
+            RemoteInstallButton.IsEnabled = !_remoteBusy && _remoteState?.ManagerAvailable == true
+                && DsHarnessRemoteService.CanInstallSupportedVersion(_remoteState);
+            RemoteRemoveButton.IsEnabled = !_remoteBusy && _remoteState?.ManagerAvailable == true && _remoteState.HasRegistration;
+            RemoteInstallButton.Content = _remoteState?.HasRegistration == true ? "安装 / 修复适配版本" : "安装 Remote";
+            RemoteCancelButton.Visibility = _remoteBusy && _remoteCancellation != null ? Visibility.Visible : Visibility.Collapsed;
         }
 
-        private async void ConnectionRefreshCode_Click(object sender, RoutedEventArgs args) => await CreateConnectionInvitationAsync();
-
-        private void ConnectionCopyCode_Click(object sender, RoutedEventArgs args)
+        private void ShowRemoteNotice(string title, string message, InfoBarSeverity severity)
         {
-            if (_connectionInvitation == null || _connectionInvitation.ExpiresAt <= DateTimeOffset.UtcNow || HasConnectionPair) return;
-            try
-            {
-                var package = new DataPackage();
-                package.SetText(ConnectionInvitationCodeBox.Text);
-                Clipboard.SetContent(package);
-                ConnectionPairFlyoutHintText.Text = "配对码已复制。";
-            }
-            catch (Exception exception) { ConnectionPairFlyoutHintText.Text = "复制失败：" + exception.Message; }
+            RemoteNotice.Title = title;
+            RemoteNotice.Message = message;
+            RemoteNotice.Severity = severity;
+            RemoteNotice.IsOpen = true;
         }
 
-        private void ConnectionManualCode_TextChanged(object sender, TextChangedEventArgs args) => UpdateConnectionsControls();
-
-        private async void ConnectionRequestPair_Click(object sender, RoutedEventArgs args)
+        private async Task ChangeRemotePluginAsync(bool remove)
         {
-            if (!ConnectionClientAvailable || !_connectionsClient.SupportsPairing || HasConnectionPair) return;
-            string code = ConnectionManualCodeBox.Text.Trim();
-            if (String.IsNullOrWhiteSpace(code)) return;
-            int version = _connectionPairFlyoutVersion;
-            int generation = _connectionsGeneration;
-            var expectedClient = _connectionsClient;
-            var flyoutToken = _connectionPairFlyoutCancellation?.Token ?? new CancellationToken(true);
-            bool Current() => _connectionPairFlyoutOpen && version == _connectionPairFlyoutVersion
-                && IsCurrentConnection(generation, flyoutToken) && ReferenceEquals(expectedClient, _connectionsClient);
-            await RunConnectionActionAsync(async (client, token) =>
-            {
-                var latest = await client.GetStateAsync(flyoutToken);
-                if (!Current()) return null;
-                ApplyConnectionState(latest);
-                if (HasConnectionPair || !latest.ServerOnline) return null;
-                var result = await client.RequestPairingAsync(code, flyoutToken);
-                if (Current()) ShowConnectionNotice("配对请求已发送，等待对方批准。", InfoBarSeverity.Success);
-                return result;
-            }, null, Current);
-        }
-        private async Task<bool> ConfirmConnectionActionAsync(string title, string message, string primaryText)
-        {
-            if (!ConnectionReady || ConnectionControlsBusy || SettingsRoot.XamlRoot == null) return false;
-            int generation = _connectionsGeneration;
-            var token = _connectionsCancellation.Token;
-            _connectionsDialogBusy = true;
-            ConnectionPairFlyout.Hide();
-            UpdateConnectionsControls();
+            if (_remoteBusy || _remoteReleased || SettingsRoot.XamlRoot == null) return;
+            _remoteBusy = true;
+            UpdateRemoteControls();
+            int revision = ++_remoteRevision;
+            var operationSettings = System.Text.Json.JsonSerializer.Deserialize<LauncherSettings>(
+                System.Text.Json.JsonSerializer.Serialize(_settings));
             var dialog = new ContentDialog
             {
                 XamlRoot = SettingsRoot.XamlRoot, RequestedTheme = SettingsRoot.ActualTheme,
-                Title = title, Content = message, PrimaryButtonText = primaryText,
-                CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close
+                Title = remove ? "卸载 DS Harness Remote？" : "安装 DS Harness Remote？",
+                Content = remove ? "将从当前 DSH 配置中卸载 ds-harness-remote。远程连接会中断；账号凭据与工作区会保留。"
+                    : "将通过 DSH 官方插件管理器安装 ds-harness-remote@" + DsHarnessRemoteService.SupportedVersion
+                        + "。安装或修复后请在方便时重启 DSH，再从侧边栏 Remote 登录。更新可能中断现有远程连接。",
+                PrimaryButtonText = remove ? "卸载" : "安装", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close
             };
-            using (token.Register(() => DispatcherQueue.TryEnqueue(() => dialog.Hide())))
-            {
-                try { return await dialog.ShowAsync() == ContentDialogResult.Primary && IsCurrentConnection(generation, token); }
-                catch (Exception exception)
-                {
-                    if (IsCurrentConnection(generation, token)) ShowConnectionNotice(exception.Message, InfoBarSeverity.Warning);
-                    return false;
-                }
-                finally { _connectionsDialogBusy = false; if (ConnectionReady) UpdateConnectionsControls(); }
-            }
-        }
-
-        private async void ConnectionApprove_Click(object sender, RoutedEventArgs args)
-        {
-            var request = _connectionState?.PendingRequest;
-            if (!ConnectionClientAvailable || !_connectionsClient.SupportsPairingApprovals || HasConnectionPeer || request == null) return;
-            if (!await ConfirmConnectionActionAsync("设备配对",
-                "有新的设备【" + ConnectionPairingPrompt.SafeDeviceName(request.DeviceName) + "】请求配对，是否允许？", "允许")) return;
-            if (HasConnectionPeer || _connectionState?.PendingRequest?.RequestId != request.RequestId) return;
-            await RunConnectionActionAsync((client, token) => client.ApprovePairingAsync(
-                request.RequestId, request.Fingerprint, request.KeyDelivery, token),
-                request.KeyDelivery ? "配对已确认。" : "密钥已投递，等待另一台设备确认连接。");
-        }
-
-        private async void ConnectionReject_Click(object sender, RoutedEventArgs args)
-        {
-            var request = _connectionState?.PendingRequest;
-            if (!ConnectionClientAvailable || !_connectionsClient.SupportsPairingApprovals || request == null || request.KeyDelivery) return;
-            await RunConnectionActionAsync((client, token) => client.RejectPairingAsync(request.RequestId, token), "配对请求已拒绝。");
-        }
-
-        private async void ConnectionUnpair_Click(object sender, RoutedEventArgs args)
-        {
-            string pairId = _connectionState?.PairId;
-            if (!ConnectionClientAvailable || !CanCancelConnectionPair || String.IsNullOrWhiteSpace(pairId)) return;
-            if (!await ConfirmConnectionActionAsync("取消当前配对？", "将取消本机与“"
-                + (String.IsNullOrWhiteSpace(_connectionState.PairedDeviceName) ? "当前远端设备" : _connectionState.PairedDeviceName)
-                + "”的配对。服务器未支持时会提示升级，当前配对将保留。", "取消配对")) return;
-            if (_connectionState?.PairId != pairId || !CanCancelConnectionPair) return;
-            await RunConnectionActionAsync((client, token) => client.UnpairAsync(pairId, token), "当前配对已取消。");
-        }
-
-        private void ConnectionServerUri_TextChanged(object sender, TextChangedEventArgs args)
-        {
-            if (!_connectionsInitialized || _applyingConnectionState) return;
-            _connectionUriEdited = true;
-            UpdateConnectionsControls();
-        }
-
-        private async Task<bool> SaveConnectionUriAsync()
-        {
-            if (!ConnectionReady || !ConnectionClientAvailable || ConnectionControlsBusy) return false;
-            Uri uri;
-            try { uri = AriesConnectionService.ValidateServerUrl(ConnectionServerUriBox.Text); }
-            catch (AriesServiceException exception)
-            {
-                ShowConnectionNotice(exception.Message, InfoBarSeverity.Warning);
-                return false;
-            }
-            string address = uri.AbsoluteUri;
-            bool saved = false;
-            int generation = _connectionsGeneration;
-            var token = _connectionsCancellation.Token;
-            await RunConnectionActionAsync(async (client, cancellation) =>
-            {
-                var state = await client.SaveServerUriAsync(address, cancellation);
-                saved = true;
-                return state;
-            }, "服务器地址已保存。");
-            if (!saved || !IsCurrentConnection(generation, token)) return false;
-            _connectionUriEdited = false;
-            ApplyConnectionState(_connectionState);
-            return true;
-        }
-
-        private async void ConnectionSaveUri_Click(object sender, RoutedEventArgs args) => await SaveConnectionUriAsync();
-
-        private async void ConnectionConnect_Click(object sender, RoutedEventArgs args)
-        {
-            if (!ConnectionReady) return;
-            if (_connectionUriEdited && !await SaveConnectionUriAsync()) return;
-            await RunConnectionActionAsync((client, token) => client.DetectServerAsync(token), null);
-        }
-
-        private async void ConnectionDetect_Click(object sender, RoutedEventArgs args)
-            => await RunConnectionActionAsync((client, token) => client.DetectServerAsync(token), null);
-
-        private async void ConnectionClearCache_Click(object sender, RoutedEventArgs args)
-        {
-            string pairId = _connectionState?.PairId;
-            if (!ConnectionClientAvailable || !_connectionsClient.CanClearCurrentPairCache || String.IsNullOrWhiteSpace(pairId)) return;
-            if (!await ConfirmConnectionActionAsync("清理当前连接的文件缓存？", "只清理当前配对的文件缓存，其他连接的数据不会受影响。", "清理缓存")) return;
-            if (_connectionState?.PairId != pairId) return;
-            await RunConnectionActionAsync(async (client, token) =>
-            {
-                await client.ClearCurrentPairCacheAsync(pairId, token);
-                return await client.GetStateAsync(token);
-            }, "已提交缓存清理请求，磁盘清理进度以服务器统计为准。");
-        }
-
-        private ManagedConnectionPluginUiState ManagedPluginUi(string id) => id == "mobile-ui" ? _mobilePluginUi : _connectPluginUi;
-        private TextBlock ManagedPluginStatus(string id) => id == "mobile-ui" ? ConnectionMobilePluginStatusText : ConnectionPluginStatusText;
-
-        private void UpdateManagedConnectionPluginControls()
-        {
-            void Apply(string id, Button primary, Button remove)
-            {
-                var state = ManagedPluginUi(id);
-                bool ready = ConnectionReady && !ConnectionControlsBusy && !_managedPluginsInspectBusy && state.Loaded;
-                primary.Content = !String.IsNullOrWhiteSpace(state.Error) ? "重新检测"
-                    : !state.Installed ? "安装" : !String.IsNullOrEmpty(state.UpdateAvailableVersion) ? "更新" : "检查更新";
-                primary.IsEnabled = ready;
-                remove.Visibility = state.Installed ? Visibility.Visible : Visibility.Collapsed;
-                remove.IsEnabled = ready && String.IsNullOrEmpty(state.Error);
-            }
-            Apply("connect", ConnectionPluginUpdateButton, ConnectionPluginUninstallButton);
-            Apply("mobile-ui", ConnectionMobilePluginUpdateButton, ConnectionMobilePluginUninstallButton);
-        }
-
-        private async Task RefreshManagedConnectionPluginsAsync()
-        {
-            if (!ConnectionReady || _managedPluginsInspectBusy || _managedPluginsActionBusy) return;
-            int generation = _connectionsGeneration;
-            var token = _connectionsCancellation.Token;
-            _managedPluginsInspectBusy = true;
-            UpdateManagedConnectionPluginControls();
+            dialog.Content += "\n\nDSH 目录：" + operationSettings.DshRoot;
             try
             {
-                foreach (string id in new[] { "connect", "mobile-ui" })
-                {
-                    var state = ManagedPluginUi(id);
-                    try
-                    {
-                        var result = await ManagedConnectionPluginsService.InspectAsync(_settings, id, _host.Log, token);
-                        if (!IsCurrentConnection(generation, token)) return;
-                        if (!result.Installed || !String.Equals(state.Version, result.Version, StringComparison.Ordinal))
-                            state.UpdateAvailableVersion = null;
-                        state.Loaded = true; state.Installed = result.Installed; state.Version = result.Version; state.Error = result.Error;
-                        ManagedPluginStatus(id).Text = !String.IsNullOrWhiteSpace(result.Error) ? result.Error
-                            : !result.Installed ? "尚未安装"
-                            : "已安装 · " + ConnectionValue(result.Version)
-                                + (!String.IsNullOrEmpty(state.UpdateAvailableVersion) ? " · 可更新至 " + state.UpdateAvailableVersion : String.Empty);
-                    }
-                    catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
-                    catch (Exception exception)
-                    {
-                        if (!IsCurrentConnection(generation, token)) return;
-                        state.Loaded = true;
-                        state.Error = "状态读取失败，请重新检测。";
-                        ManagedPluginStatus(id).Text = state.Error;
-                        _host.Log("读取连接插件 " + id + " 状态失败：" + exception.Message);
-                        ShowConnectionNotice(exception.Message, InfoBarSeverity.Warning);
-                    }
-                }
+                if (await dialog.ShowAsync() != ContentDialogResult.Primary || !CanApplyRemoteResult(revision) || !_remotePageActive) return;
+                _remoteCancellation = new CancellationTokenSource();
+                var token = _remoteCancellation.Token;
+                RemoteNotice.IsOpen = false;
+                RemoteProgressText.Text = remove ? "正在通过 DSH 卸载 Remote…" : "正在通过 DSH 安装 Remote…";
+                UpdateRemoteControls();
+                var result = await Task.Run(() => DsHarnessRemoteService.Execute(operationSettings, remove, _host.Log, token));
+                if (!CanApplyRemoteResult(revision)) return;
+                _remoteState = await Task.Run(() => DsHarnessRemoteService.Inspect(_settings));
+                if (!CanApplyRemoteResult(revision)) return;
+                RenderRemoteState();
+                if (result.Cancelled) ShowRemoteNotice("操作已取消", "已请求停止官方插件操作，请检查当前插件状态。", InfoBarSeverity.Informational);
+                else if (result.TimedOut || result.Failed || result.ExitCode != 0)
+                    ShowRemoteNotice("操作未完成", result.Error ?? "官方插件命令未成功，请查看日志或在 DSH 插件管理中检查。", InfoBarSeverity.Error);
+                else ShowRemoteNotice(remove ? "已卸载 Remote" : "Remote 已安装", "DSH 目录：" + operationSettings.DshRoot + "\n" + (remove ? "账号凭据与工作区已保留。"
+                    : "请在方便时重启 DSH，打开侧边栏 Remote 登录；其他设备登录同一账号后选择在线 Host。"), InfoBarSeverity.Success);
             }
-            catch (OperationCanceledException) { }
-            catch (Exception exception)
+            catch (OperationCanceledException)
             {
-                _host.Log("读取连接插件状态失败：" + exception.Message);
-                if (IsCurrentConnection(generation, token))
-                {
-                    if (!_connectPluginUi.Loaded) ConnectionPluginStatusText.Text = "状态读取失败，正在重试…";
-                    if (!_mobilePluginUi.Loaded) ConnectionMobilePluginStatusText.Text = "状态读取失败，正在重试…";
-                    ShowConnectionNotice(exception.Message, InfoBarSeverity.Warning);
-                }
+                if (CanApplyRemoteResult(revision)) ShowRemoteNotice("操作已取消", "请刷新检查当前插件状态。", InfoBarSeverity.Informational);
+            }
+            catch (Exception ex)
+            {
+                if (CanApplyRemoteResult(revision)) ShowRemoteNotice("操作失败", ex.Message, InfoBarSeverity.Error);
             }
             finally
             {
-                _managedPluginsInspectBusy = false;
-                if (ConnectionReady) UpdateManagedConnectionPluginControls();
+                _remoteCancellation?.Dispose(); _remoteCancellation = null;
+                if (CanApplyRemoteResult(revision)) { _remoteBusy = false; UpdateRemoteControls(); }
             }
         }
 
-        private async void ConnectionPluginUpdate_Click(object sender, RoutedEventArgs args)
+        private async void RemoteRefresh_Click(object sender, RoutedEventArgs args) => await RefreshRemoteStateAsync();
+        private async void RemoteInstall_Click(object sender, RoutedEventArgs args) => await ChangeRemotePluginAsync(false);
+        private async void RemoteRemove_Click(object sender, RoutedEventArgs args) => await ChangeRemotePluginAsync(true);
+        private void RemoteCancel_Click(object sender, RoutedEventArgs args) => _remoteCancellation?.Cancel();
+        private void RemoteWeb_Click(object sender, RoutedEventArgs args) => OpenUrl(DsHarnessRemoteService.WebUrl);
+        private void RemoteDocumentation_Click(object sender, RoutedEventArgs args) => OpenUrl(DsHarnessRemoteService.DocumentationUrl);
+        private void RemoteLocal_Click(object sender, RoutedEventArgs args)
         {
-            if (sender is not Button button || button.Tag is not string id || (id != "connect" && id != "mobile-ui")) return;
-            await RunManagedConnectionPluginActionAsync(id, false);
-        }
-
-        private async void ConnectionPluginUninstall_Click(object sender, RoutedEventArgs args)
-        {
-            if (sender is not Button button || button.Tag is not string id || (id != "connect" && id != "mobile-ui")) return;
-            if (!ConnectionReady || ConnectionControlsBusy || _managedPluginsInspectBusy) return;
-            string title = id == "connect" ? "卸载 Connect？" : "卸载 Mobile-CSS？";
-            string detail = id == "connect" ? "卸载后将停止同步与网页广播。DSH 工作区、对话及用户配置会保留。"
-                : "卸载后将移除网页移动端样式。DSH 工作区、对话及用户配置会保留。";
-            if (!await ConfirmConnectionActionAsync(title, detail, "卸载")) return;
-            await RunManagedConnectionPluginActionAsync(id, true);
-        }
-
-        private async Task RunManagedConnectionPluginActionAsync(string id, bool remove)
-        {
-            if (!ConnectionReady || ConnectionControlsBusy || _managedPluginsInspectBusy) return;
-            var state = ManagedPluginUi(id);
-            if (!state.Loaded) return;
-            if (!String.IsNullOrWhiteSpace(state.Error))
-            {
-                await RefreshManagedConnectionPluginsAsync();
-                return;
-            }
-            int generation = _connectionsGeneration;
-            var token = _connectionsCancellation.Token;
-            bool checkOnly = !remove && state.Installed && String.IsNullOrEmpty(state.UpdateAvailableVersion);
-            _managedPluginsActionBusy = true;
-            // A cancelled or stale action may still have changed disk state.
-            // Keep it unloaded until a result or a fresh inspection is applied.
-            state.Loaded = false;
-            UpdateConnectionsControls();
-            ManagedPluginStatus(id).Text = remove ? "正在卸载…" : checkOnly ? "正在检查更新…" : "正在验证并安装插件…";
-            try
-            {
-                var result = remove ? await ManagedConnectionPluginsService.UninstallAsync(_settings, id, _host.Log, token)
-                    : checkOnly ? await ManagedConnectionPluginsService.CheckUpdateAsync(_settings, id, _host.Log, token)
-                    : await ManagedConnectionPluginsService.InstallAsync(_settings, id, _host.Log, token);
-                if (!result.Success) throw new InvalidOperationException(result.Error ?? "插件操作未完成。");
-                if (!IsCurrentConnection(generation, token)) return;
-                state.Loaded = true; state.Installed = result.Installed; state.Version = result.Version; state.Error = null;
-                state.UpdateAvailableVersion = result.UpdateAvailable ? result.UpdateAvailableVersion : null;
-                ManagedPluginStatus(id).Text = result.UpdateAvailable ? "已安装 " + ConnectionValue(result.Version) + " · 可更新至 " + ConnectionValue(result.UpdateAvailableVersion)
-                    : !result.Installed ? "尚未安装" : "已安装 · " + ConnectionValue(result.Version) + (checkOnly ? " · 已是最新版本" : " · 重启 DSH 后生效");
-                if (!checkOnly) ShowConnectionNotice(remove ? "插件已卸载，重启 DSH 后生效。" : "插件安装完成，重启 DSH 后生效。", InfoBarSeverity.Success);
-            }
-            catch (OperationCanceledException) { }
-            catch (Exception exception)
-            {
-                _host.Log("连接插件操作失败：" + exception.Message);
-                if (IsCurrentConnection(generation, token))
-                {
-                    ManagedPluginStatus(id).Text = "操作未完成 · " + exception.Message;
-                    ShowConnectionNotice(exception.Message, InfoBarSeverity.Warning);
-                }
-            }
-            finally
-            {
-                _managedPluginsActionBusy = false;
-                if (ConnectionReady)
-                {
-                    UpdateConnectionsControls();
-                    if (!state.Loaded) _ = RefreshManagedConnectionPluginsAsync();
-                }
-            }
-        }
-
-        private void ShowConnectionNotice(string message, InfoBarSeverity severity)
-        {
-            if (!ConnectionReady) return;
-            if (_connectionPairFlyoutOpen)
-            {
-                ConnectionPairFlyoutNotice.Message = message;
-                ConnectionPairFlyoutNotice.Severity = severity;
-                ConnectionPairFlyoutNotice.IsOpen = true;
-                return;
-            }
-            ConnectionActionNotice.Message = message;
-            ConnectionActionNotice.Severity = severity;
-            ConnectionActionNotice.IsOpen = true;
-            if (severity != InfoBarSeverity.Warning && severity != InfoBarSeverity.Error) return;
-            int generation = _connectionsGeneration;
-            DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
-            {
-                if (!ConnectionReady || generation != _connectionsGeneration || _connectionPairFlyoutOpen
-                    || !ConnectionActionNotice.IsOpen || !ConnectionActionNotice.IsLoaded
-                    || ConnectionActionNotice.Message != message || ConnectionActionNotice.Severity != severity) return;
-                ConnectionActionNotice.UpdateLayout();
-                var bounds = ConnectionActionNotice.TransformToVisual(SettingsScroller).TransformBounds(
-                    new Windows.Foundation.Rect(0, 0, ConnectionActionNotice.ActualWidth, ConnectionActionNotice.ActualHeight));
-                if (bounds.Top >= 0 && bounds.Bottom <= SettingsScroller.ActualHeight) return;
-                ConnectionActionNotice.StartBringIntoView(new BringIntoViewOptions
-                {
-                    AnimationDesired = false,
-                    VerticalAlignmentRatio = 0.5
-                });
-            });
+            string url = _host.GetServiceUrl();
+            if (!String.IsNullOrWhiteSpace(url)) OpenUrl(url);
+            else ShowRemoteNotice("请先启动 DSH", "启动后打开 DSH，从侧边栏进入 Remote。", InfoBarSeverity.Informational);
         }
 
         private void ReleaseConnectionsPage()
         {
-            _connectionsPageActive = false;
-            StopConnectionsRefresh();
-            if (!_connectionsInitialized) return;
-            SettingsRoot.Loaded -= ConnectionsRoot_Loaded;
-            SettingsRoot.Unloaded -= ConnectionsRoot_Unloaded;
-            _appWindow.Changed -= ConnectionsAppWindow_Changed;
-            _connectionsRefreshTimer.Tick -= ConnectionsRefreshTimer_Tick;
-            _connectionsInvitationTimer.Tick -= ConnectionsInvitationTimer_Tick;
-            _connectionsClient = null;
+            _remoteReleased = true; ++_remoteRevision;
+            _remoteCancellation?.Cancel();
+            // The running command retains its token until the official CLI has stopped.
         }
 
         private void CollectConnectionsSearchEntries()
         {
-            CollectSearchEntry("Connections:Pairing", "设备配对", "二维码、配对码、批准请求与取消当前配对。", "Connections", "连接", "pair pairing QR 配对码 二维码 批准 取消配对", ConnectionPairingCard);
-            CollectSearchEntry("Connections:Server", "Aries 服务器", "保存服务器地址与连接互联服务器。", "Connections", "连接", "Aries URI 服务器 端口 检测 互联", ConnectionServerCard);
-            CollectSearchEntry("Connections:Telemetry", "被连接设备状态", "查看已连接另一台设备的系统、CPU、内存、GPU、网络和存储。", "Connections", "连接", "远端 设备 CPU 内存 GPU 网络 存储", ConnectionStatusCard);
-            CollectSearchEntry("Connections:Cache", "当前配对文件缓存", "仅清理当前配对的文件缓存。", "Connections", "连接", "缓存 清理 文件 当前 pair", ConnectionClearCacheButton);
+            CollectSearchEntry("Connections:Remote", "DS Harness Remote", "安装、修复和卸载 Remote 官方 npm 插件。", "Connections", "连接", "Remote Host 远程 安装 更新 插件 ds-harness-remote", RemotePluginCard);
+            CollectSearchEntry("Connections:RemoteGuide", "连接到其他设备", "打开 Remote 登录同一账号，选择在线 Host 和工作区。", "Connections", "连接", "Remote Web 登录 账号 Host 工作区 手机 浏览器", RemoteGuideCard);
         }
     }
 }

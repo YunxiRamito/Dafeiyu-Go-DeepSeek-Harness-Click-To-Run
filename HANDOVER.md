@@ -1,5 +1,16 @@
 # 交接：大肥鱼Go / Dafeiyu-Go Launcher
 
+## 2026-11-13 Launcher 1.8.6：反馈 #5、Node 检测与 Remote 迁移（集成中）
+
+用户已明确要求处理启动器后端反馈 #5 后推包 1.8.6，并将连接页适配 DS Harness Remote；此授权取代此前“暂不发布”，仅限 Launcher。安装器、Android、DeveloperCenter 与旧 Aries 服务不在本轮发布范围。共享工作树包含其他会话改动，正式源使用 `Temp_SetupandLauncher/Feedback5-186-20261113/ReleaseSource` 真正 Git clone，以远端 main `4dd98069afe7f177f05455aa18f4d8b6169ff5d8` 为基线限定合并。
+
+- 反馈 #5 的实际日志为 dsh-ops 0.3.0 在 Cordis internal/config 的空 receiver 上读取 entry 失败，Proxy.waterfall 堆栈被错误解释为网络代理。新增明确诊断与严格包版本/文件 SHA256 绑定的进程内兼容层，不改用户插件或 profile。默认 Node 22.13 使用官方异步 module.register，较新 Node 使用同步 registerHooks；官方 Node22.13 + Cordis4.0.4、Node24.21 + Cordis4.1.0 均 31 项通过。
+- Node 启动后用原始句柄登记身份，避免尚未监听时缓存被裁剪；WMI 缺映像路径时仍要求命令行、PID 与创建时间和原生身份一致。74 项 WMI、67 项解析、293 项真实 Node/IPv4/IPv6 监听通过；最终监听专项覆盖兼容预加载与启动身份缓存组合。无 PowerShell 轮询，无跨进程内存读取。外部命令行完全不可读时仍不冒认进程。
+- 连接页改为管理官方 ds-harness-remote，固定可安装 npm 0.6.4；GitHub HEAD 文案 0.6.5 尚未发布，不能依其安装。移除日常启动旧 Aries/Connect 接线，不清除旧身份或 Remote 凭据。Remote 服务专项33、隔离UI9通过，WinUI编译0错误；实际官方CLI安装/卸载与发行资源清理继续验证。
+
+只做本轮专项及必要编译/包校验，不跑全量回归。未停止、替换或重启用户当前 Launcher/DSH；未登录真实 Remote 账号或验证多设备端到端；不宣称杀毒告警已彻底解决。当前尚未发布，最后状态以本节后续发布收据为准。证据在 `Temp_SetupandLauncher/Feedback5-186-20261113/` 的 STARTUP-REPAIR.md、node/RESULTS.md、remote/ 和 RELEASE-PREP.md。
+
+
 ## 2026-10-18 反馈崩溃、时间排序与 F5 修复（1.8.4 本地候选）
 
 用户指定本次 **1.8.4**；已同步 Core、InfoHost、bootstrap 及三份 manifest 的版本。最终构建 `../Temp_SetupandLauncher/LB184r2/dist`，Core SHA-256 `0404D7945B0D5834465EA9125065DF4543A0886B8E3976185C8732D0C229A589`；288 个源输入与 live source 一致、157 个产物收据，verify 通过（文档示例路径、未传真实 DshRoot 两项既有提醒，构建保留既有警告）。较早 LB17/1.8.3 仅历史；公开资产未修改，未替换日常安装。

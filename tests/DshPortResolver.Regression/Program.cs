@@ -39,8 +39,8 @@ foreach ((string label, string commandLine) in positiveCommands)
 
 var negativeCommands = new[]
 {
-    ("Steam webhelper with DSH text", @"C:\Program Files (x86)\Steam\steamwebhelper.exe --remote-debugging-port=8080 --user-data-dir=C:\Users\demo\AppData\Roaming\Steam\dsh"),
-    ("Steam CEF with DSH URL", @"C:\Program Files (x86)\Steam\bin\cef\cefclient.exe --url=http://127.0.0.1:8080/dsh"),
+    ("browser web helper with DSH directory in profile path", @"C:\Program Files\Browser\browser-webhelper.exe --remote-debugging-port=8080 --user-data-dir=C:\Users\demo\AppData\Roaming\Browser\profiles\dsh"),
+    ("generic browser executable with DSH URL", @"C:\Program Files\Browser\browser.exe --url=http://127.0.0.1:8080/dsh"),
     ("generic node DSH directory", "node /opt/dsh/server.js --port 3080"),
     ("generic node DSH argument", "node.exe app.js --name=dsh --port=3080"),
     ("DSH package name as plain argument", "node.exe app.js --name=@deepseek-ai/dsh --port=3080"),
@@ -100,37 +100,96 @@ foreach (string selectionSource in new[] { "Fixed", "Random" })
 }
 
 int nonListeningPort = FindFreePort();
-int queriesBeforeFreeProbe = PowerShellRunner.CallCount;
+NativeDshProcessQuery.Reset();
 Check(DshPortResolver.FindDshListenerProcessId(nonListeningPort) == 0,
     "Identity: free port has no DSH listener");
 Check(!DshPortResolver.LooksLikeDsh(nonListeningPort), "Identity: free candidate is not DSH");
-Check(PowerShellRunner.CallCount == queriesBeforeFreeProbe,
-    "Identity: free candidates skip CIM queries during discovery and readiness checks");
+Check(NativeDshProcessQuery.CommandLineCalls == 0,
+    "Identity: free candidates skip process command-line reads");
 
 using (var dshOwnedListener = new TcpListener(IPAddress.Loopback, 0))
 {
     dshOwnedListener.Start();
     int dshOwnedPort = ((IPEndPoint)dshOwnedListener.LocalEndpoint).Port;
-    PowerShellRunner.Output = "OK\t4242\tnode.exe C:/repo/node_modules/@deepseek-ai/dsh/lib/bin.js web --port "
+    NativeDshProcessQuery.Reset(4242);
+    NativeDshProcessQuery.Commands[4242] = "node.exe C:/repo/node_modules/@deepseek-ai/dsh/lib/bin.js web --port "
         + dshOwnedPort.ToString();
     try
     {
         Check(DshPortResolver.LooksLikeDsh(dshOwnedPort), "Identity: occupied fixture is confirmed DSH");
-        int queriesBeforeSelection = PowerShellRunner.CallCount;
+        int queriesBeforeSelection = NativeDshProcessQuery.ListenerCalls;
         int randomPort = dshOwnedPort;
         var settings = new LauncherSettings { PortMode = "Random" };
         int selectedPort = DshPortResolver.ResolveConfiguredPort(settings, ref randomPort);
         Check(selectedPort != dshOwnedPort, "Random: new instance rejects a DSH-owned cached port too");
         Check(!IsPortOccupied(selectedPort), "Random: replacement for a DSH-owned port is bind-free");
         Check(randomPort == selectedPort, "Random: DSH-owned cached port is replaced in the cache");
-        Check(PowerShellRunner.CallCount == queriesBeforeSelection,
+        Check(NativeDshProcessQuery.ListenerCalls == queriesBeforeSelection,
             "Random: selection uses bind availability, not DSH identity");
     }
     finally
     {
-        PowerShellRunner.Output = String.Empty;
+        NativeDshProcessQuery.Reset();
     }
 }
+
+const string dshCommand = "node.exe G:/fixture/node_modules/@deepseek-ai/dsh/lib/bin.js web --port 63071";
+void IdentityCase(string label, Action configure, int expected)
+{
+    NativeDshProcessQuery.Reset(4242);
+    NativeDshProcessQuery.Commands[4242] = dshCommand;
+    configure();
+    Check(DshPortResolver.FindDshListenerProcessId(63071) == expected, "Identity: " + label);
+}
+IdentityCase("stable DSH listener accepted", () => { }, 4242);
+IdentityCase("duplicate IPv4/IPv6 rows from one process accepted", () =>
+    NativeDshProcessQuery.Listeners = new[] { 4242, 4242 }, 4242);
+IdentityCase("all DSH listening processes are inspected", () =>
+{
+    NativeDshProcessQuery.Listeners = new[] { 4242, 4243 };
+    NativeDshProcessQuery.Commands[4243] = dshCommand;
+}, 4242);
+IdentityCase("known unrelated IPv6 owner sharing port preserves DSH detection", () =>
+{
+    NativeDshProcessQuery.Listeners = new[] { 4242, 4243 };
+    NativeDshProcessQuery.Commands[4243] = "node.exe G:/fixture/unrelated.js";
+}, 4242);
+IdentityCase("unknown owner sharing port fails closed", () =>
+    NativeDshProcessQuery.Listeners = new[] { 4242, 4243 }, 0);
+IdentityCase("unreadable command line fails closed", () =>
+    NativeDshProcessQuery.Commands.Remove(4242), 0);
+IdentityCase("empty command line fails closed", () =>
+    NativeDshProcessQuery.Commands[4242] = "", 0);
+IdentityCase("unrelated listener fails closed", () =>
+    NativeDshProcessQuery.Commands[4242] = "node.exe G:/fixture/unrelated.js", 0);
+IdentityCase("DSH path argument on non-node image rejected", () =>
+    NativeDshProcessQuery.ImagePaths[4242] = @"G:\fixture\unrelated.exe", 0);
+IdentityCase("unreadable image path rejected", () =>
+    NativeDshProcessQuery.ImagePaths[4242] = "", 0);
+IdentityCase("failed TCP table read fails closed", () =>
+    NativeDshProcessQuery.ListenerReadSucceeds = false, 0);
+IdentityCase("invalid listener PID fails closed", () =>
+    NativeDshProcessQuery.Listeners = new[] { 4242, 0 }, 0);
+IdentityCase("listener ownership changes during identification fail closed", () =>
+    NativeDshProcessQuery.ListenerReads.Enqueue(new[] { 4243 }), 0);
+IdentityCase("listener disappears during identification fails closed", () =>
+    NativeDshProcessQuery.ListenerReads.Enqueue(Array.Empty<int>()), 0);
+IdentityCase("PID reused after command-line identification fails closed", () =>
+    NativeDshProcessQuery.ReusedProcessIds.Add(4242), 0);
+IdentityCase("unrelated shared listener PID reuse also fails closed", () =>
+{
+    NativeDshProcessQuery.Listeners = new[] { 4242, 4243 };
+    NativeDshProcessQuery.Commands[4243] = "node.exe G:/fixture/unrelated.js";
+    NativeDshProcessQuery.ReusedProcessIds.Add(4243);
+}, 0);
+IdentityCase("listener snapshot order changes are harmless", () =>
+{
+    NativeDshProcessQuery.Listeners = new[] { 4242, 4243 };
+    NativeDshProcessQuery.Commands[4243] = "node.exe G:/fixture/unrelated.js";
+    NativeDshProcessQuery.ListenerReads.Enqueue(new[] { 4243, 4242 });
+}, 4242);
+foreach (int invalid in new[] { -1, 0, 65536 })
+    Check(DshPortResolver.FindDshListenerProcessId(invalid) == 0, "Identity: invalid port rejected");
 
 int selectionCalls = 0;
 int freeSelection = DshPortResolver.SelectAvailablePort(63071, _ => false, () =>
@@ -190,15 +249,42 @@ namespace DeepSeekHarnessLauncher
         public int FixedPort { get; set; } = 8787;
     }
 
-    internal static class PowerShellRunner
+    internal static class NativeDshProcessQuery
     {
-        internal static string Output { get; set; } = String.Empty;
-        internal static int CallCount { get; private set; }
-
-        internal static string Run(string command, int timeoutMilliseconds)
+        internal static int[] Listeners = Array.Empty<int>();
+        internal static readonly Dictionary<int, string> Commands = new();
+        internal static readonly Dictionary<int, string> ImagePaths = new();
+        internal static readonly HashSet<int> ReusedProcessIds = new();
+        internal static readonly Queue<int[]> ListenerReads = new();
+        internal static bool ListenerReadSucceeds = true;
+        internal static int ListenerCalls;
+        internal static int CommandLineCalls;
+        internal static void Reset(params int[] listeners)
         {
-            CallCount++;
-            return Output;
+            Listeners = listeners;
+            Commands.Clear(); ImagePaths.Clear(); ReusedProcessIds.Clear(); ListenerReads.Clear();
+            ListenerReadSucceeds = true;
+            ListenerCalls = CommandLineCalls = 0;
         }
+        internal static bool TryGetListenerProcessIds(int port, out int[] ids)
+        {
+            ListenerCalls++;
+            ids = ListenerCalls > 1 && ListenerReads.Count > 0 ? ListenerReads.Dequeue() : Listeners;
+            return ListenerReadSucceeds;
+        }
+        internal static bool TryGetNodeProcessIds(out int[] ids)
+        {
+            ids = Commands.Keys.ToArray();
+            return true;
+        }
+        internal static bool TryReadProcessCommandLine(int pid, out string command, out long created, out string imagePath)
+        {
+            CommandLineCalls++;
+            created = 123456789L + pid;
+            imagePath = ImagePaths.TryGetValue(pid, out string image) ? image : @"G:\fixture\node.exe";
+            return Commands.TryGetValue(pid, out command);
+        }
+        internal static bool IsSameLiveProcess(int pid, long created) =>
+            !ReusedProcessIds.Contains(pid) && created == 123456789L + pid;
     }
 }

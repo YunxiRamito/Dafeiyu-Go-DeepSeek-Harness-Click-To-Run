@@ -1222,288 +1222,46 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
                         <TextBlock Style="{StaticResource SettingsPageTitleTextStyle}" Text="连接" />
                         <TextBlock Grid.Row="1" Style="{StaticResource SettingsPageDescriptionTextStyle}"
-                                   Text="设备连接与工作区同步" />
-                        <InfoBar x:Name="ConnectionsPluginNotice" Grid.Row="2" IsOpen="False" IsClosable="True"
-                                 Severity="Informational" Title="连接插件"
-                                 Message="正在检查插件状态。" />
-
-                        <Border x:Name="ConnectionStatusCard" Grid.Row="5" Style="{StaticResource SettingsCardStyle}" Padding="20">
-                            <StackPanel Spacing="18">
-                                <Grid ColumnSpacing="12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <Border Width="44" Height="44" CornerRadius="{ThemeResource ControlCornerRadius}"
-                                            Background="{ThemeResource SubtleFillColorSecondaryBrush}">
-                                        <FontIcon FontSize="22" Glyph="&#xE968;"
-                                                  Foreground="{ThemeResource SystemControlForegroundAccentBrush}" />
-                                    </Border>
-                                    <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center">
-                                        <TextBlock FontSize="18" FontWeight="SemiBold" Text="连接状态" />
-                                        <TextBlock x:Name="ConnectionDeviceNameText" FontSize="14" Text="尚未连接其他设备"
-                                                   TextWrapping="Wrap" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="2" Spacing="6" VerticalAlignment="Center">
-                                        <Border Style="{StaticResource SettingsTagPillStyle}" HorizontalAlignment="Right">
-                                            <TextBlock x:Name="ConnectionOnlineText" FontSize="12" Text="尚未连接其他设备" />
-                                        </Border>
-                                        <TextBlock x:Name="ConnectionPairStatusText" FontSize="12" Text="尚未配对"
-                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                                   HorizontalAlignment="Right" />
-                                    </StackPanel>
-                                </Grid>
-                                <Expander Header="设备详情" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
-                                <Grid ColumnSpacing="20" RowSpacing="16">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-                                    <StackPanel Spacing="5">
-                                        <StackPanel Orientation="Horizontal" Spacing="7">
-                                            <FontIcon FontSize="14" Glyph="&#xE770;" />
-                                            <TextBlock Text="系统" Style="{StaticResource SettingsPageDescriptionTextStyle}" />
-                                        </StackPanel>
-                                        <TextBlock x:Name="ConnectionSystemText" Text="配对后显示被连接设备信息" TextWrapping="Wrap" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="1" Spacing="5">
-                                        <StackPanel Orientation="Horizontal" Spacing="7">
-                                            <FontIcon FontSize="14" Glyph="&#xE950;" />
-                                            <TextBlock Text="CPU" Style="{StaticResource SettingsPageDescriptionTextStyle}" />
-                                        </StackPanel>
-                                        <TextBlock x:Name="ConnectionCpuText" Text="配对后显示被连接设备信息" TextWrapping="Wrap" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Row="1" Spacing="5">
-                                        <StackPanel Orientation="Horizontal" Spacing="7">
-                                            <FontIcon FontSize="14" Glyph="&#xE964;" />
-                                            <TextBlock Text="内存" Style="{StaticResource SettingsPageDescriptionTextStyle}" />
-                                        </StackPanel>
-                                        <TextBlock x:Name="ConnectionMemoryText" Text="配对后显示被连接设备信息" TextWrapping="Wrap" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Row="1" Grid.Column="1" Spacing="5">
-                                        <StackPanel Orientation="Horizontal" Spacing="7">
-                                            <FontIcon FontSize="14" Glyph="&#xE7F4;" />
-                                            <TextBlock Text="GPU" Style="{StaticResource SettingsPageDescriptionTextStyle}" />
-                                        </StackPanel>
-                                        <TextBlock x:Name="ConnectionGpuText" Text="配对后显示被连接设备信息" TextWrapping="Wrap" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Row="2" Spacing="5">
-                                        <StackPanel Orientation="Horizontal" Spacing="7">
-                                            <FontIcon FontSize="14" Glyph="&#xE839;" />
-                                            <TextBlock Text="网络" Style="{StaticResource SettingsPageDescriptionTextStyle}" />
-                                        </StackPanel>
-                                        <TextBlock x:Name="ConnectionNetworkText" Text="配对后显示被连接设备信息" TextWrapping="Wrap" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Row="2" Grid.Column="1" Spacing="5">
-                                        <StackPanel Orientation="Horizontal" Spacing="7">
-                                            <FontIcon FontSize="14" Glyph="&#xEDA2;" />
-                                            <TextBlock Text="存储" Style="{StaticResource SettingsPageDescriptionTextStyle}" />
-                                        </StackPanel>
-                                        <TextBlock x:Name="ConnectionStorageText" Text="配对后显示被连接设备信息" TextWrapping="Wrap" />
-                                    </StackPanel>
-                                </Grid>
-                                </Expander>
-                                <TextBlock x:Name="ConnectionTelemetryHintText" FontSize="12"
-                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                           Text="仅显示被连接设备的信息 · 连接状态每 3 秒刷新" TextWrapping="Wrap" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border x:Name="ConnectionPairingCard" Grid.Row="4" Style="{StaticResource SettingsCardStyle}" Padding="20,16">
-                            <StackPanel Spacing="12">
-                                <Grid ColumnSpacing="16">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <FontIcon FontSize="22" Glyph="&#xE8F2;" VerticalAlignment="Center" />
-                                    <StackPanel Grid.Column="1" Spacing="5">
-                                        <TextBlock FontSize="16" FontWeight="SemiBold" Text="设备配对" />
-                                        <TextBlock x:Name="ConnectionPairSummaryText" Text="与另一台设备配对，连接请求需要你确认。"
-                                                   Style="{StaticResource SettingsPageDescriptionTextStyle}" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                        <Button x:Name="ConnectionPairButton" Content="配对" Click="ConnectionPair_Click">
-                                            <FlyoutBase.AttachedFlyout>
-                                                <Flyout x:Name="ConnectionPairFlyout" Placement="Bottom" Opened="ConnectionPairFlyout_Opened" Closed="ConnectionPairFlyout_Closed">
-                                                    <ScrollViewer MaxHeight="540" VerticalScrollBarVisibility="Auto">
-                                                        <StackPanel Width="320" Spacing="12">
-                                                            <TextBlock x:Name="ConnectionPairFlyoutTitleText" FontSize="18" FontWeight="SemiBold" Text="设备配对" />
-                                                            <TextBlock x:Name="ConnectionPairFlyoutStatusText" Text="正在检查配对状态…"
-                                                                       FontWeight="SemiBold" TextWrapping="Wrap" />
-                                                            <InfoBar x:Name="ConnectionPairFlyoutNotice" IsOpen="False" IsClosable="False" Severity="Warning" />
-                                                            <StackPanel x:Name="ConnectionInvitationPanel" Spacing="12" Visibility="Collapsed">
-                                                            <TextBlock Text="扫描二维码或输入配对码，与另一台设备建立连接。"
-                                                                       Style="{StaticResource SettingsPageDescriptionTextStyle}" />
-                                                            <Button x:Name="ConnectionQrButton" Width="160" Height="160" Padding="7"
-                                                                    HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"
-                                                                    IsEnabled="False" Click="ConnectionRefreshCode_Click"
-                                                                    AutomationProperties.Name="生成或刷新设备配对二维码">
-                                                                <Grid>
-                                                                    <Image x:Name="ConnectionQrImage" Width="144" Height="144" Stretch="Uniform"
-                                                                           AutomationProperties.Name="设备配对二维码" Visibility="Collapsed" />
-                                                                    <StackPanel x:Name="ConnectionQrPlaceholder" VerticalAlignment="Center" Spacing="8">
-                                                                        <FontIcon FontSize="28" Glyph="&#xED14;" />
-                                                                        <TextBlock x:Name="ConnectionQrHintText" Text="请先连接服务器"
-                                                                                   FontSize="12" TextAlignment="Center" TextWrapping="Wrap" Margin="12,0" />
-                                                                    </StackPanel>
-                                                                </Grid>
-                                                            </Button>
-                                                            <TextBox x:Name="ConnectionInvitationCodeBox" Header="服务器码-配对码"
-                                                                     PlaceholderText="尚未生成" IsReadOnly="True" />
-                                                            <Grid ColumnSpacing="8">
-                                                                <Grid.ColumnDefinitions>
-                                                                    <ColumnDefinition Width="*" />
-                                                                    <ColumnDefinition Width="Auto" />
-                                                                    <ColumnDefinition Width="Auto" />
-                                                                </Grid.ColumnDefinitions>
-                                                                <TextBlock x:Name="ConnectionInvitationCountdownText" Text="配对码有效期为 3 分钟"
-                                                                           FontSize="12" VerticalAlignment="Center" TextWrapping="Wrap"
-                                                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                                                <Button x:Name="ConnectionCopyCodeButton" Grid.Column="1" Content="复制"
-                                                                        IsEnabled="False" Click="ConnectionCopyCode_Click" />
-                                                                <Button x:Name="ConnectionRefreshCodeButton" Grid.Column="2" Content="刷新"
-                                                                        IsEnabled="False" Click="ConnectionRefreshCode_Click" />
-                                                            </Grid>
-                                                            <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
-                                                            <TextBox x:Name="ConnectionManualCodeBox" Header="手动输入配对码"
-                                                                     PlaceholderText="服务器码-配对码" MaxLength="128" TextChanged="ConnectionManualCode_TextChanged" />
-                                                            <Button x:Name="ConnectionRequestPairButton" Content="连接设备" HorizontalAlignment="Stretch"
-                                                                    IsEnabled="False" Click="ConnectionRequestPair_Click" />
-                                                            </StackPanel>
-                                                            <TextBlock x:Name="ConnectionPairFlyoutHintText" Text="请先配置并连接 Aries 服务器。"
-                                                                       Style="{StaticResource SettingsPageDescriptionTextStyle}" />
-                                                            <Button x:Name="ConnectionUnpairButton" Content="取消配对…" HorizontalAlignment="Stretch"
-                                                                    IsEnabled="False" Click="ConnectionUnpair_Click" />
-                                                        </StackPanel>
-                                                    </ScrollViewer>
-                                                </Flyout>
-                                            </FlyoutBase.AttachedFlyout>
-                                        </Button>
-                                    </StackPanel>
-                                </Grid>
-                                <Border x:Name="ConnectionApprovalPanel" Visibility="Collapsed" Padding="12"
-                                        CornerRadius="{ThemeResource OverlayCornerRadius}" Background="{ThemeResource SubtleFillColorSecondaryBrush}">
-                                    <StackPanel Spacing="10">
-                                        <TextBlock FontWeight="SemiBold" Text="待批准的配对请求" />
-                                        <TextBlock x:Name="ConnectionApprovalText" TextWrapping="Wrap" />
-                                        <StackPanel Orientation="Horizontal" Spacing="8">
-                                            <Button x:Name="ConnectionApproveButton" Content="批准配对…" IsEnabled="False" Click="ConnectionApprove_Click" />
-                                            <Button x:Name="ConnectionRejectButton" Content="拒绝" IsEnabled="False" Click="ConnectionReject_Click" />
-                                        </StackPanel>
-                                    </StackPanel>
-                                </Border>
-                            </StackPanel>
-                        </Border>
-
-                        <Border x:Name="ConnectionServerCard" Grid.Row="3" Style="{StaticResource SettingsCardStyle}" Padding="20,16">
+                                   Text="通过 DS Harness Remote，在其他设备继续使用本机 DSH 工作区与对话。" />
+                        <InfoBar x:Name="RemoteNotice" Grid.Row="2" IsOpen="False" IsClosable="True" Severity="Informational" />
+                        <Border x:Name="RemotePluginCard" Grid.Row="3" Style="{StaticResource SettingsCardStyle}" Padding="20">
                             <StackPanel Spacing="14">
-                                <Grid ColumnSpacing="12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <FontIcon FontSize="22" Glyph="&#xE753;" VerticalAlignment="Center" />
-                                    <StackPanel Grid.Column="1" Spacing="5">
-                                        <TextBlock FontSize="16" FontWeight="SemiBold" Text="Aries 服务器" />
-                                        <TextBlock x:Name="ConnectionServerDescriptionText" Text="连接互联服务器"
-                                                   Style="{StaticResource SettingsPageDescriptionTextStyle}" TextWrapping="Wrap" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                        <Button x:Name="ConnectionConnectButton" Content="保存并连接" IsEnabled="False" Click="ConnectionConnect_Click" />
-                                        <Button x:Name="ConnectionDetectButton" Content="检测" Visibility="Collapsed" IsEnabled="False" Click="ConnectionDetect_Click" />
-                                    </StackPanel>
-                                </Grid>
-                                <Grid ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBox x:Name="ConnectionServerUriBox" Header="服务器地址" PlaceholderText="https://202.189.21.218:10240"
-                                             IsEnabled="False" TextChanged="ConnectionServerUri_TextChanged" />
-                                    <Button x:Name="ConnectionSaveUriButton" Grid.Column="1" Content="保存" VerticalAlignment="Bottom" Visibility="Collapsed"
-                                            IsEnabled="False" Click="ConnectionSaveUri_Click" />
-                                </Grid>
-                                <TextBlock x:Name="ConnectionServerHintText" Text="地址尚未配置。"
-                                           Style="{StaticResource SettingsPageDescriptionTextStyle}" />
-                                <Expander Header="文件缓存" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
-                                <Grid ColumnSpacing="16">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Spacing="4">
-                                        <TextBlock FontWeight="SemiBold" Text="当前连接的文件缓存" />
-                                        <TextBlock x:Name="ConnectionCacheHintText" Text="当前服务器暂不支持清理配对文件缓存。"
-                                                   Style="{StaticResource SettingsPageDescriptionTextStyle}" />
-                                    </StackPanel>
-                                    <Button x:Name="ConnectionClearCacheButton" Grid.Column="1" Content="清理缓存…" VerticalAlignment="Center"
-                                            IsEnabled="False" Click="ConnectionClearCache_Click" />
-                                </Grid>
-                                </Expander>
+                                <TextBlock FontSize="18" FontWeight="SemiBold" Text="DS Harness Remote" />
+                                <TextBlock x:Name="RemoteStatusText" FontSize="15" Text="打开连接页后检查插件状态" TextWrapping="Wrap" />
+                                <TextBlock x:Name="RemoteProfileText" Style="{StaticResource SettingsRowDescriptionTextStyle}" TextWrapping="Wrap" />
+                                <TextBlock x:Name="RemoteVersionText" Style="{StaticResource SettingsRowDescriptionTextStyle}" TextWrapping="Wrap" />
+                                <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" TextWrapping="Wrap"
+                                           Text="启动器管理官方 npm 插件；账号登录、Host 在线状态与连接设置请在 DSH 的 Remote 侧边栏查看。后续版本也可通过 DSH 插件管理检查更新。" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button x:Name="RemoteInstallButton" Content="安装 Remote" Click="RemoteInstall_Click" />
+                                    <Button x:Name="RemoteRefreshButton" Content="刷新状态" Click="RemoteRefresh_Click" />
+                                    <Button x:Name="RemoteRemoveButton" Content="卸载" Click="RemoteRemove_Click" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <ProgressRing x:Name="RemoteProgress" Width="20" Height="20" IsActive="False" Visibility="Collapsed" />
+                                    <TextBlock x:Name="RemoteProgressText" VerticalAlignment="Center" TextWrapping="Wrap" Visibility="Collapsed" />
+                                    <Button x:Name="RemoteCancelButton" Content="取消操作" Click="RemoteCancel_Click" Visibility="Collapsed" />
+                                </StackPanel>
                             </StackPanel>
                         </Border>
-
-                        <Border x:Name="ConnectionSyncCard" Grid.Row="6" Style="{StaticResource SettingsCardStyle}" Padding="20,16">
-                            <StackPanel Spacing="16">
-                                <TextBlock FontSize="16" FontWeight="SemiBold" Text="同步与广播" />
-                                <TextBlock Text="连接后自动同步本机 DSH 的工作区与对话，并广播 DSH 网页。"
-                                           Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                <Grid ColumnSpacing="12" RowSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Spacing="4" VerticalAlignment="Center">
-                                        <TextBlock Text="Connect" FontWeight="SemiBold" />
-                                        <TextBlock Text="同步 DSH 工作区与对话，并广播 DSH 网页。" TextWrapping="Wrap"
-                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                        <TextBlock x:Name="ConnectionPluginStatusText" Text="正在检查安装状态…" TextWrapping="Wrap"
-                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                        <Button x:Name="ConnectionPluginUpdateButton" Content="安装" Tag="connect" Click="ConnectionPluginUpdate_Click" />
-                                        <Button x:Name="ConnectionPluginUninstallButton" Content="卸载" Tag="connect" Visibility="Collapsed"
-                                                Click="ConnectionPluginUninstall_Click" />
-                                    </StackPanel>
-                                </Grid>
-                                <Grid ColumnSpacing="12" RowSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Spacing="4" VerticalAlignment="Center">
-                                        <TextBlock Text="Mobile-CSS" FontWeight="SemiBold" />
-                                        <TextBlock Text="为 DSH 网页提供移动端适配样式。" TextWrapping="Wrap"
-                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                        <TextBlock x:Name="ConnectionMobilePluginStatusText" Text="正在检查安装状态…" TextWrapping="Wrap"
-                                                   Style="{StaticResource SettingsRowDescriptionTextStyle}" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                        <Button x:Name="ConnectionMobilePluginUpdateButton" Content="安装" Tag="mobile-ui" Click="ConnectionPluginUpdate_Click" />
-                                        <Button x:Name="ConnectionMobilePluginUninstallButton" Content="卸载" Tag="mobile-ui" Visibility="Collapsed"
-                                                Click="ConnectionPluginUninstall_Click" />
-                                    </StackPanel>
-                                </Grid>
-                                <TextBlock x:Name="ConnectionPreferencesHintText" Text="自动连接已配对设备；同步与网页广播随连接启用。"
-                                           Style="{StaticResource SettingsPageDescriptionTextStyle}" />
+                        <Border x:Name="RemoteGuideCard" Grid.Row="4" Style="{StaticResource SettingsCardStyle}" Padding="20">
+                            <StackPanel Spacing="14">
+                                <TextBlock FontSize="18" FontWeight="SemiBold" Text="连接到这台电脑" />
+                                <TextBlock TextWrapping="Wrap" Text="1. 安装 Remote 后，在方便时重启 DSH，打开侧边栏 Remote 并登录。" />
+                                <TextBlock TextWrapping="Wrap" Text="2. 在手机、另一台电脑或 Remote Web 登录同一账号。" />
+                                <TextBlock TextWrapping="Wrap" Text="3. 选择在线 Host，再打开需要的工作区。本机 DSH 需要保持运行。" />
+                                <TextBlock Style="{StaticResource SettingsRowDescriptionTextStyle}" TextWrapping="Wrap"
+                                           Text="在线状态以 Remote 显示为准。旧 Aerial / Aries 配对资料保留，连接页不再使用旧配对服务。" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Content="打开本机 DSH" Click="RemoteLocal_Click" />
+                                    <Button Content="打开 Remote Web" Click="RemoteWeb_Click" />
+                                    <Button Content="使用文档" Click="RemoteDocumentation_Click" />
+                                </StackPanel>
                             </StackPanel>
                         </Border>
-                        <InfoBar x:Name="ConnectionActionNotice" Grid.Row="7" IsOpen="False" IsClosable="True" Severity="Informational" />
                     </Grid>
 
                     <StackPanel

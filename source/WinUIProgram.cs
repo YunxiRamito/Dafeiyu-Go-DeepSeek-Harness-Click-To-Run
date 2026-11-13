@@ -43,7 +43,7 @@ namespace DeepSeekHarnessLauncher
     {
         public const string Title = "Dafeiyu-Go";
         public const string EnglishTitle = "Dafeiyu-Go";
-        public const string Version = "1.8.5";
+        public const string Version = "1.8.6";
         public const string Repository = "YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run";
         public const string LegacyRepository = "YunxiRamito/DSH-Launcher";
         public const string UserAgent = "Dafeiyu-Go/" + Version;
@@ -1672,7 +1672,6 @@ namespace DeepSeekHarnessLauncher
             _apiPromptedPath = Path.Combine(dshLogDirectory, "api-settings-prompted.flag");
             _serviceUrl = Program.ReadLastUrl();
             _apiKey = LauncherSettingsStore.ReadApiKey(_settings);
-            EnsureConnectionProviderHost();
             _balanceAlertTracker = new DeepSeekBalanceAlertTracker(
                 Path.Combine(_root, @".dsh\launcher-alerts.json"),
                 Path.Combine(_root, @".dsh\.dshw-usage.json"),
@@ -5826,22 +5825,15 @@ namespace DeepSeekHarnessLauncher
             if (proxyError != null) throw new InvalidOperationException(proxyError);
             if (!File.Exists(_nodePath))
             {
-                throw new FileNotFoundException("找不到 Node.js：" + _nodePath);
+                throw new FileNotFoundException("找不到 Node.js：" + _nodePath, _nodePath);
             }
 
             if (!File.Exists(_dshBin))
             {
-                throw new FileNotFoundException("找不到 DSH 入口文件：" + _dshBin);
+                throw new FileNotFoundException("找不到 DSH 入口文件：" + _dshBin, _dshBin);
             }
 
             if (!TryPrepareServicePort(false, out failureMessage)) return false;
-            // Installation is an explicit connection-page action. Read-only inspection
-            // preserves uninstall choices and never downgrades a backend-updated bundle.
-            var connectionPlugin = ManagedConnectionPluginsService.InspectAsync(_settings, "connect", WriteLog,
-                CancellationToken.None).GetAwaiter().GetResult();
-            if (!String.IsNullOrEmpty(connectionPlugin.Error) || !connectionPlugin.Installed)
-                WriteLog("连接插件尚未就绪，DSH 将继续启动；可在连接页安装。" + connectionPlugin.Error);
-            else ConnectionPluginPreferences.Save(_settings);
             if (!PrepareMobileUiForOwnedLaunch(out failureMessage)) return false;
             // Recheck after package preparation; another process may have claimed
             // the configured port while the SDK/profile lease was busy.
@@ -5861,15 +5853,15 @@ namespace DeepSeekHarnessLauncher
             startInfo.RedirectStandardError = true;
             startInfo.StandardOutputEncoding = Encoding.UTF8;
             startInfo.StandardErrorEncoding = Encoding.UTF8;
-            var connectionHost = EnsureConnectionProviderHost();
             startInfo.EnvironmentVariables["DSH_HOME"] = DshPluginCliService.ResolveDshHome(_settings.DshRoot);
-            if (connectionHost != null)
-                startInfo.EnvironmentVariables["DAFEIYU_CONNECTION_PIPE"] = connectionHost.Pipe.PipeName;
+            // Preserve local archive-deletion admission for existing installations.
+            // This does not start Aries, attach a provider pipe or install Connect.
             ConnectionArchivePreload.Configure(startInfo, _dshBin, DshPluginCliService.ResolveDshHome(_settings.DshRoot),
                 DshProfileService.ResolveProfileDirectory(_settings.DshRoot),
                 Path.Combine(LauncherSettingsStore.DirectoryPath, "connection-plugin-packages"), WriteLog);
             // 只有用户打开「对 DSH 服务生效」时才写代理环境变量，默认不接管。
             ProxySupport.ApplyDshProcessEnvironment(startInfo, _settings);
+            DshStartupCompatibility.Configure(startInfo, _root, WriteLog);
 
             Process process = new Process();
             process.StartInfo = startInfo;
@@ -5881,6 +5873,10 @@ namespace DeepSeekHarnessLauncher
             {
                 return false;
             }
+
+            // Retain the identity from our original process handle while Node
+            // initializes, before the first listener exists or WMI catches up.
+            NativeDshProcessQuery.RememberStartedProcess(process);
 
             int generation;
             lock (_dshDataOperationLock)
@@ -6019,76 +6015,12 @@ namespace DeepSeekHarnessLauncher
 
         private string DescribeDshStartupCause(List<string> output, Exception exception)
         {
-            string text = String.Join("\n", output ?? new List<string>());
-            if (exception != null) text += "\n" + exception.GetType().Name + ": " + exception.Message;
-            string lower = text.ToLowerInvariant();
-
-            bool portConflict = lower.Contains("eaddrinuse") || lower.Contains("address already in use")
-                || Regex.IsMatch(text, @"(?i)(?:port|端口)\s*[:#]?\s*\d{2,5}[^\r\n]{0,60}(?:in use|already in use|占用)");
-            if (portConflict)
-            {
-                Match portMatch = Regex.Match(text, @"(?i)(?:EADDRINUSE|address already in use)[^\r\n]{0,180}?(?::(?<port>\d{2,5}))(?:\D|$)");
-                if (!portMatch.Success)
-                    portMatch = Regex.Match(text, @"(?i)(?:port|端口)\s*[:#]?\s*(?<port>\d{2,5})");
-                string port = portMatch.Success ? portMatch.Groups["port"].Value : _port.ToString();
-                return "本机端口 " + port + " 已被其他程序占用，请更换服务端口或关闭占用程序。";
-            }
-            if (lower.Contains("err_module_not_found") || lower.Contains("module_not_found")
-                || lower.Contains("cannot find package") || lower.Contains("cannot find module")
-                || lower.Contains("err_package_path_not_exported"))
-                return "DSH 运行依赖不完整，请修复或重新安装 DSH 后重试。";
-            if (lower.Contains("unsupported engine") || lower.Contains("unsupported node")
-                || lower.Contains("incompatible with this module")
-                || lower.Contains("requires node") || lower.Contains("node.js version")
-                || lower.Contains("node version is not supported"))
-                return "当前 Node.js 版本不符合 DSH 要求，请更新 Node.js 后重试。";
-            if (lower.Contains("eacces") || lower.Contains("eperm") || lower.Contains("permission denied")
-                || lower.Contains("access is denied"))
-                return "DSH 无权访问所需文件或网络端口，请检查目录权限或安全软件拦截。";
-            if (lower.Contains("eaddrnotavail") || lower.Contains("address not available"))
-                return "DSH 配置的监听地址不可用，请检查服务地址设置。";
-            if (lower.Contains("enospc") || lower.Contains("no space left on device"))
-                return "磁盘空间不足，DSH 无法完成启动。请释放空间后重试。";
-            if (lower.Contains("heap out of memory") || lower.Contains("javascript heap")
-                || lower.Contains("err_memory_allocation"))
-                return "Node.js 可用内存不足，DSH 无法完成启动。请关闭其他程序后重试。";
-            if (lower.Contains("invalid config") || lower.Contains("configuration is invalid")
-                || lower.Contains("config validation") || lower.Contains("zoderror")
-                || lower.Contains("json.parse") || (lower.Contains("syntaxerror") && lower.Contains("config")))
-                return "DSH 配置文件格式或内容无效，请检查配置后重试。";
-            if (lower.Contains("syntaxerror"))
-                return "DSH 启动文件格式有误，请修复或重新安装 DSH。";
-            if (lower.Contains("err_ossl") || lower.Contains("certificate") || lower.Contains("tls handshake"))
-                return "DSH 网络安全连接失败，请检查网络代理或证书设置。";
-            if (lower.Contains("econnrefused") || lower.Contains("fetch failed") || lower.Contains("enotfound"))
-                return "DSH 启动时无法连接所需网络服务，请检查网络或代理设置。";
-
-            if (exception is FileNotFoundException)
-            {
-                FileNotFoundException missing = (FileNotFoundException)exception;
-                if (String.Equals(missing.FileName, _nodePath, StringComparison.OrdinalIgnoreCase)
-                    || (lower.Contains("node") && !lower.Contains("node_modules")))
-                    return "找不到 Node.js 运行时，请修复 Node.js 路径或重新安装。";
-                return "找不到 DSH 启动文件或运行依赖，请修复或重新安装 DSH。";
-            }
-            if (lower.Contains("proxy") || lower.Contains("代理"))
-                return "DSH 网络代理配置无效，请检查启动器中的服务代理设置。";
-            if (String.IsNullOrWhiteSpace(text)) return "DSH 未能完成启动，请查看启动器日志了解详细原因。";
-            return "DSH 启动未完成，服务尚未就绪。请查看启动器日志了解详细原因。";
+            return DshStartupDiagnostics.Describe(output, exception, _port, _nodePath);
         }
 
         private static string FindRelevantServiceDiagnostic(List<string> output)
         {
-            if (output == null || output.Count == 0) return "(no DSH output captured)";
-            for (int index = output.Count - 1; index >= 0; index--)
-            {
-                string line = output[index];
-                if (Regex.IsMatch(line, @"(?i)error|exception|fatal|E[A-Z_]{3,}|not found|invalid|failed|unsupported"))
-                    return line.Length > 600 ? line.Substring(0, 600) : line;
-            }
-            string last = output.LastOrDefault(line => !String.IsNullOrWhiteSpace(line));
-            if (String.IsNullOrWhiteSpace(last)) return "(no DSH output captured)";
-            return last.Length > 600 ? last.Substring(0, 600) : last;
+            return DshStartupDiagnostics.FindRelevant(output);
         }
 
         private static string RedactServiceDiagnosticSecrets(string line)
@@ -6522,7 +6454,6 @@ namespace DeepSeekHarnessLauncher
                 Path.Combine(_root, @".dsh\launcher-alerts.json"),
                 Path.Combine(_root, @".dsh\.dshw-usage.json"),
                 _settings);
-            EnsureConnectionProviderHost();
         }
 
         private void FailRestart(string message)

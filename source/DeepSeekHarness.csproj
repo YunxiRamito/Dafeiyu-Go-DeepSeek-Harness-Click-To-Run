@@ -23,9 +23,9 @@
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <DefineConstants>DISABLE_XAML_GENERATED_MAIN</DefineConstants>
-    <Version>1.8.5</Version>
-    <AssemblyVersion>1.8.5.0</AssemblyVersion>
-    <FileVersion>1.8.5.0</FileVersion>
+    <Version>1.8.6</Version>
+    <AssemblyVersion>1.8.6.0</AssemblyVersion>
+    <FileVersion>1.8.6.0</FileVersion>
     <Product>Dafeiyu-Go</Product>
     <Title>Dafeiyu-Go</Title>
     <AssemblyTitle>Dafeiyu-Go</AssemblyTitle>
@@ -84,8 +84,9 @@
          byte before invoking the official SDK operation under its native lock. -->
     <Content Include="assets\dafeiyu-mobile-ui\**" CopyToOutputDirectory="PreserveNewest" />
     <EmbeddedResource Include="MobileUiPluginOperation.mjs" LogicalName="DeepSeekHarnessLauncher.MobileUiPluginOperation.mjs" />
-    <Content Include="assets\dafeiyu-go-connect\**" CopyToOutputDirectory="PreserveNewest" />
-    <EmbeddedResource Include="ConnectionPluginOperation.mjs" LogicalName="DeepSeekHarnessLauncher.ConnectionPluginOperation.mjs" />
+    <!-- Remote uses the official DSH manager; the legacy Connect package and
+         its dedicated operation payload are no longer distributed. The shared
+         managed operation remains required by the separate mobile UI check. -->
     <EmbeddedResource Include="ManagedConnectionPluginOperation.mjs" LogicalName="DeepSeekHarnessLauncher.ManagedConnectionPluginOperation.mjs" />
     <Content Include="assets\sounds\notify_F4_F5_v2.mp3" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="certs-download-ca.crt" Link="certs\download-ca.crt" CopyToOutputDirectory="PreserveNewest" />
@@ -101,6 +102,7 @@
     <PackageReference Include="QRCoder" Version="1.6.0" />
     <PackageReference Include="Markdig" Version="0.37.0" />
     <PackageReference Include="TinyPinyin.Net" Version="1.0.2" />
+    <PackageReference Include="System.Management" Version="8.0.0" />
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
   </ItemGroup>
   <Target Name="PublishInfoHost" AfterTargets="Publish">

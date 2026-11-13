@@ -10,7 +10,7 @@ param(
     [switch]$FunctionsOnly
 )
 
-foreach ($file in @('release.ps1', 'publish-npm.ps1')) {
+foreach ($file in @('release.ps1', 'tools/Launcher186Acceptance.ps1', 'publish-npm.ps1')) {
     $libraryTokens = $null; $libraryErrors = $null
     $library = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $file), [ref]$libraryTokens, [ref]$libraryErrors)
     if ($libraryErrors.Count) { throw "$file syntax errors." }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
@@ -367,31 +368,29 @@ namespace DeepSeekHarnessLauncher
         {
             try
             {
-                string output = PowerShellRunner.Run(
-                    "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | " +
-                    "ForEach-Object { \"{0}`t{1}\" -f $_.ProcessId, $_.CommandLine }",
-                    10000);
-
-                if (string.IsNullOrEmpty(output))
+                int[] processIds;
+                if (!NativeDshProcessQuery.TryGetNodeProcessIds(out processIds))
                 {
                     return -1;
                 }
 
-                string[] lines = output.Replace("\r\n", "\n").Split('\n');
-                for (int index = 0; index < lines.Length; index++)
+                foreach (int processId in processIds)
                 {
-                    string line = lines[index];
-                    int separatorIndex = line.IndexOf('\t');
-                    if (separatorIndex < 0
-                        || !IsDshProcessCommandLine(line.Substring(separatorIndex + 1)))
+                    string commandLine;
+                    string imagePath;
+                    long created;
+                    if (!NativeDshProcessQuery.TryReadProcessCommandLine(
+                            processId, out commandLine, out created, out imagePath)
+                        || !IsNodeImage(imagePath)
+                        || !IsDshProcessCommandLine(commandLine))
                     {
                         continue;
                     }
 
-                    int port = ExtractPort(line.Substring(separatorIndex + 1));
+                    int port = ExtractPort(commandLine);
                     if (port > 0
-                        && (!IsPortListening(port)
-                            || FindDshListenerProcessId(port) > 0))
+                        && NativeDshProcessQuery.IsSameLiveProcess(processId, created)
+                        && FindDshListenerProcessId(port) > 0)
                     {
                         return port;
                     }
@@ -438,75 +437,70 @@ namespace DeepSeekHarnessLauncher
 
         internal static int FindDshListenerProcessId(int port)
         {
-            if (port <= 0 || port > 65535 || !IsPortListening(port))
+            if (port <= 0 || port > 65535)
             {
                 return 0;
             }
 
             try
             {
-                string output = PowerShellRunner.Run(
-                    "try { $listeners = @(Get-NetTCPConnection -State Listen -LocalPort "
-                    + port.ToString()
-                    + " -ErrorAction Stop); "
-                    + "foreach ($listener in $listeners) { $owner = [int]$listener.OwningProcess; "
-                    + "try { $process = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $owner) -ErrorAction Stop; "
-                    + "if ($null -eq $process -or [string]::IsNullOrWhiteSpace($process.CommandLine)) { 'ERROR' } "
-                    + "else { \"OK`t{0}`t{1}\" -f $owner, $process.CommandLine } "
-                    + "} catch { 'ERROR' } } } catch { 'ERROR' }",
-                    10000);
-
-                if (String.IsNullOrWhiteSpace(output))
+                int[] processIds;
+                if (!NativeDshProcessQuery.TryGetListenerProcessIds(port, out processIds)
+                    || processIds.Length == 0)
                 {
                     return 0;
                 }
 
                 int dshProcessId = 0;
-                bool uncertain = false;
-                string[] lines = output.Replace("\r\n", "\n").Split('\n');
-                for (int index = 0; index < lines.Length; index++)
+                var identities = new Dictionary<int, long>();
+                foreach (int processId in processIds)
                 {
-                    string line = lines[index];
-                    if (String.IsNullOrWhiteSpace(line))
+                    string commandLine;
+                    string imagePath;
+                    long created;
+                    if (processId <= 0
+                        || !NativeDshProcessQuery.TryReadProcessCommandLine(
+                            processId, out commandLine, out created, out imagePath)
+                        || String.IsNullOrWhiteSpace(commandLine)
+                        || String.IsNullOrWhiteSpace(imagePath))
                     {
-                        continue;
+                        return 0;
                     }
 
-                    if (!line.StartsWith("OK\t", StringComparison.Ordinal))
-                    {
-                        uncertain = true;
-                        continue;
-                    }
-
-                    int separatorIndex = line.IndexOf('\t', 3);
-                    int processId;
-                    if (separatorIndex < 0
-                        || !int.TryParse(line.Substring(3, separatorIndex - 3), out processId)
-                        || processId <= 0)
-                    {
-                        uncertain = true;
-                        continue;
-                    }
-
-                    string commandLine = line.Substring(separatorIndex + 1);
-                    if (String.IsNullOrWhiteSpace(commandLine))
-                    {
-                        uncertain = true;
-                        continue;
-                    }
-
-                    if (dshProcessId == 0 && IsDshProcessCommandLine(commandLine))
+                    identities[processId] = created;
+                    if (dshProcessId == 0 && IsNodeImage(imagePath)
+                        && IsDshProcessCommandLine(commandLine))
                     {
                         dshProcessId = processId;
                     }
                 }
 
-                return uncertain ? 0 : dshProcessId;
+                if (dshProcessId == 0) return 0;
+
+                // Re-read ownership rather than trusting a cached PID. A listener may
+                // exit or be replaced while its command line is being inspected.
+                int[] currentProcessIds;
+                if (!NativeDshProcessQuery.TryGetListenerProcessIds(port, out currentProcessIds)
+                    || !new HashSet<int>(identities.Keys).SetEquals(currentProcessIds))
+                {
+                    return 0;
+                }
+                foreach (var identity in identities)
+                {
+                    if (!NativeDshProcessQuery.IsSameLiveProcess(identity.Key, identity.Value))
+                        return 0;
+                }
+                return dshProcessId;
             }
             catch
             {
                 return 0;
             }
+        }
+
+        private static bool IsNodeImage(string imagePath)
+        {
+            return String.Equals(Path.GetFileName(imagePath), "node.exe", StringComparison.OrdinalIgnoreCase);
         }
 
         internal static bool IsDshProcessCommandLine(string commandLine)
