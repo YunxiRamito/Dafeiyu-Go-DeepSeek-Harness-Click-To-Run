@@ -1,0 +1,11 @@
+{
+  "version": "1.8.6",
+  "sha256": "b4043c8117c597f3fe6076b587be55b13e17a185633f65f3282be6d0cc618595",
+  "subDirectory": "",
+  "assets": {
+    "github": "https://github.com/YunxiRamito/Dafeiyu-Go-DeepSeek-Harness-Click-To-Run/releases/download/v1.8.6/Dafeiyu-GO.1.8.6.zip",
+    "mirrors": []
+  },
+  "notes": "- 修复部分插件启动失败时被误报为代理配置错误的问题，改善启动故障提示。\n- 优化 DSH 服务与 Node 进程识别，减少后台轮询开销和偶发漏判。\n- 连接页面改为适配 DS Harness Remote，支持安装、修复和卸载官方插件；旧 Aerial / Aries 连接方案停止自动运行。",
+  "releasedAt": "2026-11-13T18:39:21.5521779Z"
+}
